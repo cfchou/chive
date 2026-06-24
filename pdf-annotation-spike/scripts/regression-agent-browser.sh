@@ -57,7 +57,7 @@ click_saved_highlight_in_selection_mode() {
           clientY: Math.round(rect.top + Math.min(rect.height / 2, 8)),
         };
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 200));
     }
     throw new Error('Could not select saved highlight from selection mode');
   })()")"
@@ -105,6 +105,148 @@ click_nth_live_highlight_in_selection_mode() {
   ab mouse down left >/dev/null
   ab mouse up left >/dev/null
   ab wait 300 >/dev/null
+}
+
+click_first_free_text_in_selection_mode() {
+  local point
+  point="$(run_eval "(async () => {
+    const statsBefore = window.__pdfSpike.stats();
+    if (statsBefore.activeTool !== 'none') {
+      throw new Error(\`Expected selection mode before clicking free text, got \${statsBefore.activeTool}\`);
+    }
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      const container = document.querySelector('.pdf-container');
+      if (container instanceof HTMLElement) {
+        container.scrollTop = 0;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const target = document.querySelector('.page[data-page-number=\"1\"] .freeTextEditor, .page[data-page-number=\"1\"] .freeTextAnnotation');
+      if (target instanceof HTMLElement) {
+        const rect = target.getBoundingClientRect();
+        if (rect.top < 0 || rect.bottom > window.innerHeight) {
+          continue;
+        }
+        return {
+          clientX: Math.round(rect.left + rect.width / 2),
+          clientY: Math.round(rect.top + rect.height / 2),
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const dom = [...document.querySelectorAll('.freeTextEditor, .freeTextAnnotation')].map((node) => {
+      const rect = node.getBoundingClientRect();
+      return {
+        id: node.id,
+        text: node.textContent?.trim(),
+        rect: { top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height },
+      };
+    });
+    throw new Error(\`Could not find free text editor in selection mode; stats=\${JSON.stringify(window.__pdfSpike.stats())}; dom=\${JSON.stringify(dom)}\`);
+  })()")"
+  local client_x
+  local client_y
+  client_x="$(JSON_INPUT="$point" node -e 'console.log(JSON.parse(process.env.JSON_INPUT).clientX)')"
+  client_y="$(JSON_INPUT="$point" node -e 'console.log(JSON.parse(process.env.JSON_INPUT).clientY)')"
+  ab mouse move "$client_x" "$client_y" >/dev/null
+  ab mouse down left >/dev/null
+  ab mouse up left >/dev/null
+  ab wait 300 >/dev/null
+  run_eval "(() => {
+    const stats = window.__pdfSpike.stats();
+    if (stats.activeTool !== 'text' || stats.selectedAnnotationKind !== 'freetext') {
+      throw new Error(\`Expected selected free text after real click, got tool=\${stats.activeTool} kind=\${stats.selectedAnnotationKind}\`);
+    }
+    return stats;
+  })()" >/dev/null
+}
+
+hover_first_free_text_and_assert_no_popup() {
+  local point
+  point="$(run_eval "(async () => {
+    const container = document.querySelector('.pdf-container');
+    if (container instanceof HTMLElement) {
+      container.scrollTop = 0;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const target = document.querySelector('.page[data-page-number=\"1\"] .freeTextEditor, .page[data-page-number=\"1\"] .freeTextAnnotation');
+    if (!(target instanceof HTMLElement)) {
+      throw new Error('Could not find free text target for popup test');
+    }
+    const rect = target.getBoundingClientRect();
+    return {
+      clientX: Math.round(rect.left + rect.width / 2),
+      clientY: Math.round(rect.top + rect.height / 2),
+    };
+  })()")"
+  local client_x
+  local client_y
+  client_x="$(JSON_INPUT="$point" node -e 'console.log(JSON.parse(process.env.JSON_INPUT).clientX)')"
+  client_y="$(JSON_INPUT="$point" node -e 'console.log(JSON.parse(process.env.JSON_INPUT).clientY)')"
+  ab mouse move "$client_x" "$client_y" >/dev/null
+  ab wait 500 >/dev/null
+  run_eval "(() => {
+    const visiblePopups = [...document.querySelectorAll('.popupAnnotation, .popup')].filter((node) => {
+      const style = getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
+    });
+    if (visiblePopups.length > 0) {
+      throw new Error(\`Expected no visible FreeText popup, got \${visiblePopups.length}\`);
+    }
+    return { visiblePopups: visiblePopups.length };
+  })()" >/dev/null
+}
+
+click_first_ink_in_selection_mode() {
+  local point
+  point="$(run_eval "(async () => {
+    const statsBefore = window.__pdfSpike.stats();
+    if (statsBefore.activeTool !== 'none') {
+      throw new Error(\`Expected selection mode before clicking ink, got \${statsBefore.activeTool}\`);
+    }
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      const container = document.querySelector('.pdf-container');
+      if (container instanceof HTMLElement) {
+        container.scrollTop = 0;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const target = document.querySelector('.page[data-page-number=\"1\"] .inkEditor, .page[data-page-number=\"1\"] .inkAnnotation');
+      if (target instanceof HTMLElement) {
+        const rect = target.getBoundingClientRect();
+        if (rect.top < 0 || rect.bottom > window.innerHeight || rect.width <= 0 || rect.height <= 0) {
+          continue;
+        }
+        return {
+          clientX: Math.round(rect.left + rect.width / 2),
+          clientY: Math.round(rect.top + rect.height / 2),
+        };
+      }
+    }
+    const dom = [...document.querySelectorAll('.inkEditor, .inkAnnotation')].map((node) => {
+      const rect = node.getBoundingClientRect();
+      return {
+        id: node.id,
+        cls: String(node.className),
+        rect: { top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height },
+      };
+    });
+    throw new Error(\`Could not find ink in selection mode; stats=\${JSON.stringify(window.__pdfSpike.stats())}; dom=\${JSON.stringify(dom)}\`);
+  })()")"
+  local client_x
+  local client_y
+  client_x="$(JSON_INPUT="$point" node -e 'console.log(JSON.parse(process.env.JSON_INPUT).clientX)')"
+  client_y="$(JSON_INPUT="$point" node -e 'console.log(JSON.parse(process.env.JSON_INPUT).clientY)')"
+  ab mouse move "$client_x" "$client_y" >/dev/null
+  ab mouse down left >/dev/null
+  ab mouse up left >/dev/null
+  ab wait 400 >/dev/null
+  run_eval "(() => {
+    const stats = window.__pdfSpike.stats();
+    if (stats.activeTool !== 'ink' || stats.selectedAnnotationKind !== 'ink') {
+      throw new Error(\`Expected selected ink after real click, got tool=\${stats.activeTool} kind=\${stats.selectedAnnotationKind}\`);
+    }
+    return stats;
+  })()" >/dev/null
 }
 
 pointerdown_button_label() {
@@ -468,9 +610,16 @@ run_eval '(async () => {
   return { count };
 })()' >/dev/null
 
-echo "== Free text create / persist =="
+echo "== Free text edit lifecycle =="
 ab find role button click --name "Load Sample" >/dev/null
 ab wait --text "How Modern Browsers Work" >/dev/null
+run_eval '(() => {
+  const container = document.querySelector(".pdf-container");
+  if (container instanceof HTMLElement) {
+    container.scrollTop = 0;
+  }
+  return window.__pdfSpike.stats();
+})()' >/dev/null
 run_eval '(async () => {
   const pages = await window.__pdfSpike.annotationSummary();
   const page1 = pages.find((page) => page.page === 1);
@@ -480,10 +629,29 @@ run_eval '(async () => {
 })()' >/dev/null
 click_button_label "Free text"
 run_eval '(async () => {
+  window.__pdfSpike.recolorSelectedFreeText("green");
   await window.__pdfSpike.createPageFreeText("Regression free text", 1);
   const stats = window.__pdfSpike.stats();
   if (stats.freeTextEditors < 1) {
     throw new Error(`Expected at least one free-text editor, got ${stats.freeTextEditors}`);
+  }
+  return stats;
+})()' >/dev/null
+run_eval '(async () => {
+  window.__pdfSpike.setTool("none");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  return window.__pdfSpike.stats();
+})()' >/dev/null
+click_first_free_text_in_selection_mode
+run_eval '(async () => {
+  const edited = await window.__pdfSpike.editSelectedFreeText("Regression edited free text");
+  if (!edited) {
+    throw new Error("Free-text edit helper returned false");
+  }
+  window.__pdfSpike.recolorSelectedFreeText("blue");
+  const stats = window.__pdfSpike.stats();
+  if (stats.selectedAnnotationKind !== "freetext") {
+    throw new Error(`Expected selected free text after edit/recolor, got ${stats.selectedAnnotationKind}`);
   }
   return stats;
 })()' >/dev/null
@@ -498,12 +666,43 @@ run_eval '(async () => {
   if (count !== window.__regression.freeTextBaseline + 1) {
     throw new Error(`Expected page-1 free-text count ${window.__regression.freeTextBaseline + 1}, got ${count}`);
   }
+  const text = page1.annotations
+    .filter((annotation) => annotation.subtype === "FreeText")
+    .flatMap((annotation) => annotation.textContent ?? [])
+    .join("\\n");
+  if (!text.includes("Regression edited free text")) {
+    throw new Error(`Expected edited free-text content after reopen, got ${text}`);
+  }
+  return { count, text };
+})()' >/dev/null
+hover_first_free_text_and_assert_no_popup
+click_first_free_text_in_selection_mode
+run_eval '(async () => {
+  if (!window.__pdfSpike.deleteSelected()) {
+    throw new Error("Delete selected free text returned false");
+  }
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await window.__pdfSpike.saveToPath("/tmp/pdfspike-freetext.pdf");
+  await window.__pdfSpike.loadPath("/tmp/pdfspike-freetext.pdf");
+  const pages = await window.__pdfSpike.annotationSummary();
+  const page1 = pages.find((page) => page.page === 1);
+  const count = page1.annotations.filter((annotation) => annotation.subtype === "FreeText").length;
+  if (count !== window.__regression.freeTextBaseline) {
+    throw new Error(`Expected page-1 free-text count ${window.__regression.freeTextBaseline} after delete, got ${count}`);
+  }
   return { count };
 })()' >/dev/null
 
 echo "== Ink create / persist =="
 ab find role button click --name "Load Sample" >/dev/null
 ab wait --text "How Modern Browsers Work" >/dev/null
+run_eval '(() => {
+  const container = document.querySelector(".pdf-container");
+  if (container instanceof HTMLElement) {
+    container.scrollTop = 0;
+  }
+  return window.__pdfSpike.stats();
+})()' >/dev/null
 run_eval '(async () => {
   const pages = await window.__pdfSpike.annotationSummary();
   const page1 = pages.find((page) => page.page === 1);
@@ -512,6 +711,10 @@ run_eval '(async () => {
   return { inkCount };
 })()' >/dev/null
 click_button_label "Ink"
+run_eval '(() => {
+  window.__pdfSpike.recolorSelectedInk("red");
+  return window.__pdfSpike.stats();
+})()' >/dev/null
 PAGE_BOX="$(run_eval '(() => {
   const rect = document.querySelector(".page[data-page-number=\"1\"]")?.getBoundingClientRect();
   return rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
@@ -546,6 +749,50 @@ run_eval '(async () => {
   const count = page1.annotations.filter((annotation) => annotation.subtype === "Ink").length;
   if (count !== window.__regression.inkBaseline + 1) {
     throw new Error(`Expected page-1 ink count ${window.__regression.inkBaseline + 1}, got ${count}`);
+  }
+  return { count };
+})()' >/dev/null
+click_first_ink_in_selection_mode
+run_eval '(async () => {
+  window.__pdfSpike.recolorSelectedInk("blue");
+  const stats = window.__pdfSpike.stats();
+  if (stats.selectedAnnotationKind !== "ink") {
+    throw new Error(`Expected selected ink after recolor, got ${stats.selectedAnnotationKind}`);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  window.__pdfSpike.setTool("none");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await window.__pdfSpike.saveToPath("/tmp/pdfspike-ink.pdf");
+  await window.__pdfSpike.loadPath("/tmp/pdfspike-ink.pdf");
+  const pages = await window.__pdfSpike.annotationSummary();
+  const page1 = pages.find((page) => page.page === 1);
+  const inks = page1.annotations.filter((annotation) => annotation.subtype === "Ink");
+  const count = inks.length;
+  if (count !== window.__regression.inkBaseline + 1) {
+    throw new Error(`Expected page-1 ink count ${window.__regression.inkBaseline + 1} after recolor, got ${count}`);
+  }
+  const hasBlue = inks.some((annotation) => {
+    const color = annotation.color;
+    return color && color[0] === 47 && color[1] === 110 && color[2] === 203;
+  });
+  if (!hasBlue) {
+    throw new Error(`Expected blue ink after reopen, got ${JSON.stringify(inks.map((annotation) => annotation.color))}`);
+  }
+  return { count };
+})()' >/dev/null
+click_first_ink_in_selection_mode
+run_eval '(async () => {
+  if (!window.__pdfSpike.deleteSelected()) {
+    throw new Error("Delete selected ink returned false");
+  }
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await window.__pdfSpike.saveToPath("/tmp/pdfspike-ink.pdf");
+  await window.__pdfSpike.loadPath("/tmp/pdfspike-ink.pdf");
+  const pages = await window.__pdfSpike.annotationSummary();
+  const page1 = pages.find((page) => page.page === 1);
+  const count = page1.annotations.filter((annotation) => annotation.subtype === "Ink").length;
+  if (count !== window.__regression.inkBaseline) {
+    throw new Error(`Expected page-1 ink count ${window.__regression.inkBaseline} after delete, got ${count}`);
   }
   return { count };
 })()' >/dev/null

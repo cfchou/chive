@@ -14,11 +14,16 @@
   type PdfDocument = Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>;
   type EditorTool = "none" | "highlight" | "text" | "ink";
   type HighlightColorName = "yellow" | "green" | "blue" | "pink";
+  type FreeTextColorName = "black" | "green" | "blue" | "pink";
+  type InkColorName = "black" | "red" | "blue" | "pink";
+  type SelectedAnnotationKind = "highlight" | "freetext" | "ink" | null;
   type AnnotationEditor = {
     id: string;
     color?: string | null;
     deleted?: boolean;
     editorType: number | string;
+    commit?: () => void;
+    enterInEditMode?: () => void;
   };
   type AnnotationEditorLayerRef = {
     createAndAddNewEditor: (
@@ -48,6 +53,9 @@
     selectFirstHighlight: () => Promise<boolean>;
     selectFirstText: () => string;
     recolorSelectedHighlight: (color: HighlightColorName) => void;
+    recolorSelectedFreeText: (color: FreeTextColorName) => void;
+    recolorSelectedInk: (color: InkColorName) => void;
+    editSelectedFreeText: (text: string) => Promise<boolean>;
     deleteSelected: () => boolean;
     highlightSelection: () => void;
     stats: () => Record<string, unknown>;
@@ -65,6 +73,10 @@
   let status = $state("Open a PDF, add highlight/text/ink annotations, then save.");
   let activeTool = $state<EditorTool>("none");
   let defaultHighlightColor = $state<HighlightColorName>("yellow");
+  let defaultFreeTextColor = $state<FreeTextColorName>("black");
+  let defaultInkColor = $state<InkColorName>("red");
+  let selectedAnnotationKind = $state<SelectedAnnotationKind>(null);
+  let selectedAnnotationColor = $state<string | null>(null);
   let hasSelectedHighlight = $state(false);
   let selectedHighlightColor = $state<HighlightColorName | null>(null);
   let scaleLabel = $state("Fit Width");
@@ -79,6 +91,18 @@
     green: "#7cf2aa",
     blue: "#8ecbff",
     pink: "#ffb6de",
+  };
+  const freeTextColors: Record<FreeTextColorName, string> = {
+    black: "#1e2329",
+    green: "#4f7a29",
+    blue: "#2f6ecb",
+    pink: "#b82f76",
+  };
+  const inkColors: Record<InkColorName, string> = {
+    black: "#1e2329",
+    red: "#e32400",
+    blue: "#2f6ecb",
+    pink: "#b82f76",
   };
 
   const editorModes = {
@@ -124,6 +148,9 @@
       selectFirstHighlight: () => selectFirstHighlight(),
       selectFirstText,
       recolorSelectedHighlight: applyHighlightColor,
+      recolorSelectedFreeText: applyFreeTextColor,
+      recolorSelectedInk: applyInkColor,
+      editSelectedFreeText,
       deleteSelected: deleteSelectedAnnotation,
       highlightSelection: () => highlightSelection(),
       stats: getDebugStats,
@@ -219,8 +246,8 @@
       scaleLabel = "Fit Width";
       status = `Rendered ${label}`;
     });
-    eventBus.on("editingstateschanged", syncSelectedHighlightState);
-    eventBus.on("annotationeditorparamschanged", syncSelectedHighlightState);
+    eventBus.on("editingstateschanged", syncSelectedEditorState);
+    eventBus.on("annotationeditorparamschanged", syncSelectedEditorState);
   }
 
   function setTool(tool: EditorTool) {
@@ -232,6 +259,18 @@
       annotationEditorUIManager.updateParams(
         pdfjsLib.AnnotationEditorParamsType.HIGHLIGHT_COLOR,
         highlightColors[defaultHighlightColor],
+      );
+    }
+    if (tool === "text" && annotationEditorUIManager && previousTool === "text") {
+      annotationEditorUIManager.updateParams(
+        pdfjsLib.AnnotationEditorParamsType.FREETEXT_COLOR,
+        freeTextColors[defaultFreeTextColor],
+      );
+    }
+    if (tool === "ink" && annotationEditorUIManager) {
+      annotationEditorUIManager.updateParams(
+        pdfjsLib.AnnotationEditorParamsType.INK_COLOR_AND_OPACITY,
+        { color: inkColors[defaultInkColor], opacity: 1 },
       );
     }
     status =
@@ -283,7 +322,7 @@
         );
         editorElement.click();
         await new Promise((resolve) => setTimeout(resolve, 50));
-        syncSelectedHighlightState();
+        syncSelectedEditorState();
         if (annotationEditorUIManager.firstSelectedEditor) {
           status = "Selected highlight. Change color or delete it, then save.";
           return true;
@@ -296,12 +335,24 @@
   }
 
   function findHighlightEditorById(editorId: string) {
+    return findEditorById(editorId, isHighlightEditor);
+  }
+
+  function findFreeTextEditorById(editorId: string) {
+    return findEditorById(editorId, isFreeTextEditor);
+  }
+
+  function findInkEditorById(editorId: string) {
+    return findEditorById(editorId, isInkEditor);
+  }
+
+  function findEditorById(editorId: string, predicate: (editor: AnnotationEditor) => boolean) {
     if (!annotationEditorUIManager || !pdfDocument) {
       return null;
     }
     for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
       for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
-        if (isHighlightEditor(editor) && !editor.deleted && editor.id === editorId) {
+        if (predicate(editor) && !editor.deleted && editor.id === editorId) {
           return editor;
         }
       }
@@ -328,13 +379,177 @@
       return false;
     }
     annotationEditorUIManager.setSelected(editor);
-    syncSelectedHighlightState();
+    syncSelectedEditorState();
     status = "Selected highlight. Change color or delete it, then save.";
     return true;
   }
 
-  function findDisabledHighlightEditorIdAtPoint(clientX: number, clientY: number) {
-    const matchingEditors = [...document.querySelectorAll<HTMLElement>(".highlightEditor.disabled")]
+  async function activateExistingFreeTextEditor(editorId: string) {
+    if (!annotationEditorUIManager || !pdfViewer) {
+      status = "Free text unavailable: PDF.js annotation manager not ready yet.";
+      return false;
+    }
+    if (activeTool !== "text") {
+      setTool("text");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    let editor = findFreeTextEditorById(editorId);
+    for (let attempt = 0; !editor && attempt < 12; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      editor = findFreeTextEditorById(editorId);
+    }
+    if (!editor) {
+      status = "Could not activate clicked free text for editing.";
+      return false;
+    }
+    annotationEditorUIManager.setSelected(editor);
+    syncSelectedEditorState();
+    status = "Selected free text. Press Enter to edit text, change color, or delete it.";
+    return true;
+  }
+
+  async function activateFreeTextEditorAtPoint(clientX: number, clientY: number) {
+    if (!annotationEditorUIManager || !pdfViewer) {
+      status = "Free text unavailable: PDF.js annotation manager not ready yet.";
+      return false;
+    }
+    if (activeTool !== "text") {
+      setTool("text");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const editorElement = document.elementFromPoint(clientX, clientY)?.closest(".freeTextEditor");
+      if (editorElement instanceof HTMLElement) {
+        editorElement.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            button: 0,
+            buttons: 1,
+            cancelable: true,
+            clientX,
+            clientY,
+            composed: true,
+            isPrimary: true,
+            pointerId: 1,
+            pointerType: "mouse",
+          }),
+        );
+        editorElement.dispatchEvent(
+          new PointerEvent("pointerup", {
+            bubbles: true,
+            button: 0,
+            buttons: 0,
+            cancelable: true,
+            clientX,
+            clientY,
+            composed: true,
+            isPrimary: true,
+            pointerId: 1,
+            pointerType: "mouse",
+          }),
+        );
+        editorElement.click();
+        const editor = findFreeTextEditorById(editorElement.id);
+        if (editor) {
+          annotationEditorUIManager.setSelected(editor);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        syncSelectedEditorState();
+        if (isFreeTextEditor(annotationEditorUIManager.firstSelectedEditor)) {
+          status = "Selected free text. Press Enter to edit text, change color, or delete it.";
+          return true;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 100));
+    }
+    status = "Could not activate clicked free text for editing.";
+    return false;
+  }
+
+  async function activateExistingInkEditor(editorId: string) {
+    if (!annotationEditorUIManager || !pdfViewer) {
+      status = "Ink unavailable: PDF.js annotation manager not ready yet.";
+      return false;
+    }
+    if (activeTool !== "ink") {
+      setTool("ink");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    let editor = findInkEditorById(editorId);
+    for (let attempt = 0; !editor && attempt < 12; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      editor = findInkEditorById(editorId);
+    }
+    if (!editor) {
+      status = "Could not activate clicked ink for editing.";
+      return false;
+    }
+    annotationEditorUIManager.setSelected(editor);
+    syncSelectedEditorState();
+    status = "Selected ink. Change color or delete it, then save.";
+    return true;
+  }
+
+  async function activateInkEditorAtPoint(clientX: number, clientY: number) {
+    if (!annotationEditorUIManager || !pdfViewer) {
+      status = "Ink unavailable: PDF.js annotation manager not ready yet.";
+      return false;
+    }
+    if (activeTool !== "ink") {
+      setTool("ink");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const editorElement = document.elementFromPoint(clientX, clientY)?.closest(".inkEditor");
+      if (editorElement instanceof HTMLElement) {
+        editorElement.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            button: 0,
+            buttons: 1,
+            cancelable: true,
+            clientX,
+            clientY,
+            composed: true,
+            isPrimary: true,
+            pointerId: 1,
+            pointerType: "mouse",
+          }),
+        );
+        editorElement.dispatchEvent(
+          new PointerEvent("pointerup", {
+            bubbles: true,
+            button: 0,
+            buttons: 0,
+            cancelable: true,
+            clientX,
+            clientY,
+            composed: true,
+            isPrimary: true,
+            pointerId: 1,
+            pointerType: "mouse",
+          }),
+        );
+        editorElement.click();
+        const editor = findInkEditorById(editorElement.id);
+        if (editor) {
+          annotationEditorUIManager.setSelected(editor);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        syncSelectedEditorState();
+        if (isInkEditor(annotationEditorUIManager.firstSelectedEditor)) {
+          status = "Selected ink. Change color or delete it, then save.";
+          return true;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 100));
+    }
+    status = "Could not activate clicked ink for editing.";
+    return false;
+  }
+
+  function findEditorElementIdAtPoint(selector: string, clientX: number, clientY: number) {
+    const matchingEditors = [...document.querySelectorAll<HTMLElement>(selector)]
       .map((element) => ({
         element,
         rect: element.getBoundingClientRect(),
@@ -351,20 +566,61 @@
     return matchingEditors[0]?.element.id ?? null;
   }
 
+  function findDisabledHighlightEditorIdAtPoint(clientX: number, clientY: number) {
+    return findEditorElementIdAtPoint(".highlightEditor.disabled", clientX, clientY);
+  }
+
+  function findFreeTextEditorIdAtPoint(clientX: number, clientY: number) {
+    return findEditorElementIdAtPoint(".freeTextEditor", clientX, clientY);
+  }
+
+  function findInkEditorIdAtPoint(clientX: number, clientY: number) {
+    return findEditorElementIdAtPoint(".inkEditor", clientX, clientY);
+  }
+
   function handlePdfPointerDown(event: PointerEvent) {
     const target = event.target;
     if (!(target instanceof Element) || activeTool !== "none") {
       return;
     }
     const savedAnnotation = target.closest(".highlightAnnotation");
+    const savedFreeTextAnnotation = target.closest(".freeTextAnnotation");
+    const savedInkAnnotation = target.closest(".inkAnnotation");
     const disabledEditorId = findDisabledHighlightEditorIdAtPoint(event.clientX, event.clientY);
-    if (!disabledEditorId && !savedAnnotation) {
+    const freeTextEditorId =
+      target.closest<HTMLElement>(".freeTextEditor")?.id ?? findFreeTextEditorIdAtPoint(event.clientX, event.clientY);
+    const inkEditorId =
+      target.closest<HTMLElement>(".inkEditor")?.id ?? findInkEditorIdAtPoint(event.clientX, event.clientY);
+    if (
+      !disabledEditorId &&
+      !savedAnnotation &&
+      !savedFreeTextAnnotation &&
+      !savedInkAnnotation &&
+      !freeTextEditorId &&
+      !inkEditorId
+    ) {
       return;
     }
     event.preventDefault();
     event.stopPropagation();
     if (disabledEditorId) {
       void activateExistingHighlightEditor(disabledEditorId);
+      return;
+    }
+    if (freeTextEditorId) {
+      void activateExistingFreeTextEditor(freeTextEditorId);
+      return;
+    }
+    if (inkEditorId) {
+      void activateExistingInkEditor(inkEditorId);
+      return;
+    }
+    if (savedFreeTextAnnotation) {
+      void activateFreeTextEditorAtPoint(event.clientX, event.clientY);
+      return;
+    }
+    if (savedInkAnnotation) {
+      void activateInkEditorAtPoint(event.clientX, event.clientY);
       return;
     }
     void activateHighlightEditorAtPoint(event.clientX, event.clientY);
@@ -427,7 +683,7 @@
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
     uiManager.unselectAll();
-    syncSelectedHighlightState();
+    syncSelectedEditorState();
     uiManager.updateParams(
       pdfjsLib.AnnotationEditorParamsType.HIGHLIGHT_COLOR,
       highlightColors[defaultHighlightColor],
@@ -459,7 +715,7 @@
         if (resetModeToNone) {
           setTool("none");
           annotationEditorUIManager?.unselectAll();
-          syncSelectedHighlightState();
+          syncSelectedEditorState();
         }
         rememberedSelectionText = "";
         rememberedSelectionRanges = [];
@@ -491,27 +747,48 @@
     });
   }
 
-  function syncSelectedHighlightState() {
-    if (activeTool !== "highlight") {
+  function syncSelectedEditorState() {
+    if (activeTool === "none") {
+      selectedAnnotationKind = null;
+      selectedAnnotationColor = null;
       hasSelectedHighlight = false;
       selectedHighlightColor = null;
       return;
     }
     const editor = annotationEditorUIManager?.firstSelectedEditor;
-    if (!isHighlightEditor(editor)) {
+    if (!editor) {
+      selectedAnnotationKind = null;
+      selectedAnnotationColor = null;
       hasSelectedHighlight = false;
       selectedHighlightColor = null;
       return;
     }
-    hasSelectedHighlight = true;
-    selectedHighlightColor = colorNameForValue(editor?.color ?? null);
+    selectedAnnotationKind = annotationKindForEditor(editor);
+    selectedAnnotationColor = editor.color ?? null;
+    hasSelectedHighlight = isHighlightEditor(editor);
+    selectedHighlightColor = hasSelectedHighlight ? highlightColorNameForValue(editor?.color ?? null) : null;
   }
 
-  function isHighlightEditor(editor: AnnotationEditor | null | undefined) {
+  function isHighlightEditor(editor: AnnotationEditor | null | undefined): editor is AnnotationEditor {
     return editor?.editorType === editorModes.highlight || editor?.editorType === "highlight";
   }
 
-  function colorNameForValue(color: string | null) {
+  function isFreeTextEditor(editor: AnnotationEditor | null | undefined): editor is AnnotationEditor {
+    return editor?.editorType === editorModes.text || editor?.editorType === "freetext";
+  }
+
+  function isInkEditor(editor: AnnotationEditor | null | undefined): editor is AnnotationEditor {
+    return editor?.editorType === editorModes.ink || editor?.editorType === "ink";
+  }
+
+  function annotationKindForEditor(editor: AnnotationEditor): SelectedAnnotationKind {
+    if (isHighlightEditor(editor)) return "highlight";
+    if (isFreeTextEditor(editor)) return "freetext";
+    if (isInkEditor(editor)) return "ink";
+    return null;
+  }
+
+  function highlightColorNameForValue(color: string | null) {
     if (!color) return null;
     const normalized = color.toLowerCase();
     for (const [name, value] of Object.entries(highlightColors) as [HighlightColorName, string][]) {
@@ -553,7 +830,7 @@
       return false;
     }
     annotationEditorUIManager.setSelected(editor);
-    syncSelectedHighlightState();
+    syncSelectedEditorState();
     status = "Selected highlight. Change color or delete it, then save.";
     return true;
   }
@@ -565,8 +842,7 @@
     }
     defaultHighlightColor = colorName;
     if (activeTool !== "highlight") {
-      hasSelectedHighlight = false;
-      selectedHighlightColor = null;
+      syncSelectedEditorState();
       status = `Default highlight color set to ${colorName}.`;
       return;
     }
@@ -583,18 +859,91 @@
     status = `Next highlight will use ${colorName}.`;
   }
 
+  function freeTextColorNameForValue(color: string | null) {
+    if (!color) return null;
+    const normalized = color.toLowerCase();
+    for (const [name, value] of Object.entries(freeTextColors) as [FreeTextColorName, string][]) {
+      if (value === normalized) {
+        return name;
+      }
+    }
+    return null;
+  }
+
+  function applyFreeTextColor(colorName: FreeTextColorName) {
+    if (!annotationEditorUIManager) {
+      status = "Free text color unavailable: PDF.js annotation manager not ready yet.";
+      return;
+    }
+    defaultFreeTextColor = colorName;
+    if (activeTool !== "text") {
+      syncSelectedEditorState();
+      status = `Default free-text color set to ${colorName}.`;
+      return;
+    }
+    annotationEditorUIManager.updateParams(
+      pdfjsLib.AnnotationEditorParamsType.FREETEXT_COLOR,
+      freeTextColors[colorName],
+    );
+    if (selectedAnnotationKind === "freetext") {
+      selectedAnnotationColor = freeTextColors[colorName];
+      isDirty = true;
+      status = `Changed selected free text to ${colorName}. Save to persist it into the PDF.`;
+      return;
+    }
+    status = `Next free text will use ${colorName}.`;
+  }
+
+  function inkColorNameForValue(color: string | null) {
+    if (!color) return null;
+    const normalized = color.toLowerCase();
+    for (const [name, value] of Object.entries(inkColors) as [InkColorName, string][]) {
+      if (value === normalized) {
+        return name;
+      }
+    }
+    return null;
+  }
+
+  function applyInkColor(colorName: InkColorName) {
+    if (!annotationEditorUIManager) {
+      status = "Ink color unavailable: PDF.js annotation manager not ready yet.";
+      return;
+    }
+    defaultInkColor = colorName;
+    if (activeTool !== "ink") {
+      syncSelectedEditorState();
+      status = `Default ink color set to ${colorName}.`;
+      return;
+    }
+    annotationEditorUIManager.updateParams(
+      pdfjsLib.AnnotationEditorParamsType.INK_COLOR_AND_OPACITY,
+      { color: inkColors[colorName], opacity: 1 },
+    );
+    if (selectedAnnotationKind === "ink") {
+      selectedAnnotationColor = inkColors[colorName];
+      isDirty = true;
+      status = `Changed selected ink to ${colorName}. Save to persist it into the PDF.`;
+      return;
+    }
+    status = `Next ink will use ${colorName}.`;
+  }
+
   function deleteSelectedAnnotation() {
-    if (activeTool !== "highlight" || !annotationEditorUIManager?.firstSelectedEditor) {
+    if (!annotationEditorUIManager?.firstSelectedEditor) {
       status = "Select an annotation first, then delete it.";
       return false;
     }
     const wasHighlight = isHighlightEditor(annotationEditorUIManager.firstSelectedEditor);
+    const wasFreeText = isFreeTextEditor(annotationEditorUIManager.firstSelectedEditor);
     annotationEditorUIManager.delete();
-    syncSelectedHighlightState();
+    syncSelectedEditorState();
     isDirty = true;
     status = wasHighlight
       ? "Deleted selected highlight. Save to persist it into the PDF."
-      : "Deleted selected annotation. Save to persist it into the PDF.";
+      : wasFreeText
+        ? "Deleted selected free text. Save to persist it into the PDF."
+        : "Deleted selected annotation. Save to persist it into the PDF.";
     return true;
   }
 
@@ -632,6 +981,10 @@
       status,
       activeTool,
       defaultHighlightColor,
+      defaultFreeTextColor,
+      defaultInkColor,
+      selectedAnnotationKind,
+      selectedAnnotationColor,
       hasSelectedHighlight,
       selectedHighlightColor,
       selectedEditorType: selectedEditor?.editorType ?? null,
@@ -651,8 +1004,7 @@
     if (!annotationEditorUIManager || !pdfDocument) {
       return [];
     }
-    const selectedEditorId =
-      document.querySelector<HTMLElement>(".highlightEditor.selectedEditor")?.id ?? null;
+    const selectedEditorId = document.querySelector<HTMLElement>(".selectedEditor")?.id ?? null;
     const entries: Record<string, unknown>[] = [];
     for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
       for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
@@ -781,10 +1133,15 @@
         page: pageIndex + 1,
         annotations: annotations.map((annotation: Record<string, unknown>) => ({
           annotationType: annotation.annotationType,
+          color: "color" in annotation ? annotation.color : null,
+          contentsObj: "contentsObj" in annotation ? annotation.contentsObj : null,
+          defaultAppearanceData:
+            "defaultAppearanceData" in annotation ? annotation.defaultAppearanceData : null,
           id: annotation.id,
           popupRef: "popupRef" in annotation ? annotation.popupRef : null,
           rect: "rect" in annotation ? annotation.rect : null,
           subtype: "subtype" in annotation ? annotation.subtype : null,
+          textContent: "textContent" in annotation ? annotation.textContent : null,
         })),
       });
     }
@@ -797,6 +1154,15 @@
     }
     setTool("text");
     await new Promise((resolve) => setTimeout(resolve, 100));
+    annotationEditorUIManager.updateParams(
+      pdfjsLib.AnnotationEditorParamsType.FREETEXT_COLOR,
+      freeTextColors[defaultFreeTextColor],
+    );
+    const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    if (pageElement) {
+      containerEl.scrollTop = Math.max(pageElement.offsetTop - 20, 0);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
     const layerElement = document.querySelector<HTMLElement>(
       `.page[data-page-number="${pageNumber}"] .annotationEditorLayer`,
     );
@@ -808,7 +1174,7 @@
     if (!layer) {
       throw new Error(`No editor layer instance for page ${pageNumber}`);
     }
-    layer.createAndAddNewEditor({ offsetX: 160, offsetY: 220 }, false);
+    const createdEditor = layer.createAndAddNewEditor({ offsetX: 160, offsetY: 220 }, false);
     await new Promise((resolve) => setTimeout(resolve, 100));
     const editor = document.querySelector<HTMLElement>(
       `.page[data-page-number="${pageNumber}"] .freeTextEditor [contenteditable="true"], .page[data-page-number="${pageNumber}"] .freeTextEditor .internal`,
@@ -827,7 +1193,46 @@
         inputType: "insertText",
       }),
     );
+    createdEditor?.commit?.();
+    syncSelectedEditorState();
     isDirty = true;
+    return true;
+  }
+
+  async function editSelectedFreeText(text: string) {
+    const editor = annotationEditorUIManager?.firstSelectedEditor;
+    if (!isFreeTextEditor(editor)) {
+      status = "Select free text first, then edit it.";
+      return false;
+    }
+    if (activeTool !== "text") {
+      setTool("text");
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      annotationEditorUIManager?.setSelected(editor);
+    }
+    editor.enterInEditMode?.();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const editorElement = document.getElementById(editor.id);
+    const textElement = editorElement?.querySelector<HTMLElement>(".internal, [contenteditable='true']");
+    if (!textElement) {
+      status = "Could not find selected free-text editor content.";
+      return false;
+    }
+    textElement.focus();
+    textElement.replaceChildren(document.createTextNode(text));
+    textElement.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        data: text,
+        inputType: "insertText",
+      }),
+    );
+    editor.commit?.();
+    syncSelectedEditorState();
+    isDirty = true;
+    status = "Edited selected free text. Save to persist it into the PDF.";
     return true;
   }
 
@@ -910,7 +1315,35 @@
           ></button>
         {/each}
       </div>
-      <button onclick={deleteSelectedAnnotation} disabled={activeTool !== "highlight" || !hasSelectedHighlight}>
+      <span class="label">Free-text color</span>
+      <div class="swatches">
+        {#each (Object.keys(freeTextColors) as FreeTextColorName[]) as colorName}
+          <button
+            class:swatch-active={activeTool === "text" && (freeTextColorNameForValue(selectedAnnotationColor) ?? defaultFreeTextColor) === colorName}
+            class="swatch"
+            onclick={() => applyFreeTextColor(colorName)}
+            disabled={!pdfDocument}
+            aria-label={`Set free-text color to ${colorName}`}
+            title={`Set free-text color to ${colorName}`}
+            style={`--swatch-color: ${freeTextColors[colorName]}`}
+          ></button>
+        {/each}
+      </div>
+      <span class="label">Ink color</span>
+      <div class="swatches">
+        {#each (Object.keys(inkColors) as InkColorName[]) as colorName}
+          <button
+            class:swatch-active={activeTool === "ink" && (inkColorNameForValue(selectedAnnotationColor) ?? defaultInkColor) === colorName}
+            class="swatch"
+            onclick={() => applyInkColor(colorName)}
+            disabled={!pdfDocument}
+            aria-label={`Set ink color to ${colorName}`}
+            title={`Set ink color to ${colorName}`}
+            style={`--swatch-color: ${inkColors[colorName]}`}
+          ></button>
+        {/each}
+      </div>
+      <button onclick={deleteSelectedAnnotation} disabled={!selectedAnnotationKind}>
         Delete Selected
       </button>
     </div>
@@ -962,6 +1395,11 @@
 
   :global(body > div) {
     height: 100%;
+  }
+
+  :global(.popupAnnotation),
+  :global(.popup) {
+    display: none !important;
   }
 
   .app {
