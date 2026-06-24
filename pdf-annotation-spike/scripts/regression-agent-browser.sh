@@ -323,20 +323,26 @@ run_eval '(() => {
 
 echo "== Zoom controls =="
 run_eval '(async () => {
-  document.querySelector(".toolbar button:nth-child(3)")?.click();
+  const zoomGroup = [...document.querySelectorAll(".group")]
+    .find((node) => node.querySelector(".label")?.textContent?.trim() === "Zoom");
+  const buttons = [...(zoomGroup?.querySelectorAll(".toolbar button") ?? [])];
+  buttons[2]?.click();
   await new Promise((resolve) => setTimeout(resolve, 250));
-  const label = document.querySelector(".toolbar button:nth-child(2)")?.textContent?.trim();
+  const label = buttons[1]?.textContent?.trim();
   if (!label || label === "Fit Width") {
     throw new Error(`Zoom in failed; label=${label}`);
   }
   return { label };
 })()' >/dev/null
 run_eval '(async () => {
-  document.querySelector(".toolbar button:nth-child(1)")?.click();
+  const zoomGroup = [...document.querySelectorAll(".group")]
+    .find((node) => node.querySelector(".label")?.textContent?.trim() === "Zoom");
+  const buttons = [...(zoomGroup?.querySelectorAll(".toolbar button") ?? [])];
+  buttons[0]?.click();
   await new Promise((resolve) => setTimeout(resolve, 250));
-  document.querySelector(".toolbar button:nth-child(2)")?.click();
+  buttons[1]?.click();
   await new Promise((resolve) => setTimeout(resolve, 250));
-  const label = document.querySelector(".toolbar button:nth-child(2)")?.textContent?.trim();
+  const label = buttons[1]?.textContent?.trim();
   if (label !== "Fit Width") {
     throw new Error(`Fit width failed; label=${label}`);
   }
@@ -354,6 +360,19 @@ for tool in "Highlight" "Free text" "Ink" "None"; do
     return { active };
   })()" >/dev/null
 done
+click_button_label "Ink"
+run_eval '(() => {
+  const layer = document.querySelector(".annotationEditorLayer.inkEditing");
+  if (!(layer instanceof HTMLElement)) {
+    throw new Error("Expected ink editing layer for cursor test");
+  }
+  const cursor = getComputedStyle(layer).cursor;
+  if (!cursor.includes(" 1 14,")) {
+    throw new Error(`Expected ink cursor hotspot 1 14, got ${cursor}`);
+  }
+  return { cursor };
+})()' >/dev/null
+click_button_label "None"
 
 echo "== Highlight create / recolor / delete =="
 run_eval '(async () => {
@@ -713,6 +732,7 @@ run_eval '(async () => {
 click_button_label "Ink"
 run_eval '(() => {
   window.__pdfSpike.recolorSelectedInk("red");
+  window.__pdfSpike.setInkThickness(3);
   return window.__pdfSpike.stats();
 })()' >/dev/null
 PAGE_BOX="$(run_eval '(() => {
@@ -750,11 +770,17 @@ run_eval '(async () => {
   if (count !== window.__regression.inkBaseline + 1) {
     throw new Error(`Expected page-1 ink count ${window.__regression.inkBaseline + 1}, got ${count}`);
   }
+  const inks = page1.annotations.filter((annotation) => annotation.subtype === "Ink");
+  const hasThickness3 = inks.some((annotation) => (annotation.borderStyle?.rawWidth ?? annotation.borderStyle?.width) === 3);
+  if (!hasThickness3) {
+    throw new Error(`Expected ink thickness 3 after reopen, got ${JSON.stringify(inks.map((annotation) => annotation.borderStyle))}`);
+  }
   return { count };
 })()' >/dev/null
 click_first_ink_in_selection_mode
 run_eval '(async () => {
   window.__pdfSpike.recolorSelectedInk("blue");
+  window.__pdfSpike.setInkThickness(8);
   const stats = window.__pdfSpike.stats();
   if (stats.selectedAnnotationKind !== "ink") {
     throw new Error(`Expected selected ink after recolor, got ${stats.selectedAnnotationKind}`);
@@ -778,6 +804,10 @@ run_eval '(async () => {
   if (!hasBlue) {
     throw new Error(`Expected blue ink after reopen, got ${JSON.stringify(inks.map((annotation) => annotation.color))}`);
   }
+  const hasThickness8 = inks.some((annotation) => (annotation.borderStyle?.rawWidth ?? annotation.borderStyle?.width) === 8);
+  if (!hasThickness8) {
+    throw new Error(`Expected ink thickness 8 after reopen, got ${JSON.stringify(inks.map((annotation) => annotation.borderStyle))}`);
+  }
   return { count };
 })()' >/dev/null
 click_first_ink_in_selection_mode
@@ -793,6 +823,56 @@ run_eval '(async () => {
   const count = page1.annotations.filter((annotation) => annotation.subtype === "Ink").length;
   if (count !== window.__regression.inkBaseline) {
     throw new Error(`Expected page-1 ink count ${window.__regression.inkBaseline} after delete, got ${count}`);
+  }
+  return { count };
+})()' >/dev/null
+click_button_label "Ink"
+run_eval '(() => {
+  window.__pdfSpike.setInkMarkerPreset();
+  return window.__pdfSpike.stats();
+})()' >/dev/null
+PAGE_BOX="$(run_eval '(() => {
+  const container = document.querySelector(".pdf-container");
+  if (container instanceof HTMLElement) {
+    container.scrollTop = 0;
+  }
+  const rect = document.querySelector(".page[data-page-number=\"1\"]")?.getBoundingClientRect();
+  return rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
+})()')"
+START_X="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.x + 260)));')"
+START_Y="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.y + 420)));')"
+MID_X="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.x + 420)));')"
+MID_Y="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.y + 430)));')"
+END_X="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.x + 620)));')"
+END_Y="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.y + 440)));')"
+ab mouse move "$START_X" "$START_Y" >/dev/null
+ab mouse down left >/dev/null
+ab mouse move "$MID_X" "$MID_Y" >/dev/null
+ab mouse move "$END_X" "$END_Y" >/dev/null
+ab mouse up left >/dev/null
+ab wait 300 >/dev/null
+run_eval '(async () => {
+  window.__pdfSpike.setTool("none");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await window.__pdfSpike.saveToPath("/tmp/pdfspike-ink-marker.pdf");
+  await window.__pdfSpike.loadPath("/tmp/pdfspike-ink-marker.pdf");
+  const pages = await window.__pdfSpike.annotationSummary();
+  const page1 = pages.find((page) => page.page === 1);
+  const inks = page1.annotations.filter((annotation) => annotation.subtype === "Ink");
+  const count = inks.length;
+  if (count !== window.__regression.inkBaseline + 1) {
+    throw new Error(`Expected page-1 marker ink count ${window.__regression.inkBaseline + 1}, got ${count}`);
+  }
+  const marker = inks.find((annotation) => {
+    const color = annotation.color;
+    const thickness = annotation.borderStyle?.rawWidth ?? annotation.borderStyle?.width;
+    return color && color[0] === 255 && color[1] === 243 && color[2] === 92 && thickness === 14;
+  });
+  if (!marker) {
+    throw new Error(`Expected yellow marker thickness 14 after reopen, got ${JSON.stringify(inks.map((annotation) => ({ color: annotation.color, borderStyle: annotation.borderStyle, opacity: annotation.opacity })))}`);
+  }
+  if (marker.opacity !== null && Math.abs(marker.opacity - 0.45) > 0.01) {
+    throw new Error(`Expected marker opacity 0.45 after reopen, got ${marker.opacity}`);
   }
   return { count };
 })()' >/dev/null

@@ -4,6 +4,7 @@
   import { onMount } from "svelte";
   import * as pdfjsLib from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
+  import inkCursorUrl from "pdfjs-dist/web/images/cursor-editorInk.svg?url";
   import {
     EventBus,
     PDFLinkService,
@@ -15,7 +16,7 @@
   type EditorTool = "none" | "highlight" | "text" | "ink";
   type HighlightColorName = "yellow" | "green" | "blue" | "pink";
   type FreeTextColorName = "black" | "green" | "blue" | "pink";
-  type InkColorName = "black" | "red" | "blue" | "pink";
+  type InkColorName = "black" | "red" | "yellow" | "blue" | "pink";
   type SelectedAnnotationKind = "highlight" | "freetext" | "ink" | null;
   type AnnotationEditor = {
     id: string;
@@ -55,6 +56,8 @@
     recolorSelectedHighlight: (color: HighlightColorName) => void;
     recolorSelectedFreeText: (color: FreeTextColorName) => void;
     recolorSelectedInk: (color: InkColorName) => void;
+    setInkThickness: (thickness: number) => void;
+    setInkMarkerPreset: () => void;
     editSelectedFreeText: (text: string) => Promise<boolean>;
     deleteSelected: () => boolean;
     highlightSelection: () => void;
@@ -75,6 +78,8 @@
   let defaultHighlightColor = $state<HighlightColorName>("yellow");
   let defaultFreeTextColor = $state<FreeTextColorName>("black");
   let defaultInkColor = $state<InkColorName>("red");
+  let defaultInkThickness = $state(3);
+  let defaultInkOpacity = $state(1);
   let selectedAnnotationKind = $state<SelectedAnnotationKind>(null);
   let selectedAnnotationColor = $state<string | null>(null);
   let hasSelectedHighlight = $state(false);
@@ -101,9 +106,11 @@
   const inkColors: Record<InkColorName, string> = {
     black: "#1e2329",
     red: "#e32400",
+    yellow: "#fff35c",
     blue: "#2f6ecb",
     pink: "#b82f76",
   };
+  const inkThicknesses = [1, 3, 8, 14] as const;
 
   const editorModes = {
     none: pdfjsLib.AnnotationEditorType.NONE,
@@ -114,6 +121,10 @@
 
   onMount(() => {
     const debugWindow = window as Window & { __pdfSpike?: SpikeDebugApi };
+    document.documentElement.style.setProperty(
+      "--pdf-spike-ink-cursor",
+      `url("${inkCursorUrl}") 1 14, pointer`,
+    );
     const rememberSelection = () => {
       const selection = document.getSelection();
       const selectionText = selection?.toString().trim() ?? "";
@@ -150,6 +161,8 @@
       recolorSelectedHighlight: applyHighlightColor,
       recolorSelectedFreeText: applyFreeTextColor,
       recolorSelectedInk: applyInkColor,
+      setInkThickness: applyInkThickness,
+      setInkMarkerPreset: applyInkMarkerPreset,
       editSelectedFreeText,
       deleteSelected: deleteSelectedAnnotation,
       highlightSelection: () => highlightSelection(),
@@ -270,7 +283,11 @@
     if (tool === "ink" && annotationEditorUIManager) {
       annotationEditorUIManager.updateParams(
         pdfjsLib.AnnotationEditorParamsType.INK_COLOR_AND_OPACITY,
-        { color: inkColors[defaultInkColor], opacity: 1 },
+        { color: inkColors[defaultInkColor], opacity: defaultInkOpacity },
+      );
+      annotationEditorUIManager.updateParams(
+        pdfjsLib.AnnotationEditorParamsType.INK_THICKNESS,
+        defaultInkThickness,
       );
     }
     status =
@@ -918,7 +935,7 @@
     }
     annotationEditorUIManager.updateParams(
       pdfjsLib.AnnotationEditorParamsType.INK_COLOR_AND_OPACITY,
-      { color: inkColors[colorName], opacity: 1 },
+      { color: inkColors[colorName], opacity: defaultInkOpacity },
     );
     if (selectedAnnotationKind === "ink") {
       selectedAnnotationColor = inkColors[colorName];
@@ -927,6 +944,59 @@
       return;
     }
     status = `Next ink will use ${colorName}.`;
+  }
+
+  function applyInkThickness(thickness: number) {
+    if (!annotationEditorUIManager) {
+      status = "Ink thickness unavailable: PDF.js annotation manager not ready yet.";
+      return;
+    }
+    defaultInkThickness = thickness;
+    if (activeTool !== "ink") {
+      syncSelectedEditorState();
+      status = `Default ink thickness set to ${thickness}.`;
+      return;
+    }
+    annotationEditorUIManager.updateParams(
+      pdfjsLib.AnnotationEditorParamsType.INK_THICKNESS,
+      thickness,
+    );
+    if (selectedAnnotationKind === "ink") {
+      isDirty = true;
+      status = `Changed selected ink thickness to ${thickness}. Save to persist it into the PDF.`;
+      return;
+    }
+    status = `Next ink thickness will be ${thickness}.`;
+  }
+
+  function applyInkMarkerPreset() {
+    if (!annotationEditorUIManager) {
+      status = "Ink marker unavailable: PDF.js annotation manager not ready yet.";
+      return;
+    }
+    defaultInkColor = "yellow";
+    defaultInkThickness = 14;
+    defaultInkOpacity = 0.45;
+    if (activeTool !== "ink") {
+      syncSelectedEditorState();
+      status = "Marker preset selected.";
+      return;
+    }
+    annotationEditorUIManager.updateParams(
+      pdfjsLib.AnnotationEditorParamsType.INK_COLOR_AND_OPACITY,
+      { color: inkColors.yellow, opacity: defaultInkOpacity },
+    );
+    annotationEditorUIManager.updateParams(
+      pdfjsLib.AnnotationEditorParamsType.INK_THICKNESS,
+      defaultInkThickness,
+    );
+    if (selectedAnnotationKind === "ink") {
+      selectedAnnotationColor = inkColors.yellow;
+      isDirty = true;
+      status = "Changed selected ink to marker. Save to persist it into the PDF.";
+      return;
+    }
+    status = "Marker preset selected.";
   }
 
   function deleteSelectedAnnotation() {
@@ -983,6 +1053,8 @@
       defaultHighlightColor,
       defaultFreeTextColor,
       defaultInkColor,
+      defaultInkThickness,
+      defaultInkOpacity,
       selectedAnnotationKind,
       selectedAnnotationColor,
       hasSelectedHighlight,
@@ -1133,11 +1205,13 @@
         page: pageIndex + 1,
         annotations: annotations.map((annotation: Record<string, unknown>) => ({
           annotationType: annotation.annotationType,
+          borderStyle: "borderStyle" in annotation ? annotation.borderStyle : null,
           color: "color" in annotation ? annotation.color : null,
           contentsObj: "contentsObj" in annotation ? annotation.contentsObj : null,
           defaultAppearanceData:
             "defaultAppearanceData" in annotation ? annotation.defaultAppearanceData : null,
           id: annotation.id,
+          opacity: "opacity" in annotation ? annotation.opacity : null,
           popupRef: "popupRef" in annotation ? annotation.popupRef : null,
           rect: "rect" in annotation ? annotation.rect : null,
           subtype: "subtype" in annotation ? annotation.subtype : null,
@@ -1343,6 +1417,29 @@
           ></button>
         {/each}
       </div>
+      <span class="label">Ink thickness</span>
+      <div class="toolbar">
+        {#each inkThicknesses as thickness}
+          <button
+            class:active={activeTool === "ink" && defaultInkThickness === thickness}
+            onclick={() => applyInkThickness(thickness)}
+            disabled={!pdfDocument}
+            aria-label={`Set ink thickness to ${thickness}`}
+            title={`Set ink thickness to ${thickness}`}
+          >
+            {thickness}
+          </button>
+        {/each}
+        <button
+          class:active={activeTool === "ink" && defaultInkColor === "yellow" && defaultInkThickness === 14 && defaultInkOpacity === 0.45}
+          onclick={applyInkMarkerPreset}
+          disabled={!pdfDocument}
+          aria-label="Use marker ink preset"
+          title="Use marker ink preset"
+        >
+          Marker
+        </button>
+      </div>
       <button onclick={deleteSelectedAnnotation} disabled={!selectedAnnotationKind}>
         Delete Selected
       </button>
@@ -1400,6 +1497,10 @@
   :global(.popupAnnotation),
   :global(.popup) {
     display: none !important;
+  }
+
+  :global(.annotationEditorLayer.inkEditing) {
+    cursor: var(--pdf-spike-ink-cursor) !important;
   }
 
   .app {
