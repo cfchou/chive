@@ -3,6 +3,41 @@ set -euo pipefail
 
 SESSION="${SESSION:-pdfspike-regression}"
 URL="${URL:-http://127.0.0.1:1420/}"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
+PDF_PATH=""
+PDF_PATHS=()
+PDF_HTTP_PID=""
+PDF_HTTP_PORT="${PDF_HTTP_PORT:-1421}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --pdf)
+      PDF_PATH="${2:-}"
+      if [[ -z "$PDF_PATH" ]]; then
+        echo "--pdf needs a path" >&2
+        exit 1
+      fi
+      PDF_PATHS+=("$PDF_PATH")
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if (( ${#PDF_PATHS[@]} > 1 )); then
+  base_port="$PDF_HTTP_PORT"
+  index=0
+  for path in "${PDF_PATHS[@]}"; do
+    echo "== Regression PDF: $path =="
+    SESSION="${SESSION}-${index}" PDF_HTTP_PORT="$((base_port + index))" "$0" --pdf "$path"
+    index="$((index + 1))"
+  done
+  exit 0
+fi
 
 ab() {
   agent-browser --session "$SESSION" "$@"
@@ -26,6 +61,154 @@ click_button_label() {
     await new Promise((resolve) => setTimeout(resolve, 150));
     return { label: button.textContent?.trim() };
   })()" >/dev/null
+}
+
+resolve_pdf_path() {
+  local input="$1"
+  if [[ "$input" = /* && -f "$input" ]]; then
+    printf '%s\n' "$input"
+    return
+  fi
+  if [[ -f "$input" ]]; then
+    (cd "$(pwd)" && printf '%s/%s\n' "$(pwd)" "$input")
+    return
+  fi
+  if [[ -f "$REPO_ROOT/$input" ]]; then
+    printf '%s/%s\n' "$REPO_ROOT" "$input"
+    return
+  fi
+  echo "PDF not found: $input" >&2
+  exit 1
+}
+
+urlencode_path() {
+  python3 - "$1" <<'PY'
+import sys
+from urllib.parse import quote
+print(quote(sys.argv[1]))
+PY
+}
+
+start_pdf_http_server() {
+  if [[ -z "$PDF_PATH" ]]; then
+    return
+  fi
+  if [[ -n "$PDF_HTTP_PID" ]]; then
+    return
+  fi
+  (cd "$REPO_ROOT" && python3 -c '
+import http.server
+import socketserver
+import sys
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        super().end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.end_headers()
+
+class ReusableTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+with ReusableTCPServer(("127.0.0.1", int(sys.argv[1])), Handler) as httpd:
+    httpd.serve_forever()
+' "$PDF_HTTP_PORT" >/tmp/pdfspike-pdf-http.log 2>&1) &
+  PDF_HTTP_PID="$!"
+  sleep 0.5
+}
+
+load_pdf_under_test() {
+  if [[ -z "$PDF_PATH" ]]; then
+    ab find role button click --name "Load Sample" >/dev/null
+    ab wait --text "How Modern Browsers Work" >/dev/null
+    return
+  fi
+
+  start_pdf_http_server
+  local absolute_path
+  absolute_path="$(resolve_pdf_path "$PDF_PATH")"
+  case "$absolute_path" in
+    "$REPO_ROOT"/*) ;;
+    *)
+      echo "PDF must be inside repo root for browser harness: $absolute_path" >&2
+      exit 1
+      ;;
+  esac
+  local relative_path="${absolute_path#"$REPO_ROOT"/}"
+  local encoded_path
+  encoded_path="$(urlencode_path "$relative_path")"
+  local pdf_url="http://127.0.0.1:${PDF_HTTP_PORT}/${encoded_path}"
+  local label
+  label="$(basename "$absolute_path")"
+  local payload
+  payload="$(PDF_URL="$pdf_url" PDF_LABEL="$label" node -e 'process.stdout.write(JSON.stringify({ url: process.env.PDF_URL, label: process.env.PDF_LABEL }))')"
+  run_eval "(async () => {
+    const input = $payload;
+    await window.__pdfSpike.loadUrl(input.url, input.label);
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const stats = window.__pdfSpike.stats();
+      if (stats.pages > 0 && document.querySelector('.page[data-page-number=\"1\"]')) {
+        return { ok: true, stats };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error('PDF under test did not render page 1');
+  })()" >/dev/null
+}
+
+detect_selectable_text() {
+  run_eval '(() => {
+    for (const layer of document.querySelectorAll(".textLayer")) {
+      const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        if ((node.textContent ?? "").trim().length >= 12) {
+          return true;
+        }
+      }
+    }
+    return false;
+  })()'
+}
+
+assert_visible_page_content() {
+  run_eval '(async () => {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const canvas = document.querySelector(".page[data-page-number=\"1\"] canvas");
+      if (canvas instanceof HTMLCanvasElement && canvas.width > 0 && canvas.height > 0) {
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) {
+          throw new Error("Could not read page canvas");
+        }
+        const width = canvas.width;
+        const height = canvas.height;
+        const data = context.getImageData(0, 0, width, height).data;
+        let dark = 0;
+        for (let index = 0; index < data.length; index += 16) {
+          const r = data[index];
+          const g = data[index + 1];
+          const b = data[index + 2];
+          const a = data[index + 3];
+          if (a > 0 && (r < 245 || g < 245 || b < 245)) {
+            dark += 1;
+          }
+        }
+        const sampled = data.length / 16;
+        const ratio = dark / sampled;
+        if (ratio <= 0.005) {
+          throw new Error(`Page canvas looks blank or broken; non-white ratio=${ratio}`);
+        }
+        return { width, height, ratio };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error("Page canvas not ready for visual content check");
+  })()' >/dev/null
 }
 
 click_highlight_swatch() {
@@ -283,6 +466,9 @@ pointerdown_button_label() {
 
 cleanup() {
   ab close >/dev/null 2>&1 || true
+  if [[ -n "$PDF_HTTP_PID" ]]; then
+    kill "$PDF_HTTP_PID" >/dev/null 2>&1 || true
+  fi
 }
 
 trap cleanup EXIT
@@ -305,8 +491,7 @@ EOF
 echo "== Open app =="
 ab open "$URL" >/dev/null
 ab wait --load networkidle >/dev/null
-ab find role button click --name "Load Sample" >/dev/null
-ab wait --text "How Modern Browsers Work" >/dev/null
+load_pdf_under_test
 ab errors --clear >/dev/null
 ab console --clear >/dev/null
 
@@ -316,10 +501,12 @@ run_eval '(() => {
   };
   const stats = window.__pdfSpike.stats();
   assert(stats.pages > 0, "Sample PDF did not load");
-  assert(document.querySelector(".viewer-toolbar span")?.textContent === "sample.pdf", "Expected sample.pdf in toolbar");
+  assert(Boolean(document.querySelector(".viewer-toolbar span")?.textContent?.trim()), "Expected loaded PDF label in toolbar");
   window.__regression = {};
   return { ok: true, pages: stats.pages };
 })()' >/dev/null
+assert_visible_page_content
+HAS_SELECTABLE_TEXT="$(detect_selectable_text)"
 
 echo "== Zoom controls =="
 run_eval '(async () => {
@@ -374,6 +561,7 @@ run_eval '(() => {
 })()' >/dev/null
 click_button_label "None"
 
+if [[ "$HAS_SELECTABLE_TEXT" == "true" ]]; then
 echo "== Highlight create / recolor / delete =="
 run_eval '(async () => {
   const pages = await window.__pdfSpike.annotationSummary();
@@ -473,46 +661,51 @@ run_eval '(async () => {
 })()' >/dev/null
 
 echo "== Multi live highlight selection =="
-ab find role button click --name "Load Sample" >/dev/null
-ab wait --text "How Modern Browsers Work" >/dev/null
+load_pdf_under_test
 run_eval '(async () => {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const selectNeedle = async (needle) => {
-    const lower = needle.toLowerCase();
+  const selectTextChunk = async (index) => {
     for (let attempt = 0; attempt < 15; attempt += 1) {
-      const layers = [...document.querySelectorAll(".textLayer")];
-      for (const layer of layers) {
+      const nodes = [];
+      for (const layer of document.querySelectorAll(".textLayer")) {
         const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
         let node;
         while ((node = walker.nextNode())) {
           const text = node.textContent ?? "";
-          const start = text.toLowerCase().indexOf(lower);
-          if (start >= 0) {
-            node.parentElement?.scrollIntoView({ block: "center" });
-            await sleep(200);
-            const range = document.createRange();
-            range.setStart(node, start);
-            range.setEnd(node, start + needle.length);
-            const selection = document.getSelection();
-            selection?.removeAllRanges();
-            selection?.addRange(range);
-            return;
-          }
+          if (text.trim().length >= 12) nodes.push(node);
         }
       }
-      window.scrollBy(0, 500);
-      await sleep(150);
+      const node = nodes.find((candidate) => {
+        const text = candidate.textContent ?? "";
+        return text.trim().length >= 12 + index * 30;
+      }) ?? nodes[index] ?? nodes[0];
+      if (node) {
+        const text = node.textContent ?? "";
+        const firstNonSpace = Math.max(0, text.search(/\S/));
+        const start = Math.min(text.length - 2, firstNonSpace + index * 30);
+        const end = Math.min(text.length, start + 24);
+        node.parentElement?.scrollIntoView({ block: "center" });
+        await sleep(200);
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, end);
+        const selection = document.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        return text.slice(start, end);
+      }
+      await sleep(200);
     }
-    throw new Error(`Needle not found: ${needle}`);
+    throw new Error(`Selectable text chunk not found at index ${index}`);
   };
-  await selectNeedle("DNS lookup");
+  await selectTextChunk(0);
   await sleep(100);
   document.querySelector("[aria-label=\"Set highlight color to green\"]")?.click();
   const button = [...document.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Highlight Selection");
   button?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, composed: true, pointerId: 1, pointerType: "mouse", isPrimary: true, button: 0, buttons: 1 }));
   button?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true, pointerId: 1, pointerType: "mouse", isPrimary: true, button: 0, buttons: 0 }));
   await sleep(400);
-  await selectNeedle("Establishing a connection");
+  await selectTextChunk(1);
   await sleep(100);
   document.querySelector("[aria-label=\"Set highlight color to blue\"]")?.click();
   button?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, composed: true, pointerId: 2, pointerType: "mouse", isPrimary: true, button: 0, buttons: 1 }));
@@ -533,8 +726,7 @@ run_eval '(() => {
 })()' >/dev/null
 
 echo "== Highlight tool create / recolor / delete =="
-ab find role button click --name "Load Sample" >/dev/null
-ab wait --text "How Modern Browsers Work" >/dev/null
+load_pdf_under_test
 run_eval '(async () => {
   const pages = await window.__pdfSpike.annotationSummary();
   const page1 = pages.find((page) => page.page === 1);
@@ -629,9 +821,12 @@ run_eval '(async () => {
   return { count };
 })()' >/dev/null
 
+else
+  echo "== Highlight tests skipped: no selectable text =="
+fi
+
 echo "== Free text edit lifecycle =="
-ab find role button click --name "Load Sample" >/dev/null
-ab wait --text "How Modern Browsers Work" >/dev/null
+load_pdf_under_test
 run_eval '(() => {
   const container = document.querySelector(".pdf-container");
   if (container instanceof HTMLElement) {
@@ -692,7 +887,40 @@ run_eval '(async () => {
   if (!text.includes("Regression edited free text")) {
     throw new Error(`Expected edited free-text content after reopen, got ${text}`);
   }
-  return { count, text };
+  const editedFreeText = page1.annotations.find((annotation) =>
+    annotation.subtype === "FreeText" && (annotation.textContent ?? []).join("\\n").includes("Regression edited free text")
+  );
+  if (!editedFreeText?.rect) {
+    throw new Error(`Expected edited free-text rect after reopen, got ${JSON.stringify(editedFreeText)}`);
+  }
+  window.__regression.freeTextRectAfterEdit = editedFreeText.rect;
+  return { count, text, rect: editedFreeText.rect };
+})()' >/dev/null
+click_first_free_text_in_selection_mode
+run_eval '(async () => {
+  if (!window.__pdfSpike.moveSelected(40, 30)) {
+    throw new Error("Move selected free text returned false");
+  }
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  window.__pdfSpike.setTool("none");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await window.__pdfSpike.saveToPath("/tmp/pdfspike-freetext.pdf");
+  await window.__pdfSpike.loadPath("/tmp/pdfspike-freetext.pdf");
+  const pages = await window.__pdfSpike.annotationSummary();
+  const page1 = pages.find((page) => page.page === 1);
+  const editedFreeText = page1.annotations.find((annotation) =>
+    annotation.subtype === "FreeText" && (annotation.textContent ?? []).join("\\n").includes("Regression edited free text")
+  );
+  const rect = editedFreeText?.rect;
+  const before = window.__regression.freeTextRectAfterEdit;
+  if (!Array.isArray(rect) || !Array.isArray(before)) {
+    throw new Error(`Missing free-text rect after move; before=${JSON.stringify(before)} after=${JSON.stringify(rect)}`);
+  }
+  const moved = Math.abs(rect[0] - before[0]) > 1 || Math.abs(rect[1] - before[1]) > 1;
+  if (!moved) {
+    throw new Error(`Expected free-text rect to move after reopen; before=${JSON.stringify(before)} after=${JSON.stringify(rect)}`);
+  }
+  return { before, rect };
 })()' >/dev/null
 hover_first_free_text_and_assert_no_popup
 click_first_free_text_in_selection_mode
@@ -713,8 +941,7 @@ run_eval '(async () => {
 })()' >/dev/null
 
 echo "== Ink create / persist =="
-ab find role button click --name "Load Sample" >/dev/null
-ab wait --text "How Modern Browsers Work" >/dev/null
+load_pdf_under_test
 run_eval '(() => {
   const container = document.querySelector(".pdf-container");
   if (container instanceof HTMLElement) {
@@ -735,23 +962,48 @@ run_eval '(() => {
   window.__pdfSpike.setInkThickness(3);
   return window.__pdfSpike.stats();
 })()' >/dev/null
-PAGE_BOX="$(run_eval '(() => {
-  const rect = document.querySelector(".page[data-page-number=\"1\"]")?.getBoundingClientRect();
-  return rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
-})()')"
-assert_json_expr "$PAGE_BOX" 'typeof data.x === "number" && typeof data.y === "number" && data.width > 100 && data.height > 100' "Could not read page box for ink test"
-START_X="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.x + 140)));')"
-START_Y="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.y + 220)));')"
-MID_X="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.x + 200)));')"
-MID_Y="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.y + 270)));')"
-END_X="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.x + 260)));')"
-END_Y="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.y + 320)));')"
-ab mouse move "$START_X" "$START_Y" >/dev/null
-ab mouse down left >/dev/null
-ab mouse move "$MID_X" "$MID_Y" >/dev/null
-ab mouse move "$END_X" "$END_Y" >/dev/null
-ab mouse up left >/dev/null
-ab wait 300 >/dev/null
+run_eval '(async () => {
+  const layer = document.querySelector(".page[data-page-number=\"1\"] .annotationEditorLayer");
+  if (!(layer instanceof HTMLElement)) {
+    throw new Error("No annotation editor layer for ink test");
+  }
+  const rect = layer.getBoundingClientRect();
+  if (rect.width <= 100 || rect.height <= 100) {
+    throw new Error(`Bad annotation editor layer box: ${JSON.stringify(rect)}`);
+  }
+  const point = (x, y) => ({ clientX: Math.round(rect.x + x), clientY: Math.round(rect.y + y) });
+  const dispatch = (type, id, x, y, buttons) => {
+    const event = new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      pointerId: id,
+      pointerType: "mouse",
+      isPrimary: true,
+      button: 0,
+      buttons,
+      ...point(x, y),
+    });
+    layer.dispatchEvent(event);
+  };
+  dispatch("pointerdown", 11, 140, 220, 1);
+  dispatch("pointermove", 11, 200, 270, 1);
+  dispatch("pointermove", 11, 260, 320, 1);
+  window.dispatchEvent(new PointerEvent("pointerup", {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    pointerId: 11,
+    pointerType: "mouse",
+    isPrimary: true,
+    button: 0,
+    buttons: 0,
+    ...point(260, 320),
+  }));
+  window.__pdfSpike.setTool("none");
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  return window.__pdfSpike.stats();
+})()' >/dev/null
 run_eval '(() => {
   const stats = window.__pdfSpike.stats();
   if (stats.inkEditors < 1) {
@@ -775,7 +1027,37 @@ run_eval '(async () => {
   if (!hasThickness3) {
     throw new Error(`Expected ink thickness 3 after reopen, got ${JSON.stringify(inks.map((annotation) => annotation.borderStyle))}`);
   }
-  return { count };
+  const createdInk = inks.find((annotation) => (annotation.borderStyle?.rawWidth ?? annotation.borderStyle?.width) === 3);
+  if (!createdInk?.rect) {
+    throw new Error(`Expected ink rect after reopen, got ${JSON.stringify(createdInk)}`);
+  }
+  window.__regression.inkRectAfterCreate = createdInk.rect;
+  return { count, rect: createdInk.rect };
+})()' >/dev/null
+click_first_ink_in_selection_mode
+run_eval '(async () => {
+  if (!window.__pdfSpike.moveSelected(45, 25)) {
+    throw new Error("Move selected ink returned false");
+  }
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  window.__pdfSpike.setTool("none");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  await window.__pdfSpike.saveToPath("/tmp/pdfspike-ink.pdf");
+  await window.__pdfSpike.loadPath("/tmp/pdfspike-ink.pdf");
+  const pages = await window.__pdfSpike.annotationSummary();
+  const page1 = pages.find((page) => page.page === 1);
+  const inks = page1.annotations.filter((annotation) => annotation.subtype === "Ink");
+  const movedInk = inks.find((annotation) => (annotation.borderStyle?.rawWidth ?? annotation.borderStyle?.width) === 3);
+  const rect = movedInk?.rect;
+  const before = window.__regression.inkRectAfterCreate;
+  if (!Array.isArray(rect) || !Array.isArray(before)) {
+    throw new Error(`Missing ink rect after move; before=${JSON.stringify(before)} after=${JSON.stringify(rect)}`);
+  }
+  const moved = Math.abs(rect[0] - before[0]) > 1 || Math.abs(rect[1] - before[1]) > 1;
+  if (!moved) {
+    throw new Error(`Expected ink rect to move after reopen; before=${JSON.stringify(before)} after=${JSON.stringify(rect)}`);
+  }
+  return { before, rect };
 })()' >/dev/null
 click_first_ink_in_selection_mode
 run_eval '(async () => {
@@ -831,26 +1113,50 @@ run_eval '(() => {
   window.__pdfSpike.setInkMarkerPreset();
   return window.__pdfSpike.stats();
 })()' >/dev/null
-PAGE_BOX="$(run_eval '(() => {
+run_eval '(async () => {
   const container = document.querySelector(".pdf-container");
   if (container instanceof HTMLElement) {
     container.scrollTop = 0;
   }
-  const rect = document.querySelector(".page[data-page-number=\"1\"]")?.getBoundingClientRect();
-  return rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
-})()')"
-START_X="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.x + 260)));')"
-START_Y="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.y + 420)));')"
-MID_X="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.x + 420)));')"
-MID_Y="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.y + 430)));')"
-END_X="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.x + 620)));')"
-END_Y="$(JSON_INPUT="$PAGE_BOX" node -e 'const data = JSON.parse(process.env.JSON_INPUT); process.stdout.write(String(Math.round(data.y + 440)));')"
-ab mouse move "$START_X" "$START_Y" >/dev/null
-ab mouse down left >/dev/null
-ab mouse move "$MID_X" "$MID_Y" >/dev/null
-ab mouse move "$END_X" "$END_Y" >/dev/null
-ab mouse up left >/dev/null
-ab wait 300 >/dev/null
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const layer = document.querySelector(".page[data-page-number=\"1\"] .annotationEditorLayer");
+  if (!(layer instanceof HTMLElement)) {
+    throw new Error("No annotation editor layer for marker ink test");
+  }
+  const rect = layer.getBoundingClientRect();
+  const point = (x, y) => ({ clientX: Math.round(rect.x + x), clientY: Math.round(rect.y + y) });
+  const dispatch = (type, id, x, y, buttons) => {
+    const event = new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      pointerId: id,
+      pointerType: "mouse",
+      isPrimary: true,
+      button: 0,
+      buttons,
+      ...point(x, y),
+    });
+    layer.dispatchEvent(event);
+  };
+  dispatch("pointerdown", 12, 260, 420, 1);
+  dispatch("pointermove", 12, 420, 430, 1);
+  dispatch("pointermove", 12, 620, 440, 1);
+  window.dispatchEvent(new PointerEvent("pointerup", {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    pointerId: 12,
+    pointerType: "mouse",
+    isPrimary: true,
+    button: 0,
+    buttons: 0,
+    ...point(620, 440),
+  }));
+  window.__pdfSpike.setTool("none");
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  return window.__pdfSpike.stats();
+})()' >/dev/null
 run_eval '(async () => {
   window.__pdfSpike.setTool("none");
   await new Promise((resolve) => setTimeout(resolve, 200));

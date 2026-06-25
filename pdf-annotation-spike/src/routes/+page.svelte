@@ -50,6 +50,7 @@
     editorSummary: () => Record<string, unknown>[];
     loadSample: () => Promise<void>;
     loadPath: (path: string) => Promise<void>;
+    loadUrl: (url: string, label?: string) => Promise<void>;
     saveToPath: (path: string) => Promise<void>;
     selectFirstHighlight: () => Promise<boolean>;
     selectFirstText: () => string;
@@ -58,6 +59,7 @@
     recolorSelectedInk: (color: InkColorName) => void;
     setInkThickness: (thickness: number) => void;
     setInkMarkerPreset: () => void;
+    moveSelected: (x: number, y: number) => boolean;
     editSelectedFreeText: (text: string) => Promise<boolean>;
     deleteSelected: () => boolean;
     highlightSelection: () => void;
@@ -66,6 +68,7 @@
   };
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+  const pdfjsWasmUrl = "/pdfjs-wasm/";
 
   let containerEl: HTMLDivElement;
   let viewerEl: HTMLDivElement;
@@ -155,6 +158,7 @@
       editorSummary: getEditorSummary,
       loadSample: loadSamplePdf,
       loadPath: debugLoadPath,
+      loadUrl: debugLoadUrl,
       saveToPath: debugSaveToPath,
       selectFirstHighlight: () => selectFirstHighlight(),
       selectFirstText,
@@ -163,6 +167,7 @@
       recolorSelectedInk: applyInkColor,
       setInkThickness: applyInkThickness,
       setInkMarkerPreset: applyInkMarkerPreset,
+      moveSelected: moveSelectedAnnotation,
       editSelectedFreeText,
       deleteSelected: deleteSelectedAnnotation,
       highlightSelection: () => highlightSelection(),
@@ -225,7 +230,7 @@
   }
 
   async function loadPdfBytes(bytes: Uint8Array, label: string) {
-    const loadingTask = pdfjsLib.getDocument({ data: bytes });
+    const loadingTask = pdfjsLib.getDocument({ data: bytes, wasmUrl: pdfjsWasmUrl });
     const nextDocument = await loadingTask.promise;
 
     teardownViewer();
@@ -1094,6 +1099,19 @@
     return entries;
   }
 
+  function moveSelectedAnnotation(x: number, y: number) {
+    if (!annotationEditorUIManager?.firstSelectedEditor) {
+      return false;
+    }
+    const movableManager = annotationEditorUIManager as AnnotationEditorUIManager & {
+      translateSelectedEditors?: (x: number, y: number, noCommit?: boolean) => void;
+    };
+    movableManager.translateSelectedEditors?.(x, y, true);
+    syncSelectedEditorState();
+    isDirty = true;
+    return true;
+  }
+
   function zoomIn() {
     if (!pdfViewer) return;
     pdfViewer.currentScale = Math.min(pdfViewer.currentScale * 1.1, 5);
@@ -1184,6 +1202,22 @@
     isDirty = false;
     activeTool = "none";
     status = `Loaded debug snapshot ${path}`;
+  }
+
+  async function debugLoadUrl(url: string, label = url) {
+    isBusy = true;
+    status = `Loading ${label}...`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      await loadPdfBytes(new Uint8Array(await response.arrayBuffer()), label);
+      currentPath = label;
+      isDirty = false;
+      activeTool = "none";
+      status = `Loaded ${label}`;
+    } finally {
+      isBusy = false;
+    }
   }
 
   async function getAnnotationSummary() {
