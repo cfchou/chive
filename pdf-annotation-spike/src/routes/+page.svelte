@@ -12,6 +12,10 @@
   } from "pdfjs-dist/web/pdf_viewer.mjs";
   import "pdfjs-dist/web/pdf_viewer.css";
 
+  if (import.meta.env.VITE_WDIO_TAURI === "1" && typeof window !== "undefined") {
+    void import("@wdio/tauri-plugin");
+  }
+
   type PdfDocument = Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>;
   type EditorTool = "none" | "highlight" | "text" | "ink";
   type NavigationTab = "outline" | "annotations";
@@ -356,6 +360,12 @@
     eventBus.on("pagesinit", () => {
       if (!pdfViewer) return;
       pdfViewer.currentScaleValue = "page-width";
+      pdfViewer.update();
+      pdfViewer.forceRendering(undefined);
+      requestAnimationFrame(() => {
+        pdfViewer?.update();
+        pdfViewer?.forceRendering(undefined);
+      });
       scaleLabel = "Fit Width";
       status = `Rendered ${label}`;
       queueAnnotationSidebarRefresh(0);
@@ -2322,6 +2332,7 @@
       selectedEditorColor: selectedEditor?.color ?? null,
       annotationFocusBox,
       selectedText: document.getSelection()?.toString() ?? "",
+      canvases: document.querySelectorAll(".page canvas").length,
       textLayerSpans: document.querySelectorAll(".textLayer span").length,
       annotationEditorLayers: document.querySelectorAll(".annotationEditorLayer").length,
       highlightEditors: document.querySelectorAll(".highlightEditor").length,
