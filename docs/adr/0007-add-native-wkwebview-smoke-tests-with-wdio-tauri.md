@@ -13,8 +13,8 @@ It behaves in two production-relevant environments:
 - browser mode: `http://127.0.0.1:1420/` (Chromium automation)
 - native mode: packaged Tauri desktop app on macOS (`WKWebView`)
 
-The current browser regression harness is a large Bash script with embedded JS that is hard to maintain and reuse.
-That makes coverage, retries, and onboarding more expensive than necessary.
+The previous browser regression harness was a large Bash script with embedded JS that was hard to maintain and reuse.
+That made coverage, retries, and onboarding more expensive than necessary.
 
 ## Beginner Mental Model
 
@@ -61,7 +61,7 @@ Use **two permanent layers by default**:
 - **Playwright Test** as the canonical browser-mode regression suite.
 - **WDIO Tauri** as the native `WKWebView` smoke suite.
 
-Use `agent-browser` only as **exploratory/debug** tooling and keep it out of required regression ownership.
+Use `agent-browser` only as **exploratory/debug** tooling and keep it out of repository regression ownership.
 
 Adopt this lifecycle:
 
@@ -102,7 +102,7 @@ flowchart TB
 
   subgraph Explore["Exploration Tool"]
     AB[agent-browser]
-    Debug[quick bug repro + UI snapshots + one-off checks]
+    Debug[quick bug repro + UI snapshots]
     AB --> Debug
   end
 
@@ -121,41 +121,24 @@ WDIO native layer is best for:
 - real `invoke()` and plugin behavior,
 - native asset and file-system command paths.
 
-Exploration tool (`agent-browser`) is best for:
-
-- quick ad-hoc reproduction,
-- interactive diagnosis,
-- one-off checks that do not need to be permanent tests.
-
-## LLM-Generated Speculative Coverage
-
-LLM-generated cases are useful for broadening scenario ideas, but they should not automatically become regression tests.
-
-Adopt a two-stage process:
-
-- `Scenario generation`: LLM proposes many flows (text PDFs, scanned PDFs, annotations, persistence, outline, zoom, tool switching).
-- `Curation`: engineers/prompts owner selects only high-value, reproducible, and non-duplicative scenarios.
-- `Canonicalization`: curated cases become Playwright or WDIO specs.
-
-No separate ADR is needed for this today. This behavior belongs in ADR 0007 because it is directly about how we own and execute browser/native test strategy.
+Exploration tool (`agent-browser`) is best for quick ad-hoc reproduction and interactive diagnosis outside the repository test suite.
 
 ## Implementation Plan (Small First)
 
 1. Add Playwright dependencies in `pdf-annotation-spike/` and add scripts:
    - `test:e2e`
    - optional: `test:e2e:headed`
-2. Port the current regression flows from `scripts/regression-agent-browser.sh` into modular Playwright specs/helpers.
+2. Port the current regression flows into modular Playwright specs/helpers.
 3. Add fixture-level helpers (`loadPdf`, `assertRender`, `createHighlight`, `createFreeText`, `createInk`, `saveAndReopen`).
-4. Keep `scripts/regression-agent-browser.sh` as a documented exploratory aid.
-5. Add `@wdio/tauri-service` in `pdf-annotation-spike/` when native smoke suite starts.
-6. Add `tauri-plugin-wdio-webdriver` in `pdf-annotation-spike/src-tauri/Cargo.toml` and enable for debug/test only.
-7. Add required permission: `wdio-webdriver:default`.
-8. Add minimal WDIO config and one native smoke test that checks:
+4. Add `@wdio/tauri-service` in `pdf-annotation-spike/` when native smoke suite starts.
+5. Add `tauri-plugin-wdio-webdriver` in `pdf-annotation-spike/src-tauri/Cargo.toml` and enable for debug/test only.
+6. Add required permission: `wdio-webdriver:default`.
+7. Add minimal WDIO config and one native smoke test that checks:
    - app launch,
    - sample PDF render,
    - sidebar text extraction,
    - a simple annotation-state assertion.
-9. Re-run browser regression + native smoke in release checks.
+8. Re-run browser regression + native smoke in release checks.
 
 ## Why Not Add a Third Permanent Browser Engine Layer
 
@@ -186,7 +169,7 @@ Good:
 Bad:
 
 - Playwright migration effort for existing Bash/JS flow logic,
-- `agent-browser` usage remains separate from CI ownership,
+- ad-hoc external PDF probes need either a temporary Playwright fixture or manual exploration,
 - WDIO still adds one native dependency and startup overhead.
 
 ## Verification

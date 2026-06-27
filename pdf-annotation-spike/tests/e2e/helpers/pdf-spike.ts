@@ -19,6 +19,7 @@ export type PdfSpikeApi = {
   saveToPath: (path: string) => Promise<void>;
   selectFirstHighlight: () => Promise<boolean>;
   selectFirstText: () => string;
+  setInkMarkerPreset: () => void;
   setInkThickness: (thickness: number) => void;
   setTool: (tool: "none" | "highlight" | "text" | "ink") => void;
   stats: () => Record<string, unknown>;
@@ -29,6 +30,8 @@ export type AnnotationEntry = {
   detail: string;
   kind: "highlight" | "freetext" | "ink";
   page: number;
+  sortTop?: number;
+  source?: "live" | "pdf";
 };
 
 export type PageAnnotationSummary = {
@@ -36,6 +39,7 @@ export type PageAnnotationSummary = {
   annotations: {
     borderStyle?: { rawWidth?: number; width?: number };
     color?: number[] | null;
+    opacity?: number | null;
     rect?: number[] | null;
     subtype?: string | null;
     textContent?: string[] | null;
@@ -213,7 +217,12 @@ export async function createInkStroke(page: Page) {
 }
 
 export async function activateFirstAnnotationByKind(page: Page, kind: AnnotationEntry["kind"]) {
-  const point = await page.evaluate(async (targetKind) => {
+  await activateAnnotationByKind(page, kind, 0);
+}
+
+export async function activateAnnotationByKind(page: Page, kind: AnnotationEntry["kind"], index = 0) {
+  const point = await page.evaluate(async ([targetKind, targetIndex]) => {
+    const kind = targetKind as AnnotationEntry["kind"];
     await new Promise((resolve) => setTimeout(resolve, 250));
     const statsBefore = window.__pdfSpike!.stats();
     if (statsBefore.activeTool !== "none") {
@@ -230,7 +239,8 @@ export async function activateFirstAnnotationByKind(page: Page, kind: Annotation
       ink: '.page[data-page-number="1"] .inkEditor, .page[data-page-number="1"] .inkAnnotation',
     };
     for (let attempt = 0; attempt < 15; attempt += 1) {
-      const target = document.querySelector(selectors[targetKind]);
+      const targets = [...document.querySelectorAll(selectors[kind])];
+      const target = targets[Number(targetIndex)];
       if (target instanceof HTMLElement) {
         const rect = target.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
@@ -242,8 +252,8 @@ export async function activateFirstAnnotationByKind(page: Page, kind: Annotation
       }
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
-    throw new Error(`Annotation target not found for ${targetKind}`);
-  }, kind);
+    throw new Error(`Annotation target not found for ${kind}`);
+  }, [kind, String(index)]);
 
   await page.mouse.move(point.clientX, point.clientY);
   await page.mouse.down();
@@ -256,6 +266,58 @@ export async function activateFirstAnnotationByKind(page: Page, kind: Annotation
     return window.__pdfSpike!.stats().selectedAnnotationKind;
   });
   expect(selected).toBe(kind);
+}
+
+export async function activateNthLiveHighlight(page: Page, index: number) {
+  const point = await page.evaluate(async (targetIndex) => {
+    const statsBefore = window.__pdfSpike!.stats();
+    if (statsBefore.activeTool !== "none") {
+      window.__pdfSpike!.setTool("none");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      const targets = [...document.querySelectorAll(".highlightEditor.disabled")];
+      const target = targets[Number(targetIndex)];
+      if (target instanceof HTMLElement) {
+        const rect = target.getBoundingClientRect();
+        return {
+          clientX: Math.round(rect.left + rect.width / 2),
+          clientY: Math.round(rect.top + rect.height / 2),
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error(`Live highlight not found at index ${targetIndex}`);
+  }, String(index));
+
+  await page.mouse.move(point.clientX, point.clientY);
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  await expect.poll(() => getStats(page)).toMatchObject({ activeTool: "highlight", selectedHighlightColor: /.+/ });
+}
+
+export async function expectNoVisibleAnnotationPopup(page: Page) {
+  const visiblePopups = await page.evaluate(() => {
+    return [...document.querySelectorAll(".popupAnnotation, .popup")].filter((node) => {
+      const style = getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        Number(style.opacity || 1) !== 0 &&
+        rect.width > 0 &&
+        rect.height > 0
+      );
+    }).length;
+  });
+  expect(visiblePopups).toBe(0);
+}
+
+export function collectPageErrors(page: Page, errors: string[]) {
+  page.on("pageerror", (error) => {
+    errors.push(error.message);
+  });
 }
 
 export async function expectSidebarHasUsefulHighlight(page: Page) {

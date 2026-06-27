@@ -1,6 +1,6 @@
 # ADR 0004: Use a Browser Regression Harness for PDF Spike Validation
 
-Status: Accepted
+Status: Superseded by ADR 0007
 
 Date: 2026-06-25
 
@@ -34,9 +34,11 @@ Also, simple assertions are not enough:
 
 ## Decision
 
-Use an `agent-browser` regression harness that drives the app like a user and calls a small debug API exposed by the app in development.
+Use a browser regression harness that drives the app like a user and calls a small debug API exposed by the app in development.
 
-For external PDFs, the harness starts a local HTTP server rooted at the repo and loads PDFs through a debug `loadUrl()` method.
+This ADR was later superseded by ADR 0007: Playwright is now the repository-owned browser regression harness, and WDIO Tauri owns native WKWebView smoke coverage.
+
+External PDF probes should be added as explicit Playwright fixtures when they are worth keeping as regressions. One-off exploration can still be done manually outside the repository test suite.
 
 For saved PDFs in browser mode, the app uses an in-memory debug file store. This allows save/reopen flows without Tauri filesystem access.
 
@@ -91,20 +93,9 @@ Bad:
 - Some test helpers know about PDF.js DOM structure.
 - The debug API is spike-only and should be kept isolated from product behavior.
 
-## Run
-
-From `pdf-annotation-spike/` with the dev server running:
+## Current Run
 
 ```bash
-./scripts/regression-agent-browser.sh \
-  --pdf ../tmp/epa_sample_letter_sent_to_commissioners_dated_february_29_2015.pdf \
-  --pdf ../tmp/scansmpl.pdf \
-  --pdf ../tmp/image-based-pdf-sample.pdf
+npm run test:e2e
+npm run test:native
 ```
-
-Run the bundled sample:
-
-```bash
-./scripts/regression-agent-browser.sh
-```
-

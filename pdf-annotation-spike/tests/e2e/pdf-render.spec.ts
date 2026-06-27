@@ -1,8 +1,16 @@
 import { expect, test } from "@playwright/test";
-import { expectCanvasHasContent, getStats, loadFixture, openApp } from "./helpers/pdf-spike";
+import { collectPageErrors, expectCanvasHasContent, getStats, loadFixture, openApp } from "./helpers/pdf-spike";
+
+const pageErrors: string[] = [];
 
 test.beforeEach(async ({ page }) => {
+  pageErrors.length = 0;
+  collectPageErrors(page, pageErrors);
   await openApp(page);
+});
+
+test.afterEach(() => {
+  expect(pageErrors).toEqual([]);
 });
 
 test("loads sample PDF and renders a nonblank first page", async ({ page }) => {
