@@ -14,7 +14,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("outline sidebar navigates to page two", async ({ page }) => {
-  await loadFixture(page, "/outline-sample.pdf", "outline-sample.pdf");
+  await loadFixture(page);
 
   await expect
     .poll(() =>
@@ -22,13 +22,11 @@ test("outline sidebar navigates to page two", async ({ page }) => {
         window.__pdfSpike!.outlineSummary().map((entry: { title: string }) => entry.title),
       ),
     )
-    .toContain("Outline Page Two");
+    .toContain("1. Networking and Resource Loading");
 
-  await page.evaluate(() => {
-    const buttons = [...document.querySelectorAll(".outline-item")] as HTMLButtonElement[];
-    buttons[1]?.click();
-  });
-  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().currentPageNumber)).toBe(2);
+  await page.getByRole("button", { name: "1. Networking and Resource Loading 2" }).click();
+  await expect(page.getByText("Navigated to 1. Networking and Resource Loading.")).toBeVisible();
+  await expect(page.getByText("Networking and resource loading pipeline")).toBeVisible();
 });
 
 test("annotation sidebar keeps useful highlight snippets after load and click", async ({ page }) => {

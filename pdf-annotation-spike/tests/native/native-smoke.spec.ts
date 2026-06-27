@@ -16,7 +16,7 @@ type AnnotationEntry = {
 };
 
 const app = browser as unknown as WdioBrowser;
-const annotatedPdfPath = path.resolve(process.cwd(), "static/sample-annotated.pdf");
+const samplePdfPath = path.resolve(process.cwd(), "static/sample.pdf");
 
 async function waitForPdfSpike() {
   await app.waitUntil(
@@ -35,7 +35,7 @@ describe("native WKWebView PDF smoke", () => {
 
     await app.execute(async (filePath) => {
       await window.__pdfSpike!.loadPath(filePath);
-    }, annotatedPdfPath);
+    }, samplePdfPath);
 
     await app.waitUntil(
       async () =>

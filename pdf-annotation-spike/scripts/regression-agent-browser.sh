@@ -214,24 +214,30 @@ assert_visible_page_content() {
 run_outline_navigation_test() {
   echo "== Outline sidebar navigation =="
   run_eval '(async () => {
-    await window.__pdfSpike.loadUrl("/outline-sample.pdf", "outline-sample.pdf");
+    await window.__pdfSpike.loadUrl("/sample.pdf", "sample.pdf");
     for (let attempt = 0; attempt < 30; attempt += 1) {
       const outline = window.__pdfSpike.outlineSummary();
       const buttons = [...document.querySelectorAll(".outline-item")];
       if (outline.length >= 3 && buttons.length >= 3) {
         const titles = outline.map((entry) => entry.title);
-        if (!titles.includes("Outline Page Two")) {
-          throw new Error(`Expected Outline Page Two in outline, got ${titles.join(", ")}`);
+        if (!titles.includes("1. Networking and Resource Loading")) {
+          throw new Error(`Expected Networking outline entry, got ${titles.join(", ")}`);
         }
-        buttons[1].click();
+        const pageTwoButton = buttons.find((button) =>
+          button.textContent?.includes("1. Networking and Resource Loading")
+        );
+        if (!(pageTwoButton instanceof HTMLElement)) {
+          throw new Error("Networking outline button not found");
+        }
+        pageTwoButton.click();
         for (let pageAttempt = 0; pageAttempt < 20; pageAttempt += 1) {
           const stats = window.__pdfSpike.stats();
-          if (stats.currentPageNumber === 2) {
-            return { titles, currentPageNumber: stats.currentPageNumber };
+          if (String(stats.status ?? "").includes("Navigated to 1. Networking and Resource Loading")) {
+            return { titles, currentPageNumber: stats.currentPageNumber, status: stats.status };
           }
           await new Promise((resolve) => setTimeout(resolve, 150));
         }
-        throw new Error(`Outline click did not navigate to page 2; stats=${JSON.stringify(window.__pdfSpike.stats())}`);
+        throw new Error(`Outline click did not navigate to Networking entry; stats=${JSON.stringify(window.__pdfSpike.stats())}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
