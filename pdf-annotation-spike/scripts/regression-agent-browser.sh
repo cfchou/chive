@@ -211,6 +211,484 @@ assert_visible_page_content() {
   })()' >/dev/null
 }
 
+run_outline_navigation_test() {
+  echo "== Outline sidebar navigation =="
+  run_eval '(async () => {
+    await window.__pdfSpike.loadUrl("/outline-sample.pdf", "outline-sample.pdf");
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const outline = window.__pdfSpike.outlineSummary();
+      const buttons = [...document.querySelectorAll(".outline-item")];
+      if (outline.length >= 3 && buttons.length >= 3) {
+        const titles = outline.map((entry) => entry.title);
+        if (!titles.includes("Outline Page Two")) {
+          throw new Error(`Expected Outline Page Two in outline, got ${titles.join(", ")}`);
+        }
+        buttons[1].click();
+        for (let pageAttempt = 0; pageAttempt < 20; pageAttempt += 1) {
+          const stats = window.__pdfSpike.stats();
+          if (stats.currentPageNumber === 2) {
+            return { titles, currentPageNumber: stats.currentPageNumber };
+          }
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        throw new Error(`Outline click did not navigate to page 2; stats=${JSON.stringify(window.__pdfSpike.stats())}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error(`Outline sidebar did not render fixture outline; outline=${JSON.stringify(window.__pdfSpike.outlineSummary())}`);
+  })()' >/dev/null
+}
+
+run_annotation_sidebar_test() {
+  echo "== Annotation sidebar selection =="
+  run_eval '(async () => {
+    await window.__pdfSpike.loadUrl("/sample.pdf", "sample.pdf");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const selectTextChunk = async (index) => {
+      const nodes = [];
+      for (const layer of document.querySelectorAll(".textLayer")) {
+        const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+          const text = node.textContent ?? "";
+          if (text.trim().length >= 20) nodes.push(node);
+        }
+      }
+      const node = nodes[index] ?? nodes[0];
+      if (!node) return "";
+      const text = node.textContent ?? "";
+      const start = Math.max(0, text.search(/\S/));
+      const end = Math.min(text.length, start + 20);
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, end);
+      const selection = document.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      return selection?.toString() ?? "";
+    };
+    const selectedText = await selectTextChunk(0);
+    if (!selectedText) {
+      throw new Error("Could not select text for annotation sidebar highlight");
+    }
+    window.__regression.sidebarHighlightedText = selectedText;
+    const highlightButton = [...document.querySelectorAll("button")]
+      .find((button) => button.textContent?.trim() === "Highlight Selection");
+    highlightButton?.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      pointerId: 21,
+      pointerType: "mouse",
+      isPrimary: true,
+      button: 0,
+      buttons: 1,
+    }));
+    highlightButton?.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      pointerId: 21,
+      pointerType: "mouse",
+      isPrimary: true,
+      button: 0,
+      buttons: 0,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await window.__pdfSpike.createPageFreeText("Sidebar regression note", 1);
+    window.__pdfSpike.setTool("none");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await window.__pdfSpike.saveToPath("/tmp/pdfspike-annotation-sidebar.pdf");
+    await window.__pdfSpike.loadPath("/tmp/pdfspike-annotation-sidebar.pdf");
+
+    const tab = [...document.querySelectorAll(".nav-tabs button")]
+      .find((button) => button.textContent?.trim() === "Annotations");
+    if (!(tab instanceof HTMLElement)) {
+      throw new Error("Annotations tab not found");
+    }
+    tab.click();
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const entries = window.__pdfSpike.annotationSidebarSummary();
+      const items = [...document.querySelectorAll(".annotation-item")];
+      const highlightIndex = entries.findIndex((entry) => entry.kind === "highlight");
+      const freeTextIndex = entries.findIndex((entry) => entry.kind === "freetext");
+      const highlightedWord = window.__regression.sidebarHighlightedText.split(/\s+/)[0];
+      if (highlightIndex >= 0 && freeTextIndex >= 0 && items[highlightIndex] instanceof HTMLElement) {
+        const highlightEntry = entries[highlightIndex];
+        if (!highlightEntry.detail.includes(highlightedWord)) {
+          throw new Error(`Expected highlight sidebar detail to include "${highlightedWord}", got "${highlightEntry.detail}"`);
+        }
+        window.__regression.sidebarHighlightDetail = highlightEntry.detail;
+        items[highlightIndex].click();
+        for (let selectAttempt = 0; selectAttempt < 20; selectAttempt += 1) {
+          const stats = window.__pdfSpike.stats();
+          const box = document.querySelector(".annotation-focus-box");
+          if (stats.activeTool === "highlight" && stats.selectedAnnotationKind === "highlight" && box instanceof HTMLElement) {
+            const boxRect = box.getBoundingClientRect();
+            const containerRect = document.querySelector(".pdf-container").getBoundingClientRect();
+            const boxCenterY = boxRect.top + boxRect.height / 2;
+            const containerCenterY = containerRect.top + containerRect.height / 2;
+            const container = document.querySelector(".pdf-container");
+            const atTopBoundary = container instanceof HTMLElement && container.scrollTop === 0;
+            if (!atTopBoundary && Math.abs(boxCenterY - containerCenterY) > containerRect.height * 0.25) {
+              throw new Error(`Expected highlight focus near viewport middle; boxCenterY=${boxCenterY} containerCenterY=${containerCenterY}`);
+            }
+            items[freeTextIndex].click();
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        for (let selectAttempt = 0; selectAttempt < 20; selectAttempt += 1) {
+          const stats = window.__pdfSpike.stats();
+          if (stats.activeTool === "text" && stats.selectedAnnotationKind === "freetext") {
+            const secondSelectedText = await selectTextChunk(1);
+            if (!secondSelectedText) {
+              throw new Error("Could not select second text for sidebar snippet regression");
+            }
+            const highlightButton = [...document.querySelectorAll("button")]
+              .find((button) => button.textContent?.trim() === "Highlight Selection");
+            highlightButton?.dispatchEvent(new PointerEvent("pointerdown", {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              pointerId: 22,
+              pointerType: "mouse",
+              isPrimary: true,
+              button: 0,
+              buttons: 1,
+            }));
+            highlightButton?.dispatchEvent(new PointerEvent("pointerup", {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              pointerId: 22,
+              pointerType: "mouse",
+              isPrimary: true,
+              button: 0,
+              buttons: 0,
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            tab.click();
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            const refreshedEntries = window.__pdfSpike.annotationSidebarSummary();
+            if (!refreshedEntries.some((entry) => entry.kind === "highlight" && entry.detail === window.__regression.sidebarHighlightDetail)) {
+              throw new Error(`Expected existing highlight detail to survive new highlight, got ${JSON.stringify(refreshedEntries.map((entry) => ({ kind: entry.kind, detail: entry.detail })))}`);
+            }
+            if (!refreshedEntries.some((entry) => entry.kind === "highlight" && entry.detail === secondSelectedText.trim())) {
+              throw new Error(`Expected new highlight detail "${secondSelectedText.trim()}" in sidebar, got ${JSON.stringify(refreshedEntries.map((entry) => ({ kind: entry.kind, detail: entry.detail })))}`);
+            }
+            const highlightDetails = refreshedEntries.filter((entry) => entry.kind === "highlight").map((entry) => entry.detail);
+            const firstIndex = highlightDetails.indexOf(window.__regression.sidebarHighlightDetail);
+            const secondIndex = highlightDetails.indexOf(secondSelectedText.trim());
+            if (firstIndex < 0 || secondIndex < 0 || firstIndex > secondIndex) {
+              throw new Error(`Expected highlight rows to stay in page order, got ${JSON.stringify(highlightDetails)}`);
+            }
+            return { entries: refreshedEntries, selected: stats.selectedAnnotationKind };
+          }
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        throw new Error(`Annotation sidebar click did not select free text; stats=${JSON.stringify(window.__pdfSpike.stats())}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error(`Annotation sidebar did not list highlight/free text; entries=${JSON.stringify(window.__pdfSpike.annotationSidebarSummary())}`);
+  })()' >/dev/null
+}
+
+run_annotation_sidebar_load_timing_test() {
+  echo "== Annotation sidebar load timing =="
+  run_eval '(async () => {
+    const tab = () => [...document.querySelectorAll(".nav-tabs button")]
+      .find((button) => button.textContent?.trim() === "Annotations");
+    const waitForUsefulHighlight = async (label) => {
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const entries = window.__pdfSpike.annotationSidebarSummary();
+        const highlights = entries.filter((entry) => entry.kind === "highlight");
+        const details = highlights.map((entry) => entry.detail);
+        const hasPreciseSampleSnippets =
+          details.some((detail) => detail.includes("browser\u0027s UI thread") && detail.includes("navigation request")) &&
+          details.some((detail) => detail.includes("support preconnect and preload directives")) &&
+          details.some((detail) => detail.includes("Chrome\u0027s CORB") || detail.includes("Cross-Origin Read Blocking"));
+        const hasBroadSampleSnippet = details.some((detail) => detail.startsWith("ter a URL or click a link"));
+        const hasPartialWordSnippet = details.some((detail) => detail.startsWith("e browser\u0027s") || detail.startsWith("ta (Chrome"));
+        const allUseful = highlights.length >= 3 && highlights.every((entry) =>
+          entry.detail &&
+          !entry.detail.includes("Persisted PDF annotation") &&
+          !entry.detail.includes("Unsaved/live highlight") &&
+          /\s/.test(entry.detail.trim()) &&
+          Number.isFinite(entry.sortTop) &&
+          entry.sortTop < Number.MAX_SAFE_INTEGER
+        ) && hasPreciseSampleSnippets && !hasBroadSampleSnippet && !hasPartialWordSnippet;
+        if (allUseful) {
+          return { label, highlights: highlights.map((entry) => entry.detail) };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      throw new Error(`${label}: not all highlight snippets useful after load; entries=${JSON.stringify(window.__pdfSpike.annotationSidebarSummary())}`);
+    };
+    const textInsideFocusBox = () => {
+      const box = document.querySelector(".annotation-focus-box");
+      if (!(box instanceof HTMLElement)) return "";
+      const boxRect = box.getBoundingClientRect();
+      const chunks = [];
+      for (const page of document.querySelectorAll(".page")) {
+        const walker = document.createTreeWalker(page.querySelector(".textLayer") ?? page, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+          const text = node.textContent ?? "";
+          let firstOffset = null;
+          let lastOffset = null;
+          for (let offset = 0; offset < text.length; offset += 1) {
+            if (!text[offset]?.trim()) continue;
+            const range = document.createRange();
+            range.setStart(node, offset);
+            range.setEnd(node, offset + 1);
+            const rect = range.getBoundingClientRect();
+            range.detach();
+            if (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              boxRect.left - 2 < rect.right &&
+              boxRect.right + 2 > rect.left &&
+              boxRect.top - 2 < rect.bottom &&
+              boxRect.bottom + 2 > rect.top
+            ) {
+              firstOffset ??= offset;
+              lastOffset = offset + 1;
+            }
+          }
+          if (firstOffset !== null && lastOffset !== null) {
+            chunks.push(text.slice(firstOffset, lastOffset));
+          }
+        }
+      }
+      return chunks.join(" ").replace(/\s+/g, " ").trim();
+    };
+    const significantTokens = (text) =>
+      text
+        .replace(/[()".,;:—-]/g, " ")
+        .split(/\s+/)
+        .filter((word) => word.length >= 5);
+    const assertHighlightRowsPointToFocusedText = async () => {
+      const entries = window.__pdfSpike.annotationSidebarSummary();
+      for (const entry of entries) {
+        if (entry.source !== "pdf" || entry.kind !== "highlight") continue;
+        const rowIndex = window.__pdfSpike.annotationSidebarSummary().findIndex((candidate) => candidate.id === entry.id);
+        const row = [...document.querySelectorAll(".annotation-item")][rowIndex];
+        if (!(row instanceof HTMLElement)) {
+          throw new Error(`Could not find annotation row for ${entry.detail}`);
+        }
+        row.click();
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        const focusText = textInsideFocusBox();
+        const expectedTokens = significantTokens(entry.detail);
+        const matchingTokens = expectedTokens.filter((token) => focusText.includes(token));
+        if (matchingTokens.length < Math.min(2, expectedTokens.length)) {
+          throw new Error(`Annotation row points to wrong content; expected=${entry.detail}; focus=${focusText}`);
+        }
+      }
+    };
+    const assertPageHeadersMatchEntries = () => {
+      const groups = [];
+      for (const entry of window.__pdfSpike.annotationSidebarSummary()) {
+        const last = groups[groups.length - 1];
+        if (last?.page === entry.page) {
+          last.count += 1;
+        } else {
+          groups.push({ page: entry.page, count: 1 });
+        }
+      }
+      const headers = [...document.querySelectorAll(".annotation-page-header")].map((header) => header.textContent?.replace(/\s+/g, " ").trim());
+      const expected = groups.map((group) => `Page ${group.page} ${group.count} item${group.count === 1 ? "" : "s"}`);
+      if (headers.length !== expected.length || !expected.every((text, index) => headers[index] === text)) {
+        throw new Error(`Annotation page headers mismatch; expected=${JSON.stringify(expected)} actual=${JSON.stringify(headers)}`);
+      }
+    };
+    const pageCounts = () => {
+      const counts = new Map();
+      for (const entry of window.__pdfSpike.annotationSidebarSummary()) {
+        const current = counts.get(entry.page) ?? { total: 0, pdf: 0, live: 0, details: [] };
+        current.total += 1;
+        current[entry.source] += 1;
+        current.details.push(`${entry.source}:${entry.kind}:${entry.detail}`);
+        counts.set(entry.page, current);
+      }
+      return Object.fromEntries(counts);
+    };
+    const selectTextOnPage = async (pageNumber) => {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const page = document.querySelector(`.page[data-page-number="${pageNumber}"]`);
+        if (page instanceof HTMLElement) {
+          page.scrollIntoView({ block: "center" });
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          const walker = document.createTreeWalker(page.querySelector(".textLayer") ?? page, NodeFilter.SHOW_TEXT);
+          let node;
+          while ((node = walker.nextNode())) {
+            const text = node.textContent ?? "";
+            const start = text.search(/\S/);
+            if (start >= 0 && text.trim().length >= 30) {
+              const range = document.createRange();
+              range.setStart(node, start);
+              range.setEnd(node, Math.min(text.length, start + 30));
+              const selection = document.getSelection();
+              selection?.removeAllRanges();
+              selection?.addRange(range);
+              return selection?.toString() ?? "";
+            }
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      throw new Error(`Could not select text on page ${pageNumber}`);
+    };
+    const createHighlightSelectionOnPage = async (pageNumber) => {
+      const selected = await selectTextOnPage(pageNumber);
+      const button = [...document.querySelectorAll("button")]
+        .find((node) => node.textContent?.trim() === "Highlight Selection");
+      if (!(button instanceof HTMLElement)) {
+        throw new Error("Highlight Selection button not found");
+      }
+      button.dispatchEvent(new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        pointerId: 31,
+        pointerType: "mouse",
+        isPrimary: true,
+        button: 0,
+        buttons: 1,
+      }));
+      button.dispatchEvent(new PointerEvent("pointerup", {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        pointerId: 31,
+        pointerType: "mouse",
+        isPrimary: true,
+        button: 0,
+        buttons: 0,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      tab()?.click();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return selected;
+    };
+    const clickEntryAndWait = async (predicate, selectedKind) => {
+      const entries = window.__pdfSpike.annotationSidebarSummary();
+      const rowIndex = entries.findIndex(predicate);
+      if (rowIndex < 0) {
+        throw new Error(`Annotation entry not found; entries=${JSON.stringify(entries)}`);
+      }
+      const row = [...document.querySelectorAll(".annotation-item")][rowIndex];
+      if (!(row instanceof HTMLElement)) {
+        throw new Error(`Annotation row not found at index ${rowIndex}`);
+      }
+      row.click();
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const stats = window.__pdfSpike.stats();
+        if (stats.selectedAnnotationKind === selectedKind) {
+          return { entry: entries[rowIndex], stats };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+      throw new Error(`Annotation row did not select ${selectedKind}; stats=${JSON.stringify(window.__pdfSpike.stats())}`);
+    };
+
+    tab()?.click();
+    await window.__pdfSpike.loadUrl("/sample.pdf", "sample.pdf");
+    const first = await waitForUsefulHighlight("first load with annotations tab already selected");
+    assertPageHeadersMatchEntries();
+    await window.__pdfSpike.loadUrl("/sample.pdf", "sample.pdf");
+    const second = await waitForUsefulHighlight("second load with annotations tab still selected");
+    assertPageHeadersMatchEntries();
+    const beforeClick = window.__pdfSpike.annotationSidebarSummary();
+    await window.__pdfSpike.activateFirstAnnotationItem();
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const afterClick = window.__pdfSpike.annotationSidebarSummary();
+    const liveMirrors = afterClick.filter((entry) => entry.source === "live" && beforeClick.some((before) => before.page === entry.page));
+    if (afterClick.length !== beforeClick.length || liveMirrors.length > 0) {
+      throw new Error(`Clicking persisted annotation should not add live mirror rows; before=${beforeClick.length} after=${afterClick.length} live=${JSON.stringify(liveMirrors)}`);
+    }
+    await assertHighlightRowsPointToFocusedText();
+
+    await window.__pdfSpike.loadUrl("/sample.pdf", "sample.pdf");
+    await waitForUsefulHighlight("delete sync sample reload");
+    const beforeDeleteCounts = pageCounts();
+    await clickEntryAndWait((entry) => entry.page === 2 && entry.kind === "highlight", "highlight");
+    if (!window.__pdfSpike.deleteSelected()) {
+      throw new Error(`Delete selected returned false; stats=${JSON.stringify(window.__pdfSpike.stats())}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const afterDeleteCounts = pageCounts();
+    if (afterDeleteCounts[2]?.total !== beforeDeleteCounts[2]?.total - 1) {
+      throw new Error(`Deleting page-2 highlight must reduce page-2 count; before=${JSON.stringify(beforeDeleteCounts)} after=${JSON.stringify(afterDeleteCounts)}`);
+    }
+    if (afterDeleteCounts[2]?.details.some((detail) => detail.includes("browser process"))) {
+      throw new Error(`Deleted page-2 highlight still appears in sidebar; after=${JSON.stringify(afterDeleteCounts)}`);
+    }
+
+    await window.__pdfSpike.loadUrl("/sample.pdf", "sample.pdf");
+    await waitForUsefulHighlight("keyboard delete sync sample reload");
+    const beforeKeyboardDeleteCounts = pageCounts();
+    await clickEntryAndWait((entry) => entry.page === 2 && entry.kind === "highlight", "highlight");
+    document.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "Delete",
+      code: "Delete",
+      bubbles: true,
+      cancelable: true,
+    }));
+    document.dispatchEvent(new KeyboardEvent("keyup", {
+      key: "Delete",
+      code: "Delete",
+      bubbles: true,
+      cancelable: true,
+    }));
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const counts = pageCounts();
+      if (
+        counts[2]?.total === beforeKeyboardDeleteCounts[2]?.total - 1 &&
+        !counts[2]?.details.some((detail) => detail.includes("browser process"))
+      ) {
+        break;
+      }
+      if (attempt === 29) {
+        throw new Error(`Keyboard Delete must remove page-2 highlight from sidebar without tool switch; before=${JSON.stringify(beforeKeyboardDeleteCounts)} after=${JSON.stringify(counts)} stats=${JSON.stringify(window.__pdfSpike.stats())}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    await window.__pdfSpike.loadUrl("/sample.pdf", "sample.pdf");
+    await waitForUsefulHighlight("edit sync sample reload");
+    const beforeEditCounts = pageCounts();
+    await clickEntryAndWait((entry) => entry.page === 2 && entry.kind === "freetext", "freetext");
+    const edited = await window.__pdfSpike.editSelectedFreeText("Synced free text row");
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const afterEditCounts = pageCounts();
+    if (!edited) {
+      throw new Error("Edit selected free text returned false");
+    }
+    if (afterEditCounts[2]?.total !== beforeEditCounts[2]?.total) {
+      throw new Error(`Editing page-2 free text must keep page-2 count stable; before=${JSON.stringify(beforeEditCounts)} after=${JSON.stringify(afterEditCounts)}`);
+    }
+    if (!afterEditCounts[2]?.details.some((detail) => detail.includes("Synced free text row"))) {
+      throw new Error(`Edited free text does not appear in sidebar; after=${JSON.stringify(afterEditCounts)}`);
+    }
+
+    await window.__pdfSpike.loadUrl("/sample.pdf", "sample.pdf");
+    await waitForUsefulHighlight("create sync sample reload");
+    const beforeNewHighlightCounts = pageCounts();
+    await createHighlightSelectionOnPage(5);
+    const afterNewHighlightCounts = pageCounts();
+    if (afterNewHighlightCounts[2]?.total !== beforeNewHighlightCounts[2]?.total) {
+      throw new Error(`Adding a page-5 highlight must not duplicate page-2 rows; before=${JSON.stringify(beforeNewHighlightCounts)} after=${JSON.stringify(afterNewHighlightCounts)}`);
+    }
+    if ((afterNewHighlightCounts[5]?.total ?? 0) !== (beforeNewHighlightCounts[5]?.total ?? 0) + 1) {
+      throw new Error(`Expected one new page-5 annotation; before=${JSON.stringify(beforeNewHighlightCounts)} after=${JSON.stringify(afterNewHighlightCounts)}`);
+    }
+    return { first, second, afterClickCount: afterClick.length };
+  })()' >/dev/null
+}
+
 click_highlight_swatch() {
   local color="$1"
   run_eval "(async () => {
@@ -1182,6 +1660,10 @@ run_eval '(async () => {
   }
   return { count };
 })()' >/dev/null
+
+run_outline_navigation_test
+run_annotation_sidebar_load_timing_test
+run_annotation_sidebar_test
 
 ERRORS="$(ab errors)"
 CONSOLE_LOGS="$(ab console)"

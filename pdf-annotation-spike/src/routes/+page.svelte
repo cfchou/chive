@@ -14,17 +14,67 @@
 
   type PdfDocument = Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>;
   type EditorTool = "none" | "highlight" | "text" | "ink";
+  type NavigationTab = "outline" | "annotations";
   type HighlightColorName = "yellow" | "green" | "blue" | "pink";
   type FreeTextColorName = "black" | "green" | "blue" | "pink";
   type InkColorName = "black" | "red" | "yellow" | "blue" | "pink";
   type SelectedAnnotationKind = "highlight" | "freetext" | "ink" | null;
+  type PdfDestination = string | unknown[] | null;
+  type PdfOutlineRaw = {
+    title?: string;
+    dest?: PdfDestination;
+    url?: string | null;
+    items?: PdfOutlineRaw[];
+  };
+  type PdfAnnotationRaw = Record<string, unknown> & {
+    rect?: unknown;
+    quadPoints?: unknown;
+    subtype?: string;
+    id?: string;
+  };
+  type OutlineEntry = {
+    id: string;
+    title: string;
+    dest: PdfDestination;
+    url: string | null;
+    pageNumber: number | null;
+    items: OutlineEntry[];
+  };
+  type AnnotationEntry = {
+    id: string;
+    sourceId: string;
+    source: "live" | "pdf";
+    page: number;
+    kind: Exclude<SelectedAnnotationKind, null>;
+    label: string;
+    detail: string;
+    color: string | number[] | null;
+    bounds: RectLike | null;
+    targetIndex: number;
+    sortTop: number;
+    sortLeft: number;
+  };
+  type AnnotationPageGroup = {
+    page: number;
+    entries: AnnotationEntry[];
+  };
+  type FocusBox = {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
   type AnnotationEditor = {
     id: string;
+    annotationElementId?: string | null;
     color?: string | null;
     deleted?: boolean;
     editorType: number | string;
+    hasBeenModified?: boolean;
+    pageIndex?: number;
     commit?: () => void;
     enterInEditMode?: () => void;
+    serialize?: (isForCopying?: boolean, context?: Record<string, unknown> | null) => Record<string, unknown> | null;
   };
   type AnnotationEditorLayerRef = {
     createAndAddNewEditor: (
@@ -39,12 +89,17 @@
     firstSelectedEditor?: AnnotationEditor;
     getEditors: (pageIndex: number) => Generator<AnnotationEditor, void, unknown>;
     highlightSelection: (methodOfCreation?: string, comment?: boolean) => void;
+    isDeletedAnnotationElement?: (annotationElementId: string) => boolean;
     setSelected: (editor: AnnotationEditor) => void;
     unselectAll: () => void;
     updateParams: (type: number, value: unknown) => void;
   };
   type SpikeDebugApi = {
     annotationSummary: () => Promise<Record<string, unknown>[]>;
+    annotationSidebarSummary: () => AnnotationEntry[];
+    outlineSummary: () => OutlineEntry[];
+    activateFirstOutlineItem: () => Promise<boolean>;
+    activateFirstAnnotationItem: () => Promise<boolean>;
     createPageFreeText: (text?: string, pageNumber?: number) => Promise<boolean>;
     createSelectionHighlightInToolMode: () => Promise<boolean>;
     editorSummary: () => Record<string, unknown>[];
@@ -73,8 +128,17 @@
   let containerEl: HTMLDivElement;
   let viewerEl: HTMLDivElement;
   let pdfViewer: PDFViewer | null = null;
+  let pdfLinkService: PDFLinkService | null = null;
   let pdfDocument = $state<PdfDocument | null>(null);
   let annotationEditorUIManager = $state<AnnotationEditorUIManager | null>(null);
+  let outlineEntries = $state<OutlineEntry[]>([]);
+  let outlineStatus = $state("Open a PDF to inspect its outline.");
+  let navigationTab = $state<NavigationTab>("outline");
+  let annotationEntries = $state<AnnotationEntry[]>([]);
+  let annotationStatus = $state("Open a PDF to inspect annotations.");
+  let selectedAnnotationEntryId = $state<string | null>(null);
+  let selectedPersistedAnnotationKey: string | null = null;
+  let annotationFocusBox = $state<FocusBox | null>(null);
   let currentPath = $state("");
   let status = $state("Open a PDF, add highlight/text/ink annotations, then save.");
   let activeTool = $state<EditorTool>("none");
@@ -92,7 +156,11 @@
   let isDirty = $state(false);
   let rememberedSelectionText = "";
   let rememberedSelectionRanges: Range[] = [];
+  let annotationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   const debugFileStore = new Map<string, Uint8Array>();
+  const annotationDetailCache = new Map<string, string>();
+  const pendingDeletedPersistedAnnotationKeys = new Set<string>();
+  const persistedAnnotationKeyByEditorId = new Map<string, string>();
 
   const highlightColors: Record<HighlightColorName, string> = {
     yellow: "#fff35c",
@@ -150,9 +218,14 @@
       );
     };
     document.addEventListener("selectionchange", rememberSelection);
+    document.addEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
     containerEl?.addEventListener("pointerdown", handlePdfPointerDown, { capture: true });
     debugWindow.__pdfSpike = {
       annotationSummary: getAnnotationSummary,
+      annotationSidebarSummary: () => annotationEntries,
+      outlineSummary: () => outlineEntries,
+      activateFirstOutlineItem,
+      activateFirstAnnotationItem,
       createPageFreeText,
       createSelectionHighlightInToolMode,
       editorSummary: getEditorSummary,
@@ -176,10 +249,30 @@
     };
     return () => {
       containerEl?.removeEventListener("pointerdown", handlePdfPointerDown, { capture: true });
+      document.removeEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
       document.removeEventListener("selectionchange", rememberSelection);
       delete debugWindow.__pdfSpike;
     };
   });
+
+  function handleAnnotationDeleteKey(event: KeyboardEvent) {
+    if (event.repeat || (event.key !== "Delete" && event.key !== "Backspace")) {
+      return;
+    }
+    if (!selectedAnnotationKind || isEditableKeyboardTarget(event.target)) {
+      return;
+    }
+    if (deleteSelectedAnnotation()) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }
+
+  function isEditableKeyboardTarget(target: EventTarget | null) {
+    if (!(target instanceof HTMLElement)) return false;
+    if (target.isContentEditable) return true;
+    return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+  }
 
   async function openPdf() {
     const selected = await open({
@@ -239,6 +332,7 @@
 
     const eventBus = new EventBus();
     const linkService = new PDFLinkService({ eventBus });
+    pdfLinkService = linkService;
     eventBus.on("annotationeditoruimanager", (event: { uiManager: AnnotationEditorUIManager }) => {
       annotationEditorUIManager = event.uiManager;
     });
@@ -257,15 +351,1102 @@
     pdfViewer.setDocument(nextDocument);
     linkService.setDocument(nextDocument, null);
     pdfDocument = nextDocument;
+    void loadOutline(nextDocument);
 
     eventBus.on("pagesinit", () => {
       if (!pdfViewer) return;
       pdfViewer.currentScaleValue = "page-width";
       scaleLabel = "Fit Width";
       status = `Rendered ${label}`;
+      queueAnnotationSidebarRefresh(0);
+      queueAnnotationSidebarRefresh(300);
+      queueAnnotationSidebarRefresh(1000);
     });
+    for (const eventName of [
+      "pagerendered",
+      "textlayerrendered",
+      "annotationlayerrendered",
+      "annotationeditorlayerrendered",
+    ]) {
+      eventBus.on(eventName, () => scheduleAnnotationSidebarRefresh(120));
+    }
     eventBus.on("editingstateschanged", syncSelectedEditorState);
     eventBus.on("annotationeditorparamschanged", syncSelectedEditorState);
+  }
+
+  function scheduleAnnotationSidebarRefresh(delay = 120) {
+    if (annotationRefreshTimer) {
+      clearTimeout(annotationRefreshTimer);
+    }
+    annotationRefreshTimer = setTimeout(() => {
+      annotationRefreshTimer = null;
+      void refreshAnnotationSidebar();
+    }, delay);
+  }
+
+  function queueAnnotationSidebarRefresh(delay = 0) {
+    setTimeout(() => void refreshAnnotationSidebar(), delay);
+  }
+
+  function queueEditorStateRefresh(...delays: number[]) {
+    for (const delay of delays) {
+      setTimeout(() => {
+        syncSelectedEditorState();
+        void refreshAnnotationSidebar();
+      }, delay);
+    }
+  }
+
+  async function refreshAnnotationSidebar() {
+    if (!pdfDocument) {
+      annotationEntries = [];
+      annotationStatus = "Open a PDF to inspect annotations.";
+      return;
+    }
+    try {
+      const pdfEntries = await getPdfAnnotationEntries();
+      const liveEntries = getLiveAnnotationEntries(pdfEntries);
+      const merged = [...liveEntries, ...pdfEntries].sort(
+        (left, right) =>
+          left.page - right.page ||
+          left.sortTop - right.sortTop ||
+          left.sortLeft - right.sortLeft ||
+          left.label.localeCompare(right.label),
+      );
+      annotationEntries = merged;
+      annotationStatus =
+        merged.length === 0
+          ? "No editable annotations found."
+          : `${merged.length} annotation${merged.length === 1 ? "" : "s"}.`;
+    } catch (error) {
+      annotationStatus = `Annotation scan failed: ${formatError(error)}`;
+    }
+  }
+
+  async function getPdfAnnotationEntries() {
+    const pages = await getAnnotationSummary();
+    const entries: AnnotationEntry[] = [];
+    const targetIndexes = new Map<string, number>();
+    for (const page of pages) {
+      const pageNumber = Number(page.page);
+      const annotations = Array.isArray(page.annotations) ? page.annotations : [];
+      for (const annotation of annotations as Record<string, unknown>[]) {
+        const kind = annotationKindForSubtype(annotation.subtype);
+        if (!kind) continue;
+        const id = String(annotation.id ?? `${pageNumber}-${entries.length}`);
+        if (isPersistedAnnotationHidden(pageNumber, id)) continue;
+        const indexKey = `${pageNumber}:${kind}`;
+        const targetIndex = targetIndexes.get(indexKey) ?? 0;
+        targetIndexes.set(indexKey, targetIndex + 1);
+        const extractedDetail =
+          kind === "highlight"
+            ? (await textForPdfAnnotation(pageNumber, annotation)) ||
+              textForAnnotationDom(pageNumber, kind, targetIndex) ||
+              annotationDetail(annotation)
+            : annotationDetail(annotation);
+        const entryId = `pdf:${id}`;
+        const position =
+          (await pdfAnnotationSortPosition(pageNumber, annotation)) ??
+          annotationTargetPosition(pageNumber, kind, targetIndex);
+        const bounds = await pdfAnnotationBounds(pageNumber, annotation);
+        entries.push({
+          id: entryId,
+          sourceId: id,
+          source: "pdf",
+          page: pageNumber,
+          kind,
+          label: annotationLabel(kind),
+          detail: cachedAnnotationDetail(entryId, extractedDetail),
+          color: (annotation.color as number[] | null) ?? null,
+          bounds,
+          targetIndex,
+          sortTop: position.top,
+          sortLeft: position.left,
+        });
+      }
+    }
+    return entries;
+  }
+
+  function getLiveAnnotationEntries(persistedEntries: AnnotationEntry[]) {
+    if (!annotationEditorUIManager || !pdfDocument) return [];
+    const entries: AnnotationEntry[] = [];
+    const targetIndexes = new Map<string, number>();
+    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+        if (editor.deleted) continue;
+        const kind = annotationKindForEditor(editor);
+        if (!kind) continue;
+        const pageNumber = pageIndex + 1;
+        if (isUnmodifiedEditorMirrorOfPersistedAnnotation(editor, persistedEntries, pageNumber)) {
+          continue;
+        }
+        const indexKey = `${pageNumber}:${kind}`;
+        const fallbackTargetIndex = targetIndexes.get(indexKey) ?? 0;
+        targetIndexes.set(indexKey, fallbackTargetIndex + 1);
+        const entryId = `live:${editor.id}`;
+        const targetIndex = targetIndexForEditor(pageNumber, kind, editor.id, fallbackTargetIndex);
+        const position = annotationTargetPosition(pageNumber, kind, targetIndex, editor.id);
+        const bounds = annotationTargetBounds(pageNumber, kind, targetIndex, editor.id);
+        if (bounds && persistedEntries.some((entry) => entry.bounds && entry.page === pageNumber && boundsOverlapSignificantly(bounds, entry.bounds))) {
+          continue;
+        }
+        const detail = liveAnnotationDetail(editor, pageNumber, targetIndex);
+        if (isDuplicateLiveAnnotation(entries, pageNumber, kind, bounds, detail)) {
+          continue;
+        }
+        entries.push({
+          id: entryId,
+          sourceId: editor.id,
+          source: "live",
+          page: pageNumber,
+          kind,
+          label: annotationLabel(kind),
+          detail: cachedAnnotationDetail(entryId, detail),
+          color: editor.color ?? null,
+          bounds,
+          targetIndex,
+          sortTop: position.top,
+          sortLeft: position.left,
+        });
+      }
+    }
+    return entries;
+  }
+
+  function isDuplicateLiveAnnotation(
+    entries: AnnotationEntry[],
+    pageNumber: number,
+    kind: Exclude<SelectedAnnotationKind, null>,
+    bounds: RectLike | null,
+    detail: string,
+  ) {
+    return entries.some((entry) => {
+      if (entry.page !== pageNumber || entry.kind !== kind) return false;
+      if (bounds && entry.bounds && boundsOverlapSignificantly(bounds, entry.bounds)) {
+        return true;
+      }
+      return !bounds && !entry.bounds && entry.detail === detail;
+    });
+  }
+
+  function isPersistedAnnotationHidden(pageNumber: number, sourceId: string) {
+    return (
+      pendingDeletedPersistedAnnotationKeys.has(persistedAnnotationKey(pageNumber, sourceId)) ||
+      isPersistedAnnotationDeleted(sourceId) ||
+      isPersistedAnnotationModified(pageNumber, sourceId)
+    );
+  }
+
+  function isPersistedAnnotationDeleted(sourceId: string) {
+    if (!annotationEditorUIManager?.isDeletedAnnotationElement) return false;
+    const annotationElementId = pdfAnnotationElementId(sourceId);
+    return (
+      annotationEditorUIManager.isDeletedAnnotationElement(annotationElementId) ||
+      annotationEditorUIManager.isDeletedAnnotationElement(sourceId)
+    );
+  }
+
+  function isPersistedAnnotationModified(pageNumber: number, sourceId: string) {
+    if (!annotationEditorUIManager || !pdfDocument) return false;
+    const pageIndex = pageNumber - 1;
+    for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+      if (persistedSourceIdForEditor(editor) === sourceId && editorChangedExistingAnnotation(editor)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function persistedAnnotationKeyForEditor(editor: AnnotationEditor | null | undefined) {
+    if (!editor) return null;
+    const sourceId = persistedSourceIdForEditor(editor);
+    const pageIndex = pageIndexForEditor(editor);
+    return sourceId && pageIndex !== null
+      ? persistedAnnotationKey(pageIndex + 1, sourceId)
+      : persistedAnnotationKeyByEditorId.get(editor.id) ?? null;
+  }
+
+  function isUnmodifiedEditorMirrorOfPersistedAnnotation(
+    editor: AnnotationEditor,
+    persistedEntries: AnnotationEntry[],
+    pageNumber: number,
+  ) {
+    const sourceId = persistedSourceIdForEditor(editor);
+    return Boolean(
+      sourceId &&
+        !editorChangedExistingAnnotation(editor) &&
+        persistedEntries.some(
+          (entry) => entry.page === pageNumber && entry.sourceId === sourceId,
+        ),
+    );
+  }
+
+  function persistedSourceIdForEditor(editor: AnnotationEditor) {
+    const annotationElementId = editor.annotationElementId;
+    if (!annotationElementId) return null;
+    return annotationElementId.startsWith("pdfjs_internal_id_")
+      ? annotationElementId.slice("pdfjs_internal_id_".length)
+      : annotationElementId;
+  }
+
+  function pdfAnnotationElementId(sourceId: string) {
+    return sourceId.startsWith("pdfjs_internal_id_") ? sourceId : `pdfjs_internal_id_${sourceId}`;
+  }
+
+  function sourceIdFromPdfAnnotationElementId(elementId: string) {
+    if (!elementId) return null;
+    return elementId.startsWith("pdfjs_internal_id_")
+      ? elementId.slice("pdfjs_internal_id_".length)
+      : elementId;
+  }
+
+  function persistedAnnotationKey(pageNumber: number, sourceId: string) {
+    return `${pageNumber}:${sourceId}`;
+  }
+
+  function pageNumberForAnnotationElement(element: Element) {
+    const pageElement = element.closest<HTMLElement>(".page[data-page-number]");
+    const pageNumber = Number(pageElement?.dataset.pageNumber);
+    return Number.isInteger(pageNumber) && pageNumber > 0 ? pageNumber : null;
+  }
+
+  function rememberPersistedAnnotationElement(element: Element | null | undefined) {
+    if (!(element instanceof HTMLElement)) return null;
+    const sourceId = sourceIdFromPdfAnnotationElementId(element.id);
+    const pageNumber = pageNumberForAnnotationElement(element);
+    if (!sourceId || !pageNumber) return null;
+    selectedPersistedAnnotationKey = persistedAnnotationKey(pageNumber, sourceId);
+    return selectedPersistedAnnotationKey;
+  }
+
+  function editorChangedExistingAnnotation(editor: AnnotationEditor) {
+    if (editor.deleted) return true;
+    if (editor.hasBeenModified) return true;
+    return Boolean(editor.serialize?.(false));
+  }
+
+  function pageIndexForEditor(editor: AnnotationEditor) {
+    if (Number.isInteger(editor.pageIndex)) {
+      return editor.pageIndex as number;
+    }
+    if (!annotationEditorUIManager || !pdfDocument) {
+      return null;
+    }
+    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
+      for (const candidate of annotationEditorUIManager.getEditors(pageIndex)) {
+        if (candidate.id === editor.id) {
+          return pageIndex;
+        }
+      }
+    }
+    return null;
+  }
+
+  function annotationKindForSubtype(subtype: unknown): Exclude<SelectedAnnotationKind, null> | null {
+    if (subtype === "Highlight") return "highlight";
+    if (subtype === "FreeText") return "freetext";
+    if (subtype === "Ink") return "ink";
+    return null;
+  }
+
+  function annotationLabel(kind: Exclude<SelectedAnnotationKind, null>) {
+    if (kind === "freetext") return "Free text";
+    return kind[0].toUpperCase() + kind.slice(1);
+  }
+
+  function annotationDetail(annotation: Record<string, unknown>) {
+    const text = annotation.textContent;
+    if (Array.isArray(text)) {
+      return text.join(" ").trim() || "Persisted PDF annotation";
+    }
+    const contents = annotation.contentsObj;
+    if (contents && typeof contents === "object" && "str" in contents) {
+      return String((contents as { str?: unknown }).str ?? "").trim() || "Persisted PDF annotation";
+    }
+    return "Persisted PDF annotation";
+  }
+
+  async function textForPdfAnnotation(pageNumber: number, annotation: PdfAnnotationRaw) {
+    const rect = numbersFromUnknown(annotation.rect);
+    if (!pdfDocument || rect.length < 4) {
+      return "";
+    }
+    try {
+      const page = await (pdfDocument as PdfDocument & {
+        getPage: (pageNumber: number) => Promise<{
+          getTextContent: () => Promise<{ items: Record<string, unknown>[] }>;
+          streamTextContent?: () => { getReader: () => { read: () => Promise<{ done?: boolean; value?: { items?: Record<string, unknown>[] } }> } };
+          getViewport: (options: { scale: number }) => {
+            height: number;
+            transform: number[];
+            convertToViewportRectangle: (rect: number[]) => number[];
+            convertToViewportPoint?: (x: number, y: number) => number[];
+          };
+        }>;
+      }).getPage(pageNumber);
+      const viewport = page.getViewport({ scale: 1 });
+      const annotationRects = annotationViewportRects(annotation, viewport);
+      const rawItems = await getPageTextItems(page);
+      const chunks = rawItems
+        .map((rawItem, index) => {
+          const item = rawItem as Record<string, unknown>;
+          const text = String(item.str ?? "");
+          const transform = numbersFromUnknown(item.transform);
+          if (!text.trim() || transform.length < 6) return null;
+          const tx = transformMatrix(viewport.transform, transform as number[]);
+          const width = Number(item.width ?? 0);
+          const height = Number(item.height ?? 0);
+          const itemLeft = tx[4];
+          const itemTop = tx[5] - height;
+          const itemRight = itemLeft + width;
+          const itemBottom = tx[5];
+          const itemRect = { left: itemLeft, top: itemTop, right: itemRight, bottom: itemBottom };
+          if (!annotationRects.some((annotationRect) => rectLikesOverlap(annotationRect, itemRect, 2))) {
+            return null;
+          }
+          const selectedText = textForTextItemRects(text, itemRect, annotationRects);
+          return {
+            index,
+            text: selectedText || text.trim(),
+            rect: itemRect,
+          };
+        })
+        .filter((chunk): chunk is { index: number; text: string; rect: RectLike } => Boolean(chunk))
+        .sort((leftChunk, rightChunk) => leftChunk.index - rightChunk.index);
+      return chunks.map(({ text }) => text).join(" ").replace(/\s+/g, " ").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  async function getPageTextItems(page: {
+    getTextContent: () => Promise<{ items: Record<string, unknown>[] }>;
+    streamTextContent?: () => { getReader: () => { read: () => Promise<{ done?: boolean; value?: { items?: Record<string, unknown>[] } }> } };
+  }) {
+    if (typeof page.streamTextContent === "function") {
+      const reader = page.streamTextContent().getReader();
+      const items: Record<string, unknown>[] = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value && Array.isArray(value.items)) {
+          items.push(...value.items);
+        }
+      }
+      return items;
+    }
+    const textContent = await page.getTextContent();
+    return Array.isArray(textContent.items) ? textContent.items : [];
+  }
+
+  async function pdfAnnotationSortPosition(pageNumber: number, annotation: PdfAnnotationRaw) {
+    const rect = numbersFromUnknown(annotation.rect);
+    if (!pdfDocument || rect.length < 4) return null;
+    try {
+      const page = await (pdfDocument as PdfDocument & {
+        getPage: (pageNumber: number) => Promise<{
+          getViewport: (options: { scale: number }) => {
+            convertToViewportRectangle: (rect: number[]) => number[];
+            transform: number[];
+            convertToViewportPoint?: (x: number, y: number) => number[];
+          };
+        }>;
+      }).getPage(pageNumber);
+      const viewport = page.getViewport({ scale: 1 });
+      const rects = annotationViewportRects(annotation, viewport);
+      const firstLineTop = Math.min(...rects.map((candidate) => candidate.top));
+      const firstLineRects = rects.filter((candidate) => Math.abs(candidate.top - firstLineTop) < 2);
+      return {
+        top: firstLineTop,
+        left: Math.min(...firstLineRects.map((candidate) => candidate.left)),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async function pdfAnnotationBounds(pageNumber: number, annotation: PdfAnnotationRaw) {
+    const rect = numbersFromUnknown(annotation.rect);
+    if (!pdfDocument || rect.length < 4) return null;
+    try {
+      const page = await (pdfDocument as PdfDocument & {
+        getPage: (pageNumber: number) => Promise<{
+          getViewport: (options: { scale: number }) => {
+            width: number;
+            height: number;
+            transform: number[];
+            convertToViewportRectangle: (rect: number[]) => number[];
+            convertToViewportPoint?: (x: number, y: number) => number[];
+          };
+        }>;
+      }).getPage(pageNumber);
+      const viewport = page.getViewport({ scale: 1 });
+      return rectToPagePercent(unionRects(annotationViewportRects(annotation, viewport)), viewport.width, viewport.height);
+    } catch {
+      return null;
+    }
+  }
+
+  type RectLike = {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  };
+
+  function normalizeViewportRect(rect: number[]) {
+    const [x1, y1, x2, y2] = rect;
+    return [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+  }
+
+  function annotationViewportRects(
+    annotation: PdfAnnotationRaw,
+    viewport: {
+      transform: number[];
+      convertToViewportRectangle: (rect: number[]) => number[];
+      convertToViewportPoint?: (x: number, y: number) => number[];
+    },
+  ) {
+    const quadRects = quadPointViewportRects(annotation.quadPoints, viewport);
+    if (quadRects.length > 0) {
+      return quadRects;
+    }
+    const rect = numbersFromUnknown(annotation.rect);
+    const [left, top, right, bottom] = normalizeViewportRect(viewport.convertToViewportRectangle(rect));
+    return [{ left, top, right, bottom }];
+  }
+
+  function quadPointViewportRects(
+    quadPoints: unknown,
+    viewport: {
+      transform: number[];
+      convertToViewportPoint?: (x: number, y: number) => number[];
+    },
+  ) {
+    const points = numbersFromUnknown(quadPoints);
+    const rects: RectLike[] = [];
+    for (let index = 0; index + 7 < points.length; index += 8) {
+      const viewportPoints = [
+        pointToViewport(viewport, points[index], points[index + 1]),
+        pointToViewport(viewport, points[index + 2], points[index + 3]),
+        pointToViewport(viewport, points[index + 4], points[index + 5]),
+        pointToViewport(viewport, points[index + 6], points[index + 7]),
+      ];
+      const xs = viewportPoints.map(([x]) => x);
+      const ys = viewportPoints.map(([, y]) => y);
+      rects.push({
+        left: Math.min(...xs),
+        top: Math.min(...ys),
+        right: Math.max(...xs),
+        bottom: Math.max(...ys),
+      });
+    }
+    return rects;
+  }
+
+  function pointToViewport(
+    viewport: {
+      transform: number[];
+      convertToViewportPoint?: (x: number, y: number) => number[];
+    },
+    x: number,
+    y: number,
+  ) {
+    if (typeof viewport.convertToViewportPoint === "function") {
+      return viewport.convertToViewportPoint(x, y);
+    }
+    return applyTransformToPoint(viewport.transform, x, y);
+  }
+
+  function numbersFromUnknown(value: unknown): number[] {
+    if (Array.isArray(value)) {
+      const values: number[] = [];
+      for (const item of value) {
+        values.push(...numbersFromUnknown(item));
+      }
+      return values;
+    }
+    if (ArrayBuffer.isView(value) && "length" in value) {
+      return Array.from(value as unknown as ArrayLike<number>).filter(Number.isFinite);
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return [value];
+    }
+    return [];
+  }
+
+  function textForTextItemRects(text: string, itemRect: RectLike, annotationRects: RectLike[]) {
+    if (text.length === 0 || itemRect.right <= itemRect.left) return "";
+    let firstOffset: number | null = null;
+    let lastOffset: number | null = null;
+    for (let offset = 0; offset < text.length; offset += 1) {
+      const charRect = {
+        left: itemRect.left + ((itemRect.right - itemRect.left) * offset) / text.length,
+        top: itemRect.top,
+        right: itemRect.left + ((itemRect.right - itemRect.left) * (offset + 1)) / text.length,
+        bottom: itemRect.bottom,
+      };
+      if (annotationRects.some((annotationRect) => rectLikesOverlap(annotationRect, charRect, 1))) {
+        firstOffset ??= offset;
+        lastOffset = offset + 1;
+      }
+    }
+    if (firstOffset === null || lastOffset === null) return "";
+    const [start, end] = trimPartialWordEdges(text, firstOffset, lastOffset);
+    return text.slice(start, end).trim() || text.slice(firstOffset, lastOffset).trim();
+  }
+
+  function trimPartialWordEdges(text: string, firstOffset: number, lastOffset: number): [number, number] {
+    let start = firstOffset;
+    let end = lastOffset;
+    if (start > 0 && /\S/.test(text[start] ?? "") && /\S/.test(text[start - 1] ?? "")) {
+      while (start < end && /\S/.test(text[start] ?? "")) start += 1;
+      while (start < end && /\s/.test(text[start] ?? "")) start += 1;
+    }
+    if (end < text.length && /\S/.test(text[end] ?? "") && /\S/.test(text[end - 1] ?? "")) {
+      while (end > start && /\S/.test(text[end - 1] ?? "")) end -= 1;
+      while (end > start && /\s/.test(text[end - 1] ?? "")) end -= 1;
+    }
+    return [start, end];
+  }
+
+  function applyTransformToPoint(transform: number[], x: number, y: number) {
+    return [x * transform[0] + y * transform[2] + transform[4], x * transform[1] + y * transform[3] + transform[5]];
+  }
+
+  function transformMatrix(left: number[], right: number[]) {
+    return [
+      left[0] * right[0] + left[2] * right[1],
+      left[1] * right[0] + left[3] * right[1],
+      left[0] * right[2] + left[2] * right[3],
+      left[1] * right[2] + left[3] * right[3],
+      left[0] * right[4] + left[2] * right[5] + left[4],
+      left[1] * right[4] + left[3] * right[5] + left[5],
+    ];
+  }
+
+  function rectLikesOverlap(left: RectLike, right: RectLike, padding = 0) {
+    return (
+      left.left - padding < right.right &&
+      left.right + padding > right.left &&
+      left.top - padding < right.bottom &&
+      left.bottom + padding > right.top
+    );
+  }
+
+  function unionRects(rects: RectLike[]) {
+    return rects.reduce(
+      (union, rect) => ({
+        left: Math.min(union.left, rect.left),
+        top: Math.min(union.top, rect.top),
+        right: Math.max(union.right, rect.right),
+        bottom: Math.max(union.bottom, rect.bottom),
+      }),
+      {
+        left: Number.POSITIVE_INFINITY,
+        top: Number.POSITIVE_INFINITY,
+        right: Number.NEGATIVE_INFINITY,
+        bottom: Number.NEGATIVE_INFINITY,
+      },
+    );
+  }
+
+  function rectToPagePercent(rect: RectLike, width: number, height: number) {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return null;
+    }
+    return {
+      left: rect.left / width,
+      top: rect.top / height,
+      right: rect.right / width,
+      bottom: rect.bottom / height,
+    };
+  }
+
+  function boundsOverlapSignificantly(left: RectLike, right: RectLike) {
+    const intersectionWidth = Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left));
+    const intersectionHeight = Math.max(0, Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top));
+    const intersectionArea = intersectionWidth * intersectionHeight;
+    const smallerArea = Math.min(rectArea(left), rectArea(right));
+    return smallerArea > 0 && intersectionArea / smallerArea > 0.55;
+  }
+
+  function rectArea(rect: RectLike) {
+    return Math.max(0, rect.right - rect.left) * Math.max(0, rect.bottom - rect.top);
+  }
+
+  function liveAnnotationDetail(editor: AnnotationEditor, pageNumber: number, targetIndex: number) {
+    if (isHighlightEditor(editor)) {
+      return textForAnnotationDom(pageNumber, "highlight", targetIndex) || "Unsaved/live highlight";
+    }
+    if (isFreeTextEditor(editor)) {
+      return textForAnnotationDom(pageNumber, "freetext", targetIndex) || "Unsaved/live free text";
+    }
+    return "Unsaved/live ink";
+  }
+
+  function cachedAnnotationDetail(entryId: string, detail: string) {
+    const cached = annotationDetailCache.get(entryId);
+    if (cached) {
+      return cached;
+    }
+    const normalized = detail.trim();
+    if (isUsefulAnnotationDetail(normalized)) {
+      annotationDetailCache.set(entryId, normalized);
+      return normalized;
+    }
+    return annotationDetailCache.get(entryId) ?? normalized;
+  }
+
+  function isUsefulAnnotationDetail(detail: string) {
+    return Boolean(
+      detail &&
+        detail !== "Persisted PDF annotation" &&
+        detail !== "Unsaved/live highlight" &&
+        detail !== "Unsaved/live free text" &&
+        detail !== "Unsaved/live ink",
+    );
+  }
+
+  function textForAnnotationDom(
+    pageNumber: number,
+    kind: Exclude<SelectedAnnotationKind, null>,
+    targetIndex: number,
+  ) {
+    const element = annotationTargetElements(pageNumber, kind)[targetIndex];
+    if (!element) return "";
+    if (kind === "freetext") return element.textContent?.trim() ?? "";
+    if (kind !== "highlight") return "";
+    return textOverlappingElement(element);
+  }
+
+  function textOverlappingElement(element: HTMLElement) {
+    const page = element.closest<HTMLElement>(".page");
+    if (!page) return "";
+    const targetRect = element.getBoundingClientRect();
+    const textChunks: { index: number; text: string; rect: DOMRect }[] = [];
+    const walker = document.createTreeWalker(page.querySelector(".textLayer") ?? page, NodeFilter.SHOW_TEXT);
+    let textNode: Node | null;
+    let index = 0;
+    while ((textNode = walker.nextNode())) {
+      const text = textNode.textContent ?? "";
+      let firstOffset: number | null = null;
+      let lastOffset: number | null = null;
+      for (let offset = 0; offset < text.length; offset += 1) {
+        const char = text[offset];
+        if (!char || !char.trim()) {
+          index += 1;
+          continue;
+        }
+        const range = document.createRange();
+        range.setStart(textNode, offset);
+        range.setEnd(textNode, offset + 1);
+        const rect = range.getBoundingClientRect();
+        range.detach();
+        if (rect.width > 0 && rect.height > 0 && rectsOverlap(targetRect, rect, 1)) {
+          firstOffset ??= offset;
+          lastOffset = offset + 1;
+        }
+        index += 1;
+      }
+      if (firstOffset !== null && lastOffset !== null) {
+        const range = document.createRange();
+        range.setStart(textNode, firstOffset);
+        range.setEnd(textNode, lastOffset);
+        textChunks.push({
+          index: index - text.length + firstOffset,
+          text: text.slice(firstOffset, lastOffset),
+          rect: range.getBoundingClientRect(),
+        });
+        range.detach();
+      }
+    }
+    return textChunks
+      .sort((left, right) => left.index - right.index)
+      .map(({ text }) => text)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function rectsOverlap(left: DOMRect, right: DOMRect, padding = 0) {
+    return (
+      left.left - padding < right.right &&
+      left.right + padding > right.left &&
+      left.top - padding < right.bottom &&
+      left.bottom + padding > right.top
+    );
+  }
+
+  async function loadOutline(document: PdfDocument) {
+    outlineEntries = [];
+    outlineStatus = "Loading outline...";
+    try {
+      const documentWithOutline = document as PdfDocument & {
+        getDestination: (id: string) => Promise<unknown[] | null>;
+        getOutline: () => Promise<PdfOutlineRaw[] | null>;
+        getPageIndex: (ref: unknown) => Promise<number>;
+      };
+      const rawOutline = await documentWithOutline.getOutline();
+      if (!rawOutline || rawOutline.length === 0) {
+        outlineStatus = "This PDF has no outline.";
+        return;
+      }
+      outlineEntries = await Promise.all(
+        rawOutline.map((item, index) => normalizeOutlineEntry(documentWithOutline, item, `${index + 1}`)),
+      );
+      const count = countOutlineEntries(outlineEntries);
+      outlineStatus = `${count} outline ${count === 1 ? "item" : "items"}.`;
+    } catch (error) {
+      outlineStatus = `Outline failed: ${formatError(error)}`;
+    }
+  }
+
+  async function normalizeOutlineEntry(
+    document: PdfDocument & {
+      getDestination: (id: string) => Promise<unknown[] | null>;
+      getPageIndex: (ref: unknown) => Promise<number>;
+    },
+    item: PdfOutlineRaw,
+    id: string,
+  ): Promise<OutlineEntry> {
+    const children = item.items ?? [];
+    return {
+      id,
+      title: item.title?.trim() || "Untitled",
+      dest: item.dest ?? null,
+      url: item.url ?? null,
+      pageNumber: await resolveOutlinePageNumber(document, item.dest ?? null),
+      items: await Promise.all(
+        children.map((child, index) => normalizeOutlineEntry(document, child, `${id}.${index + 1}`)),
+      ),
+    };
+  }
+
+  async function resolveOutlinePageNumber(
+    document: PdfDocument & {
+      getDestination: (id: string) => Promise<unknown[] | null>;
+      getPageIndex: (ref: unknown) => Promise<number>;
+    },
+    dest: PdfDestination,
+  ) {
+    if (!dest) return null;
+    const explicitDestination = typeof dest === "string" ? await document.getDestination(dest) : dest;
+    const pageReference = explicitDestination?.[0];
+    if (typeof pageReference === "number") {
+      return pageReference + 1;
+    }
+    if (!pageReference) {
+      return null;
+    }
+    try {
+      return (await document.getPageIndex(pageReference)) + 1;
+    } catch {
+      return null;
+    }
+  }
+
+  function countOutlineEntries(entries: OutlineEntry[]): number {
+    return entries.reduce((count, entry) => count + 1 + countOutlineEntries(entry.items), 0);
+  }
+
+  async function goToOutlineEntry(entry: OutlineEntry) {
+    if (entry.url) {
+      status = "External outline links are not opened in this spike.";
+      return false;
+    }
+    if (!entry.dest || !pdfLinkService) {
+      status = "Outline item has no navigable PDF destination.";
+      return false;
+    }
+    await pdfLinkService.goToDestination(entry.dest as string | unknown[]);
+    status = `Navigated to ${entry.title}.`;
+    return true;
+  }
+
+  async function activateFirstOutlineItem() {
+    const first = outlineEntries[0];
+    if (!first) return false;
+    return goToOutlineEntry(first);
+  }
+
+  async function activateFirstAnnotationItem() {
+    await refreshAnnotationSidebar();
+    const first = annotationEntries[0];
+    if (!first) return false;
+    return activateAnnotationEntry(first);
+  }
+
+  function groupAnnotationEntriesByPage(entries: AnnotationEntry[]): AnnotationPageGroup[] {
+    const groups: AnnotationPageGroup[] = [];
+    for (const entry of entries) {
+      const last = groups[groups.length - 1];
+      if (last?.page === entry.page) {
+        last.entries.push(entry);
+      } else {
+        groups.push({ page: entry.page, entries: [entry] });
+      }
+    }
+    return groups;
+  }
+
+  function itemCountLabel(count: number) {
+    return `${count} item${count === 1 ? "" : "s"}`;
+  }
+
+  async function activateAnnotationEntry(entry: AnnotationEntry) {
+    selectedAnnotationEntryId = entry.id;
+    await scrollToPage(entry.page);
+    if (entry.source === "live") {
+      return activateLiveAnnotationEntry(entry);
+    }
+    return activatePdfAnnotationEntry(entry);
+  }
+
+  async function scrollToPage(pageNumber: number) {
+    const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    if (pageElement) {
+      containerEl.scrollTop = Math.max(pageElement.offsetTop - 20, 0);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    } else if (pdfViewer) {
+      pdfViewer.currentPageNumber = pageNumber;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+
+  async function activateLiveAnnotationEntry(entry: AnnotationEntry) {
+    if (entry.kind === "highlight") return activateExistingHighlightEditor(entry.sourceId);
+    if (entry.kind === "freetext") return activateExistingFreeTextEditor(entry.sourceId);
+    return activateExistingInkEditor(entry.sourceId);
+  }
+
+  async function activatePdfAnnotationEntry(entry: AnnotationEntry) {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const element = annotationTargetElementForEntry(entry);
+      if (element) {
+        await focusAnnotationElement(element);
+        if (await activatePersistedEditorEntry(entry)) {
+          return true;
+        }
+        const rect = element.getBoundingClientRect();
+        const x = Math.round(rect.left + Math.min(Math.max(rect.width / 2, 4), Math.max(rect.width - 4, 4)));
+        const y = Math.round(rect.top + Math.min(Math.max(rect.height / 2, 4), Math.max(rect.height - 4, 4)));
+        if (entry.kind === "highlight") return activateHighlightEditorAtPoint(x, y);
+        if (entry.kind === "freetext") return activateFreeTextEditorAtPoint(x, y);
+        return activateInkEditorAtPoint(x, y);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    status = `Could not find ${entry.label.toLowerCase()} on page ${entry.page}.`;
+    return false;
+  }
+
+  async function activatePersistedEditorEntry(entry: AnnotationEntry) {
+    const tool = editorToolForAnnotationKind(entry.kind);
+    if (!annotationEditorUIManager || !tool) return false;
+    if (activeTool !== tool) {
+      setTool(tool);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    let editor = findEditorByPersistedSourceId(entry.sourceId, entry.kind);
+    for (let attempt = 0; !editor && attempt < 12; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      editor = findEditorByPersistedSourceId(entry.sourceId, entry.kind);
+    }
+    if (!editor) return false;
+    await focusEditorById(editor.id);
+    annotationEditorUIManager.setSelected(editor);
+    syncSelectedEditorState();
+    selectedAnnotationEntryId = entry.id;
+    selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
+    persistedAnnotationKeyByEditorId.set(editor.id, selectedPersistedAnnotationKey);
+    if (entry.kind === "highlight") {
+      status = "Selected highlight. Change color or delete it, then save.";
+    } else if (entry.kind === "freetext") {
+      status = "Selected free text. Press Enter to edit text, change color, or delete it.";
+    } else {
+      status = "Selected ink. Change color or delete it, then save.";
+    }
+    return true;
+  }
+
+  function editorToolForAnnotationKind(kind: Exclude<SelectedAnnotationKind, null>): EditorTool | null {
+    if (kind === "highlight") return "highlight";
+    if (kind === "freetext") return "text";
+    if (kind === "ink") return "ink";
+    return null;
+  }
+
+  function findEditorByPersistedSourceId(sourceId: string, kind: Exclude<SelectedAnnotationKind, null>) {
+    if (!annotationEditorUIManager || !pdfDocument) return null;
+    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+        if (!editor.deleted && annotationKindForEditor(editor) === kind && persistedSourceIdForEditor(editor) === sourceId) {
+          return editor;
+        }
+      }
+    }
+    return null;
+  }
+
+  function annotationTargetElementForEntry(entry: AnnotationEntry) {
+    const exactElement =
+      entry.source === "pdf" ? document.getElementById(`pdfjs_internal_id_${entry.sourceId}`) : null;
+    if (isUsableAnnotationElement(exactElement, entry)) {
+      return exactElement;
+    }
+
+    const elements = annotationTargetElements(entry.page, entry.kind);
+    if (entry.bounds) {
+      const best = elements
+        .map((element) => {
+          const bounds = elementPageBounds(element);
+          return bounds
+            ? {
+                element,
+                overlapRatio: boundsOverlapRatio(bounds, entry.bounds as RectLike),
+                centerDistance: rectCenterDistance(bounds, entry.bounds as RectLike),
+              }
+            : null;
+        })
+        .filter((match): match is { element: HTMLElement; overlapRatio: number; centerDistance: number } =>
+          Boolean(match),
+        )
+        .sort((left, right) => right.overlapRatio - left.overlapRatio || left.centerDistance - right.centerDistance)[0];
+      if (best && best.overlapRatio > 0.55) {
+        return best.element;
+      }
+    }
+
+    return elements[entry.targetIndex] ?? null;
+  }
+
+  function isUsableAnnotationElement(element: HTMLElement | null, entry: AnnotationEntry) {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    const page = element.closest<HTMLElement>(".page");
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      page?.dataset.pageNumber === String(entry.page) &&
+      annotationTargetElements(entry.page, entry.kind).includes(element)
+    );
+  }
+
+  function annotationTargetElements(pageNumber: number, kind: Exclude<SelectedAnnotationKind, null>) {
+    const selector =
+      kind === "highlight"
+        ? `.page[data-page-number="${pageNumber}"] .highlightAnnotation, .page[data-page-number="${pageNumber}"] .highlightEditor`
+        : kind === "freetext"
+          ? `.page[data-page-number="${pageNumber}"] .freeTextAnnotation, .page[data-page-number="${pageNumber}"] .freeTextEditor`
+          : `.page[data-page-number="${pageNumber}"] .inkAnnotation, .page[data-page-number="${pageNumber}"] .inkEditor`;
+    return [...document.querySelectorAll<HTMLElement>(selector)]
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      })
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return leftRect.top - rightRect.top || leftRect.left - rightRect.left;
+      });
+  }
+
+  function targetIndexForEditor(
+    pageNumber: number,
+    kind: Exclude<SelectedAnnotationKind, null>,
+    editorId: string,
+    fallbackTargetIndex: number,
+  ) {
+    const elements = annotationTargetElements(pageNumber, kind);
+    const index = elements.findIndex((element) => element.id === editorId);
+    return index >= 0 ? index : fallbackTargetIndex;
+  }
+
+  function annotationTargetPosition(
+    pageNumber: number,
+    kind: Exclude<SelectedAnnotationKind, null>,
+    targetIndex: number,
+    editorId?: string,
+  ) {
+    const elements = annotationTargetElements(pageNumber, kind);
+    const element = (editorId ? elements.find((candidate) => candidate.id === editorId) : null) ?? elements[targetIndex];
+    if (!element) {
+      return { top: Number.MAX_SAFE_INTEGER, left: Number.MAX_SAFE_INTEGER };
+    }
+    const page = element.closest<HTMLElement>(".page");
+    const elementRect = element.getBoundingClientRect();
+    const pageRect = page?.getBoundingClientRect();
+    return {
+      top: pageRect ? elementRect.top - pageRect.top : elementRect.top,
+      left: pageRect ? elementRect.left - pageRect.left : elementRect.left,
+    };
+  }
+
+  function annotationTargetBounds(
+    pageNumber: number,
+    kind: Exclude<SelectedAnnotationKind, null>,
+    targetIndex: number,
+    editorId?: string,
+  ) {
+    const elements = annotationTargetElements(pageNumber, kind);
+    const element = (editorId ? elements.find((candidate) => candidate.id === editorId) : null) ?? elements[targetIndex];
+    return element ? elementPageBounds(element) : null;
+  }
+
+  function elementPageBounds(element: HTMLElement) {
+    const page = element.closest<HTMLElement>(".page");
+    if (!page) return null;
+    const elementRect = element.getBoundingClientRect();
+    const pageRect = page.getBoundingClientRect();
+    return rectToPagePercent(
+      {
+        left: elementRect.left - pageRect.left,
+        top: elementRect.top - pageRect.top,
+        right: elementRect.right - pageRect.left,
+        bottom: elementRect.bottom - pageRect.top,
+      },
+      pageRect.width,
+      pageRect.height,
+    );
+  }
+
+  function boundsOverlapRatio(left: RectLike, right: RectLike) {
+    const intersectionWidth = Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left));
+    const intersectionHeight = Math.max(0, Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top));
+    const intersectionArea = intersectionWidth * intersectionHeight;
+    const smallerArea = Math.min(rectArea(left), rectArea(right));
+    return smallerArea > 0 ? intersectionArea / smallerArea : 0;
+  }
+
+  function rectCenterDistance(left: RectLike, right: RectLike) {
+    const leftX = (left.left + left.right) / 2;
+    const leftY = (left.top + left.bottom) / 2;
+    const rightX = (right.left + right.right) / 2;
+    const rightY = (right.top + right.bottom) / 2;
+    return Math.hypot(leftX - rightX, leftY - rightY);
+  }
+
+  async function focusAnnotationElement(element: HTMLElement) {
+    const rect = element.getBoundingClientRect();
+    const containerRect = containerEl.getBoundingClientRect();
+    const left = rect.left - containerRect.left + containerEl.scrollLeft - 3;
+    const top = rect.top - containerRect.top + containerEl.scrollTop - 3;
+    const width = rect.width + 6;
+    const height = rect.height + 6;
+
+    containerEl.scrollLeft = Math.max(0, left + width / 2 - containerEl.clientWidth / 2);
+    containerEl.scrollTop = Math.max(0, top + height / 2 - containerEl.clientHeight / 2);
+    annotationFocusBox = { left, top, width, height };
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  async function focusEditorById(editorId: string) {
+    const element = document.getElementById(editorId);
+    if (element instanceof HTMLElement) {
+      await focusAnnotationElement(element);
+    }
   }
 
   function setTool(tool: EditorTool) {
@@ -308,6 +1489,7 @@
       status = "Highlight unavailable: PDF.js annotation manager not ready yet.";
       return false;
     }
+    const persistedKeyHint = selectedPersistedAnnotationKey;
     if (activeTool !== "highlight") {
       setTool("highlight");
     }
@@ -344,7 +1526,7 @@
         );
         editorElement.click();
         await new Promise((resolve) => setTimeout(resolve, 50));
-        syncSelectedEditorState();
+        syncSelectedEditorState(persistedKeyHint);
         if (annotationEditorUIManager.firstSelectedEditor) {
           status = "Selected highlight. Change color or delete it, then save.";
           return true;
@@ -400,7 +1582,9 @@
       status = "Could not activate clicked highlight for editing.";
       return false;
     }
+    await focusEditorById(editor.id);
     annotationEditorUIManager.setSelected(editor);
+    selectedAnnotationEntryId = `live:${editor.id}`;
     syncSelectedEditorState();
     status = "Selected highlight. Change color or delete it, then save.";
     return true;
@@ -424,7 +1608,9 @@
       status = "Could not activate clicked free text for editing.";
       return false;
     }
+    await focusEditorById(editor.id);
     annotationEditorUIManager.setSelected(editor);
+    selectedAnnotationEntryId = `live:${editor.id}`;
     syncSelectedEditorState();
     status = "Selected free text. Press Enter to edit text, change color, or delete it.";
     return true;
@@ -435,6 +1621,7 @@
       status = "Free text unavailable: PDF.js annotation manager not ready yet.";
       return false;
     }
+    const persistedKeyHint = selectedPersistedAnnotationKey;
     if (activeTool !== "text") {
       setTool("text");
       await new Promise((resolve) => setTimeout(resolve, 150));
@@ -476,7 +1663,7 @@
           annotationEditorUIManager.setSelected(editor);
         }
         await new Promise((resolve) => setTimeout(resolve, 50));
-        syncSelectedEditorState();
+        syncSelectedEditorState(persistedKeyHint);
         if (isFreeTextEditor(annotationEditorUIManager.firstSelectedEditor)) {
           status = "Selected free text. Press Enter to edit text, change color, or delete it.";
           return true;
@@ -506,7 +1693,9 @@
       status = "Could not activate clicked ink for editing.";
       return false;
     }
+    await focusEditorById(editor.id);
     annotationEditorUIManager.setSelected(editor);
+    selectedAnnotationEntryId = `live:${editor.id}`;
     syncSelectedEditorState();
     status = "Selected ink. Change color or delete it, then save.";
     return true;
@@ -517,6 +1706,7 @@
       status = "Ink unavailable: PDF.js annotation manager not ready yet.";
       return false;
     }
+    const persistedKeyHint = selectedPersistedAnnotationKey;
     if (activeTool !== "ink") {
       setTool("ink");
       await new Promise((resolve) => setTimeout(resolve, 150));
@@ -558,7 +1748,7 @@
           annotationEditorUIManager.setSelected(editor);
         }
         await new Promise((resolve) => setTimeout(resolve, 50));
-        syncSelectedEditorState();
+        syncSelectedEditorState(persistedKeyHint);
         if (isInkEditor(annotationEditorUIManager.firstSelectedEditor)) {
           status = "Selected ink. Change color or delete it, then save.";
           return true;
@@ -638,13 +1828,16 @@
       return;
     }
     if (savedFreeTextAnnotation) {
+      rememberPersistedAnnotationElement(savedFreeTextAnnotation);
       void activateFreeTextEditorAtPoint(event.clientX, event.clientY);
       return;
     }
     if (savedInkAnnotation) {
+      rememberPersistedAnnotationElement(savedInkAnnotation);
       void activateInkEditorAtPoint(event.clientX, event.clientY);
       return;
     }
+    rememberPersistedAnnotationElement(savedAnnotation);
     void activateHighlightEditorAtPoint(event.clientX, event.clientY);
   }
 
@@ -699,6 +1892,7 @@
       return false;
     }
     const before = countHighlightEditorsInManager();
+    const previousHighlightEditorIds = new Set(highlightEditorIds());
     const switchedIntoHighlightMode = activeTool !== "highlight";
     if (switchedIntoHighlightMode) {
       setTool("highlight");
@@ -733,6 +1927,7 @@
     uiManager.highlightSelection(methodOfCreation);
     for (let attempt = 0; attempt < 10; attempt += 1) {
       if (countHighlightEditorsInManager() > before) {
+        cacheNewHighlightDetails(previousHighlightEditorIds, selectionText);
         document.getSelection()?.removeAllRanges();
         if (resetModeToNone) {
           setTool("none");
@@ -742,6 +1937,8 @@
         rememberedSelectionText = "";
         rememberedSelectionRanges = [];
         isDirty = true;
+        void refreshAnnotationSidebar();
+        queueEditorStateRefresh(150, 500);
         status = createdStatus;
         return true;
       }
@@ -749,6 +1946,27 @@
     }
     status = "PDF.js did not create a visible highlight. Try Highlight mode, then drag across text.";
     return false;
+  }
+
+  function highlightEditorIds() {
+    if (!annotationEditorUIManager || !pdfDocument) return [];
+    const ids: string[] = [];
+    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+        if (isHighlightEditor(editor) && !editor.deleted) {
+          ids.push(editor.id);
+        }
+      }
+    }
+    return ids;
+  }
+
+  function cacheNewHighlightDetails(previousIds: Set<string>, detail: string) {
+    for (const id of highlightEditorIds()) {
+      if (!previousIds.has(id)) {
+        annotationDetailCache.set(`live:${id}`, detail.trim());
+      }
+    }
   }
 
   function highlightSelection(event?: PointerEvent) {
@@ -769,12 +1987,14 @@
     });
   }
 
-  function syncSelectedEditorState() {
+  function syncSelectedEditorState(persistedKeyHint: string | null = null) {
     if (activeTool === "none") {
       selectedAnnotationKind = null;
       selectedAnnotationColor = null;
       hasSelectedHighlight = false;
       selectedHighlightColor = null;
+      selectedAnnotationEntryId = null;
+      selectedPersistedAnnotationKey = null;
       return;
     }
     const editor = annotationEditorUIManager?.firstSelectedEditor;
@@ -783,12 +2003,19 @@
       selectedAnnotationColor = null;
       hasSelectedHighlight = false;
       selectedHighlightColor = null;
+      selectedAnnotationEntryId = null;
+      selectedPersistedAnnotationKey = null;
       return;
     }
     selectedAnnotationKind = annotationKindForEditor(editor);
     selectedAnnotationColor = editor.color ?? null;
     hasSelectedHighlight = isHighlightEditor(editor);
     selectedHighlightColor = hasSelectedHighlight ? highlightColorNameForValue(editor?.color ?? null) : null;
+    selectedAnnotationEntryId = `live:${editor.id}`;
+    selectedPersistedAnnotationKey = persistedAnnotationKeyForEditor(editor) ?? persistedKeyHint;
+    if (selectedPersistedAnnotationKey) {
+      persistedAnnotationKeyByEditorId.set(editor.id, selectedPersistedAnnotationKey);
+    }
   }
 
   function isHighlightEditor(editor: AnnotationEditor | null | undefined): editor is AnnotationEditor {
@@ -852,6 +2079,7 @@
       return false;
     }
     annotationEditorUIManager.setSelected(editor);
+    selectedAnnotationEntryId = `live:${editor.id}`;
     syncSelectedEditorState();
     status = "Selected highlight. Change color or delete it, then save.";
     return true;
@@ -875,6 +2103,8 @@
     if (hasSelectedHighlight) {
       selectedHighlightColor = colorName;
       isDirty = true;
+      void refreshAnnotationSidebar();
+      queueEditorStateRefresh(150, 500);
       status = `Changed selected highlight to ${colorName}. Save to persist it into the PDF.`;
       return;
     }
@@ -910,6 +2140,8 @@
     if (selectedAnnotationKind === "freetext") {
       selectedAnnotationColor = freeTextColors[colorName];
       isDirty = true;
+      void refreshAnnotationSidebar();
+      queueEditorStateRefresh(150, 500);
       status = `Changed selected free text to ${colorName}. Save to persist it into the PDF.`;
       return;
     }
@@ -945,6 +2177,8 @@
     if (selectedAnnotationKind === "ink") {
       selectedAnnotationColor = inkColors[colorName];
       isDirty = true;
+      void refreshAnnotationSidebar();
+      queueEditorStateRefresh(150, 500);
       status = `Changed selected ink to ${colorName}. Save to persist it into the PDF.`;
       return;
     }
@@ -968,6 +2202,8 @@
     );
     if (selectedAnnotationKind === "ink") {
       isDirty = true;
+      void refreshAnnotationSidebar();
+      queueEditorStateRefresh(150, 500);
       status = `Changed selected ink thickness to ${thickness}. Save to persist it into the PDF.`;
       return;
     }
@@ -998,6 +2234,8 @@
     if (selectedAnnotationKind === "ink") {
       selectedAnnotationColor = inkColors.yellow;
       isDirty = true;
+      void refreshAnnotationSidebar();
+      queueEditorStateRefresh(150, 500);
       status = "Changed selected ink to marker. Save to persist it into the PDF.";
       return;
     }
@@ -1005,15 +2243,28 @@
   }
 
   function deleteSelectedAnnotation() {
-    if (!annotationEditorUIManager?.firstSelectedEditor) {
+    const manager = annotationEditorUIManager;
+    const selectedEditor = manager?.firstSelectedEditor;
+    if (!selectedEditor) {
       status = "Select an annotation first, then delete it.";
       return false;
     }
-    const wasHighlight = isHighlightEditor(annotationEditorUIManager.firstSelectedEditor);
-    const wasFreeText = isFreeTextEditor(annotationEditorUIManager.firstSelectedEditor);
-    annotationEditorUIManager.delete();
-    syncSelectedEditorState();
+    const wasHighlight = isHighlightEditor(selectedEditor);
+    const wasFreeText = isFreeTextEditor(selectedEditor);
+    const pendingDeleteKey = persistedAnnotationKeyForEditor(selectedEditor) ?? selectedPersistedAnnotationKey;
+    if (pendingDeleteKey) {
+      pendingDeletedPersistedAnnotationKeys.add(pendingDeleteKey);
+    }
+    manager.delete();
+    selectedAnnotationKind = null;
+    selectedAnnotationColor = null;
+    hasSelectedHighlight = false;
+    selectedHighlightColor = null;
+    selectedAnnotationEntryId = null;
+    selectedPersistedAnnotationKey = null;
     isDirty = true;
+    void refreshAnnotationSidebar();
+    queueEditorStateRefresh(100, 250, 500);
     status = wasHighlight
       ? "Deleted selected highlight. Save to persist it into the PDF."
       : wasFreeText
@@ -1053,6 +2304,7 @@
 
     return {
       pages: pdfDocument?.numPages ?? 0,
+      currentPageNumber: pdfViewer?.currentPageNumber ?? null,
       status,
       activeTool,
       defaultHighlightColor,
@@ -1061,11 +2313,14 @@
       defaultInkThickness,
       defaultInkOpacity,
       selectedAnnotationKind,
+      selectedPersistedAnnotationKey,
+      pendingDeletedPersistedAnnotationKeys: [...pendingDeletedPersistedAnnotationKeys],
       selectedAnnotationColor,
       hasSelectedHighlight,
       selectedHighlightColor,
       selectedEditorType: selectedEditor?.editorType ?? null,
       selectedEditorColor: selectedEditor?.color ?? null,
+      annotationFocusBox,
       selectedText: document.getSelection()?.toString() ?? "",
       textLayerSpans: document.querySelectorAll(".textLayer span").length,
       annotationEditorLayers: document.querySelectorAll(".annotationEditorLayer").length,
@@ -1087,12 +2342,15 @@
       for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
         entries.push({
           color: editor.color ?? null,
+          annotationElementId: editor.annotationElementId ?? null,
           deleted: editor.deleted ?? false,
           editorType: editor.editorType,
+          hasBeenModified: editor.hasBeenModified ?? false,
           id: editor.id,
           isDomSelected: editor.id === selectedEditorId,
           isFirstSelectedEditor: annotationEditorUIManager.firstSelectedEditor?.id === editor.id,
           page: pageIndex + 1,
+          pageIndex: editor.pageIndex ?? null,
         });
       }
     }
@@ -1109,6 +2367,7 @@
     movableManager.translateSelectedEditors?.(x, y, true);
     syncSelectedEditorState();
     isDirty = true;
+    void refreshAnnotationSidebar();
     return true;
   }
 
@@ -1161,6 +2420,7 @@
       });
       currentPath = path;
       isDirty = false;
+      await refreshAnnotationSidebar();
       status = `Saved ${path}`;
     } catch (error) {
       status = `Save failed: ${formatError(error)}`;
@@ -1185,6 +2445,7 @@
     debugFileStore.set(path, new Uint8Array(saved));
     currentPath = path;
     isDirty = false;
+    await refreshAnnotationSidebar();
     status = `Saved debug snapshot ${path}`;
   }
 
@@ -1198,10 +2459,11 @@
       throw new Error(`No debug snapshot stored for ${path}`);
     }
     await loadPdfBytes(bytes.slice(), path);
-    currentPath = path;
-    isDirty = false;
-    activeTool = "none";
-    status = `Loaded debug snapshot ${path}`;
+      currentPath = path;
+      isDirty = false;
+      activeTool = "none";
+      await refreshAnnotationSidebar();
+      status = `Loaded debug snapshot ${path}`;
   }
 
   async function debugLoadUrl(url: string, label = url) {
@@ -1214,6 +2476,7 @@
       currentPath = label;
       isDirty = false;
       activeTool = "none";
+      await refreshAnnotationSidebar();
       status = `Loaded ${label}`;
     } finally {
       isBusy = false;
@@ -1240,14 +2503,15 @@
         annotations: annotations.map((annotation: Record<string, unknown>) => ({
           annotationType: annotation.annotationType,
           borderStyle: "borderStyle" in annotation ? annotation.borderStyle : null,
-          color: "color" in annotation ? annotation.color : null,
+          color: "color" in annotation ? numbersFromUnknown(annotation.color) : null,
           contentsObj: "contentsObj" in annotation ? annotation.contentsObj : null,
           defaultAppearanceData:
             "defaultAppearanceData" in annotation ? annotation.defaultAppearanceData : null,
           id: annotation.id,
           opacity: "opacity" in annotation ? annotation.opacity : null,
           popupRef: "popupRef" in annotation ? annotation.popupRef : null,
-          rect: "rect" in annotation ? annotation.rect : null,
+          quadPoints: "quadPoints" in annotation ? numbersFromUnknown(annotation.quadPoints) : null,
+          rect: "rect" in annotation ? numbersFromUnknown(annotation.rect) : null,
           subtype: "subtype" in annotation ? annotation.subtype : null,
           textContent: "textContent" in annotation ? annotation.textContent : null,
         })),
@@ -1304,6 +2568,8 @@
     createdEditor?.commit?.();
     syncSelectedEditorState();
     isDirty = true;
+    void refreshAnnotationSidebar();
+    queueEditorStateRefresh(150, 500);
     return true;
   }
 
@@ -1338,8 +2604,11 @@
       }),
     );
     editor.commit?.();
-    syncSelectedEditorState();
     isDirty = true;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    syncSelectedEditorState();
+    await refreshAnnotationSidebar();
+    queueEditorStateRefresh(500);
     status = "Edited selected free text. Save to persist it into the PDF.";
     return true;
   }
@@ -1348,8 +2617,23 @@
     pdfViewer?.setDocument(null as never);
     (pdfDocument as { destroy?: () => void } | null)?.destroy?.();
     pdfViewer = null;
+    pdfLinkService = null;
     pdfDocument = null;
     annotationEditorUIManager = null;
+    outlineEntries = [];
+    outlineStatus = "Open a PDF to inspect its outline.";
+    annotationEntries = [];
+    annotationStatus = "Open a PDF to inspect annotations.";
+    selectedAnnotationEntryId = null;
+    selectedPersistedAnnotationKey = null;
+    annotationFocusBox = null;
+    annotationDetailCache.clear();
+    pendingDeletedPersistedAnnotationKeys.clear();
+    persistedAnnotationKeyByEditorId.clear();
+    if (annotationRefreshTimer) {
+      clearTimeout(annotationRefreshTimer);
+      annotationRefreshTimer = null;
+    }
     viewerEl.replaceChildren();
   }
 
@@ -1501,15 +2785,123 @@
     </ol>
   </aside>
 
+  <aside class="nav-panel" aria-label="PDF navigation sidebar">
+    <div class="nav-tabs" role="tablist" aria-label="PDF navigation tabs">
+      <button
+        class:active={navigationTab === "outline"}
+        role="tab"
+        aria-selected={navigationTab === "outline"}
+        onclick={() => (navigationTab = "outline")}
+      >
+        Outline
+      </button>
+      <button
+        class:active={navigationTab === "annotations"}
+        role="tab"
+        aria-selected={navigationTab === "annotations"}
+        onclick={() => {
+          navigationTab = "annotations";
+          queueAnnotationSidebarRefresh(0);
+          queueAnnotationSidebarRefresh(300);
+          queueAnnotationSidebarRefresh(1000);
+        }}
+      >
+        Annotations
+      </button>
+    </div>
+    {#if navigationTab === "outline"}
+      <div class="nav-content" role="tabpanel" aria-label="Outline">
+        <div class="nav-heading">
+          <span class="label">Outline</span>
+          <span>{outlineStatus}</span>
+        </div>
+        {#if outlineEntries.length > 0}
+          <ul class="outline-list">
+            {@render outlineItems(outlineEntries)}
+          </ul>
+        {:else}
+          <p class="empty-state">{outlineStatus}</p>
+        {/if}
+      </div>
+    {:else}
+      <div class="nav-content" role="tabpanel" aria-label="Annotations">
+        <div class="nav-heading">
+          <span class="label">Annotations</span>
+          <span>{annotationStatus}</span>
+        </div>
+        {#if annotationEntries.length > 0}
+          <div class="annotation-list">
+            {#each groupAnnotationEntriesByPage(annotationEntries) as group (group.page)}
+              <section class="annotation-page-group" aria-label={`Page ${group.page} annotations`}>
+                <div class="annotation-page-header">
+                  <span>Page {group.page}</span>
+                  <span>{itemCountLabel(group.entries.length)}</span>
+                </div>
+                <ul>
+                  {#each group.entries as entry (entry.id)}
+                    <li>
+                      <button
+                        class="annotation-item"
+                        class:active={selectedAnnotationEntryId === entry.id}
+                        onclick={() => void activateAnnotationEntry(entry)}
+                        title={`${entry.label} on page ${entry.page}`}
+                      >
+                        <span class="annotation-kind">{entry.label}</span>
+                        <span class="annotation-detail">{entry.detail}</span>
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+              </section>
+            {/each}
+          </div>
+        {:else}
+          <p class="empty-state">{annotationStatus}</p>
+        {/if}
+      </div>
+    {/if}
+  </aside>
+
   <section class="viewer-shell">
     <div class="viewer-toolbar">
       <span>{currentPath || "No PDF loaded"}</span>
     </div>
     <div class="pdf-container" bind:this={containerEl}>
+      {#if annotationFocusBox}
+        <div
+          class="annotation-focus-box"
+          style={`left: ${annotationFocusBox.left}px; top: ${annotationFocusBox.top}px; width: ${annotationFocusBox.width}px; height: ${annotationFocusBox.height}px`}
+          aria-hidden="true"
+        ></div>
+      {/if}
       <div class="pdfViewer" bind:this={viewerEl}></div>
     </div>
   </section>
 </main>
+
+{#snippet outlineItems(entries: OutlineEntry[], depth = 0)}
+  {#each entries as entry (entry.id)}
+    <li>
+      <button
+        class="outline-item"
+        style={`padding-left: ${12 + depth * 16}px`}
+        onclick={() => void goToOutlineEntry(entry)}
+        disabled={!entry.dest && !entry.url}
+        title={entry.title}
+      >
+        <span>{entry.title}</span>
+        {#if entry.pageNumber}
+          <span class="page-number">{entry.pageNumber}</span>
+        {/if}
+      </button>
+      {#if entry.items.length > 0}
+        <ul>
+          {@render outlineItems(entry.items, depth + 1)}
+        </ul>
+      {/if}
+    </li>
+  {/each}
+{/snippet}
 
 <style>
   :global(html),
@@ -1539,7 +2931,7 @@
 
   .app {
     display: grid;
-    grid-template-columns: 320px minmax(0, 1fr);
+    grid-template-columns: 320px 280px minmax(0, 1fr);
     height: 100vh;
   }
 
@@ -1675,6 +3067,143 @@
     line-height: 1.65;
   }
 
+  .nav-panel {
+    display: grid;
+    min-width: 0;
+    grid-template-rows: 44px minmax(0, 1fr);
+    border-right: 1px solid #d7dce2;
+    background: #ffffff;
+  }
+
+  .nav-tabs {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-bottom: 1px solid #d7dce2;
+    padding: 6px 10px;
+    background: #f8f9fb;
+  }
+
+  .nav-tabs button {
+    min-height: 30px;
+  }
+
+  .nav-content {
+    min-width: 0;
+    overflow: auto;
+  }
+
+  .nav-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 12px 8px;
+    color: #5b6470;
+    font-size: 12px;
+  }
+
+  .nav-heading span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .empty-state {
+    margin: 0;
+    padding: 16px 12px;
+    color: #5b6470;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .outline-list,
+  .outline-list ul,
+  .annotation-list ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .annotation-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .annotation-page-group + .annotation-page-group {
+    border-top: 1px solid #d8dde5;
+  }
+
+  .annotation-page-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 12px 8px;
+    color: #2f3742;
+    background: #f3f5f8;
+    border-bottom: 1px solid #d8dde5;
+    font-size: 12px;
+  }
+
+  .annotation-page-header span:last-child {
+    color: #8a929c;
+  }
+
+  .outline-item,
+  .annotation-item {
+    display: grid;
+    width: 100%;
+    min-height: 34px;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    border: 0;
+    border-radius: 0;
+    padding: 6px 10px 6px 12px;
+    text-align: left;
+    background: transparent;
+  }
+
+  .outline-item span:first-child,
+  .annotation-detail {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .outline-item:hover:not(:disabled),
+  .annotation-item:hover:not(:disabled) {
+    background: #edf4ff;
+  }
+
+  .annotation-item {
+    grid-template-rows: auto auto;
+    padding: 10px 12px;
+  }
+
+  .annotation-item.active {
+    color: #1e2329;
+    background: #e5f0ff;
+  }
+
+  .annotation-kind {
+    font-weight: 700;
+  }
+
+  .annotation-detail {
+    color: #7a838f;
+    font-size: 12px;
+  }
+
+  .annotation-detail {
+    grid-column: 1 / -1;
+  }
+
+  .page-number {
+    color: #7a838f;
+    font-size: 12px;
+  }
+
   .viewer-shell {
     position: relative;
     display: grid;
@@ -1704,6 +3233,13 @@
     inset: 42px 0 0;
     overflow: auto;
     background: #dfe3e8;
+  }
+
+  .annotation-focus-box {
+    position: absolute;
+    z-index: 20;
+    border: 1px dashed #2387d8;
+    pointer-events: none;
   }
 
   .pdfViewer {
