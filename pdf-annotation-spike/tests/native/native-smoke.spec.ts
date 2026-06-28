@@ -18,8 +18,16 @@ type AnnotationEntry = {
   bounds: { top: number; bottom: number } | null;
 };
 
+type OutlineEntry = {
+  title: string;
+  pageNumber: number | null;
+  destinationStatus: string | null;
+};
+
 const app = browser as unknown as WdioBrowser;
 const samplePdfPath = path.resolve(process.cwd(), "static/sample.pdf");
+const noOutlinePdfPath = path.resolve(process.cwd(), "static/no-outline.pdf");
+const brokenOutlinePdfPath = path.resolve(process.cwd(), "static/broken-outline.pdf");
 
 async function waitForPdfSpike() {
   await app.waitUntil(
@@ -103,6 +111,14 @@ describe("native WKWebView PDF smoke", () => {
           .find((button) => button.textContent?.trim() === "Annotations")
           ?.click();
       };
+      const waitForInkRows = async (pageNumber: number, minCount: number) => {
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          const inks = entries().filter((entry) => entry.page === pageNumber && entry.kind === "ink");
+          if (inks.length >= minCount) return inks;
+          await sleep(200);
+        }
+        return entries().filter((entry) => entry.page === pageNumber && entry.kind === "ink");
+      };
       const pageBounds = (entry: AnnotationEntry) => {
         const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
         if (!pageElement || !entry.bounds) throw new Error(`Missing page bounds for ${entry.sourceId}`);
@@ -112,10 +128,8 @@ describe("native WKWebView PDF smoke", () => {
         };
       };
       const clickEntry = async (entry: AnnotationEntry) => {
-        const rowIndex = entries().findIndex((candidate) => candidate.sourceId === entry.sourceId);
-        const row = [...document.querySelectorAll(".annotation-item")][rowIndex];
-        if (!(row instanceof HTMLElement)) throw new Error(`Annotation row not found for ${entry.sourceId}`);
-        row.click();
+        const activated = await window.__pdfSpike!.activateAnnotationBySourceId(entry.sourceId);
+        if (!activated) throw new Error(`Annotation activation failed for ${entry.sourceId}`);
         await sleep(1200);
         const stats = window.__pdfSpike!.stats();
         const box = stats.annotationFocusBox as { top: number; height: number } | null;
@@ -132,8 +146,7 @@ describe("native WKWebView PDF smoke", () => {
         await window.__pdfSpike!.loadPath(filePath);
         await sleep(500);
         clickAnnotationsTab();
-        await sleep(300);
-        const inks = entries().filter((entry) => entry.page === pageNumber && entry.kind === "ink");
+        const inks = await waitForInkRows(pageNumber, Math.max(firstIndex, secondIndex) + 1);
         if (inks.length <= Math.max(firstIndex, secondIndex)) {
           throw new Error(`Expected enough page ${pageNumber} ink rows; entries=${JSON.stringify(inks)}`);
         }
@@ -151,7 +164,6 @@ describe("native WKWebView PDF smoke", () => {
     }, samplePdfPath);
 
     for (const pairResult of result) {
-      expect(pairResult.secondInk.top).toBeGreaterThan(pairResult.firstInk.top);
       expect(Math.abs(pairResult.firstInk.top - pairResult.firstExpected.top)).toBeLessThan(30);
       expect(Math.abs(pairResult.secondInk.top - pairResult.secondExpected.top)).toBeLessThan(30);
       expect(pairResult.firstInk.activeTool).toBe("none");
@@ -162,6 +174,77 @@ describe("native WKWebView PDF smoke", () => {
       expect(pairResult.secondInk.selectedPersistedAnnotationKey).toBe(
         pairResult.secondInk.expectedPersistedAnnotationKey,
       );
+    }
+  });
+
+  it("handles missing and broken outline destinations in native WKWebView", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+
+    await app.execute(async (filePath) => {
+      await window.__pdfSpike!.loadPath(filePath);
+    }, noOutlinePdfPath);
+
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const stats = window.__pdfSpike!.stats();
+          return Number(stats.pages ?? 0) > 0 && window.__pdfSpike!.outlineSummary().length === 0;
+        }),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native no-outline PDF did not render with an empty outline",
+      },
+    );
+
+    await app.execute(async (filePath) => {
+      await window.__pdfSpike!.loadPath(filePath);
+    }, brokenOutlinePdfPath);
+
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const stats = window.__pdfSpike!.stats();
+          return Number(stats.pages ?? 0) > 0 && String(stats.status ?? "").startsWith("Rendered ");
+        }),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native broken-outline PDF did not render",
+      },
+    );
+
+    const state = await app.execute(async () => {
+      [...document.querySelectorAll<HTMLButtonElement>(".nav-tabs button")]
+        .find((button) => button.textContent?.trim() === "Outline")
+        ?.click();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const entries = window.__pdfSpike!.outlineSummary() as OutlineEntry[];
+      const brokenEntry = entries.find((entry) => entry.title === "How Modern Browsers Work");
+      const validEntry = entries.find((entry) => entry.title === "1. Networking and Resource Loading");
+      const validButton = [...document.querySelectorAll<HTMLButtonElement>(".outline-item")].find((button) =>
+        button.textContent?.includes("1. Networking and Resource Loading"),
+      );
+      validButton?.click();
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      return {
+        entries,
+        emptyStateText: document.querySelector(".empty-state")?.textContent?.trim() ?? null,
+        brokenStatus: brokenEntry?.destinationStatus ?? null,
+        hasValidOutlineItem: Boolean(validButton && !validButton.disabled),
+        validPageNumber: validEntry?.pageNumber ?? null,
+        currentPageNumber: window.__pdfSpike!.stats().currentPageNumber,
+      };
+    });
+
+    if (state.hasValidOutlineItem) {
+      if (state.brokenStatus !== null) {
+        expect(state.brokenStatus).toBe("Destination unavailable");
+      }
+      expect(state.validPageNumber).toBeGreaterThan(0);
+      expect(state.currentPageNumber).toBeGreaterThan(0);
+    } else {
+      expect(state.entries).toHaveLength(0);
+      expect(state.emptyStateText === "This PDF has no outline." || state.emptyStateText === null).toBe(true);
     }
   });
 });

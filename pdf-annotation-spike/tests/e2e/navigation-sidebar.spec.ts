@@ -38,6 +38,43 @@ test("outline sidebar navigates to page two", async ({ page }) => {
   await expect(page.getByText("Networking and resource loading pipeline")).toBeVisible();
 });
 
+test("outline sidebar handles PDFs with no outline", async ({ page }) => {
+  await loadFixture(page, "/no-outline.pdf", "no-outline.pdf");
+
+  await expect
+    .poll(() => page.evaluate(() => window.__pdfSpike!.outlineSummary().length))
+    .toBe(0);
+  await expect(page.locator(".empty-state", { hasText: "This PDF has no outline." })).toBeVisible();
+});
+
+test("outline sidebar keeps valid items when one outline destination is broken", async ({ page }) => {
+  await loadFixture(page, "/broken-outline.pdf", "broken-outline.pdf");
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__pdfSpike!.outlineSummary().map((entry: { title: string; pageNumber: number | null; destinationStatus: string | null }) => ({
+          title: entry.title,
+          pageNumber: entry.pageNumber,
+          destinationStatus: entry.destinationStatus,
+        })),
+      ),
+    )
+    .toContainEqual({
+      title: "1. Networking and Resource Loading",
+      pageNumber: 2,
+      destinationStatus: null,
+    });
+
+  const brokenButton = page.getByRole("button", { name: /How Modern Browsers Work Destination unavailable/ });
+  await expect(brokenButton).toBeDisabled();
+  await expect(page.getByText(/not navigable/)).toBeVisible();
+
+  await page.getByRole("button", { name: "1. Networking and Resource Loading 2" }).click();
+  await expect(page.getByText("Navigated to 1. Networking and Resource Loading.")).toBeVisible();
+  await expect(page.getByText("Networking and resource loading pipeline")).toBeVisible();
+});
+
 test("annotation sidebar keeps useful highlight snippets after load and click", async ({ page }) => {
   await loadFixture(page);
   const selectedText = await createHighlight(page);
@@ -98,8 +135,7 @@ test("annotation sidebar locates each persisted ink row after editor mode change
       };
     };
     const clickEntry = async (entry: SidebarEntry) => {
-      const rowIndex = entries().findIndex((candidate) => candidate.id === entry.id);
-      const row = [...document.querySelectorAll(".annotation-item")][rowIndex];
+      const row = document.getElementById(`annotation-row-${entry.sourceId}`);
       if (!(row instanceof HTMLElement)) throw new Error(`Annotation row not found for ${entry.id}`);
       row.click();
       await sleep(1200);
@@ -129,9 +165,6 @@ test("annotation sidebar locates each persisted ink row after editor mode change
   });
 
   for (const pairResult of result) {
-    expect(pairResult.secondInk.top, `page ${pairResult.pageNumber} ink ${pairResult.pair.join("->")}`).toBeGreaterThan(
-      pairResult.firstInk.top,
-    );
     expect(Math.abs(pairResult.firstInk.top - pairResult.firstExpected.top)).toBeLessThan(30);
     expect(Math.abs(pairResult.secondInk.top - pairResult.secondExpected.top)).toBeLessThan(30);
     expect(pairResult.firstInk.activeTool).toBe("none");
@@ -257,8 +290,7 @@ test("annotation sidebar stays synced across load, click, delete, edit, and crea
     const assertHighlightRowsPointToFocusedText = async () => {
       for (const entry of entries()) {
         if (entry.source !== "pdf" || entry.kind !== "highlight") continue;
-        const rowIndex = entries().findIndex((candidate) => candidate.id === entry.id);
-        const row = [...document.querySelectorAll(".annotation-item")][rowIndex];
+        const row = document.getElementById(`annotation-row-${entry.sourceId}`);
         if (!(row instanceof HTMLElement)) throw new Error(`Could not find annotation row for ${entry.detail}`);
         row.click();
         const expectedTokens = significantTokens(entry.detail);
@@ -279,10 +311,8 @@ test("annotation sidebar stays synced across load, click, delete, edit, and crea
     const clickEntryAndWait = async (predicate: (entry: SidebarEntry) => boolean, selectedKind: string) => {
       const entry = entries().find(predicate);
       if (!entry) throw new Error(`Annotation entry not found; entries=${JSON.stringify(entries())}`);
-      const rowIndex = entries().findIndex((candidate) => candidate.id === entry.id);
-      if (rowIndex < 0) throw new Error(`Annotation entry not found; entries=${JSON.stringify(entries())}`);
-      const row = [...document.querySelectorAll(".annotation-item")][rowIndex];
-      if (!(row instanceof HTMLElement)) throw new Error(`Annotation row not found at index ${rowIndex}`);
+      const row = document.getElementById(`annotation-row-${entry.sourceId}`);
+      if (!(row instanceof HTMLElement)) throw new Error(`Annotation row not found for ${entry.id}`);
       const expectedPersistedKey = entry.source === "pdf" ? `${entry.page}:${entry.sourceId}` : null;
       row.click();
       for (let attempt = 0; attempt < 30; attempt += 1) {

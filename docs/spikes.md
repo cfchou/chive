@@ -20,7 +20,8 @@ Covered:
 - normal text PDFs
 - scanned/image-only PDFs
 - PDF.js WASM decoder assets for scanned PDFs
-- browser regression harness for repeatable testing
+- Playwright browser regression coverage
+- WDIO Tauri native smoke coverage for WKWebView-only PDF.js behavior
 
 References:
 
@@ -28,28 +29,51 @@ References:
 - `docs/adr/0002-treat-pdfjs-annotation-editor-lifecycle-as-risky.md`
 - `docs/adr/0003-bundle-pdfjs-wasm-decoders-for-scanned-pdfs.md`
 - `docs/adr/0004-use-browser-regression-harness-for-pdf-spike.md`
+- `docs/adr/0006-test-pdfjs-in-native-tauri-webview-not-only-browser.md`
+- `docs/adr/0007-add-native-wkwebview-smoke-tests-with-wdio-tauri.md`
+
+## In Progress
+
+### PDF structure and navigation sidebar
+
+Status: partially derisked
+
+Covered:
+
+- PDF-native outline/table-of-contents extraction
+- nested outline rendering
+- outline item click navigation
+- no-outline empty state
+- invalid outline destination handling without breaking valid outline items
+- annotation list page ordering and click-to-locate behavior
+- sidebar selection sync for app-created and persisted annotations
+
+Deferred:
+
+- thumbnails, including lazy thumbnail rendering for large/scanned PDFs
+- PDF-native bookmark write/edit behavior
 
 ## Next Candidates
 
-### 1. PDF structure and navigation sidebar
+### 1. PDF-native bookmarks
 
-Goal: prove that PDF.js gives enough data for PDF Expert-like navigation sidebars.
+Goal: prove that PDF-native bookmarks can be read, written, and used as navigation targets.
 
 Questions:
 
-- Can we reliably extract outline/table of contents?
-- Can we generate thumbnails for normal, large, and scanned PDFs?
-- Can we list bookmarks and annotations in useful page order?
-- What happens for PDFs with no outline or malformed metadata?
-- Can clicking an outline/sidebar item scroll to the correct page/location?
+- Can we read and eventually write PDF-native bookmarks?
+- Can clicking a PDF-native bookmark scroll to the correct page/location?
 
 Success criteria:
 
-- outline tab renders nested outline when present
+- PDF-native bookmarks are read when available
+- PDF-native bookmarks can be created or edited when PDF.js/pdf-lib support is enough
+- bookmark data persists after save/reopen
+- click bookmark item -> PDF scrolls/selects target
+
+Deferred success criteria:
+
 - thumbnail tab renders first N thumbnails lazily
-- annotation tab lists app-created annotations after save/reopen
-- click sidebar item -> PDF scrolls/selects target
-- click annotation on page -> sidebar selection syncs
 
 ### 2. Reader shell with two dockable sidebars
 

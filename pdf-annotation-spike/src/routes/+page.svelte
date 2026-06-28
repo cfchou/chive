@@ -42,6 +42,7 @@
     dest: PdfDestination;
     url: string | null;
     pageNumber: number | null;
+    destinationStatus: string | null;
     items: OutlineEntry[];
   };
   type AnnotationEntry = {
@@ -104,6 +105,7 @@
     outlineSummary: () => OutlineEntry[];
     activateFirstOutlineItem: () => Promise<boolean>;
     activateFirstAnnotationItem: () => Promise<boolean>;
+    activateAnnotationBySourceId: (sourceId: string) => Promise<boolean>;
     createPageFreeText: (text?: string, pageNumber?: number) => Promise<boolean>;
     createSelectionHighlightInToolMode: () => Promise<boolean>;
     editorSummary: () => Record<string, unknown>[];
@@ -230,6 +232,7 @@
       outlineSummary: () => outlineEntries,
       activateFirstOutlineItem,
       activateFirstAnnotationItem,
+      activateAnnotationBySourceId,
       createPageFreeText,
       createSelectionHighlightInToolMode,
       editorSummary: getEditorSummary,
@@ -1107,7 +1110,11 @@
         rawOutline.map((item, index) => normalizeOutlineEntry(documentWithOutline, item, `${index + 1}`)),
       );
       const count = countOutlineEntries(outlineEntries);
-      outlineStatus = `${count} outline ${count === 1 ? "item" : "items"}.`;
+      const unavailableCount = countUnavailableOutlineEntries(outlineEntries);
+      outlineStatus =
+        unavailableCount > 0
+          ? `${count} outline ${count === 1 ? "item" : "items"}; ${unavailableCount} not navigable.`
+          : `${count} outline ${count === 1 ? "item" : "items"}.`;
     } catch (error) {
       outlineStatus = `Outline failed: ${formatError(error)}`;
     }
@@ -1122,12 +1129,15 @@
     id: string,
   ): Promise<OutlineEntry> {
     const children = item.items ?? [];
+    const dest = item.dest ?? null;
+    const pageNumber = await resolveOutlinePageNumber(document, dest);
     return {
       id,
       title: item.title?.trim() || "Untitled",
-      dest: item.dest ?? null,
+      dest,
       url: item.url ?? null,
-      pageNumber: await resolveOutlinePageNumber(document, item.dest ?? null),
+      pageNumber,
+      destinationStatus: outlineDestinationStatus(dest, item.url ?? null, pageNumber),
       items: await Promise.all(
         children.map((child, index) => normalizeOutlineEntry(document, child, `${id}.${index + 1}`)),
       ),
@@ -1142,7 +1152,12 @@
     dest: PdfDestination,
   ) {
     if (!dest) return null;
-    const explicitDestination = typeof dest === "string" ? await document.getDestination(dest) : dest;
+    let explicitDestination: unknown[] | null = null;
+    try {
+      explicitDestination = typeof dest === "string" ? await document.getDestination(dest) : dest;
+    } catch {
+      return null;
+    }
     const pageReference = explicitDestination?.[0];
     if (typeof pageReference === "number") {
       return pageReference + 1;
@@ -1161,18 +1176,48 @@
     return entries.reduce((count, entry) => count + 1 + countOutlineEntries(entry.items), 0);
   }
 
+  function countUnavailableOutlineEntries(entries: OutlineEntry[]): number {
+    return entries.reduce(
+      (count, entry) =>
+        count +
+        (isOutlineEntryNavigable(entry) ? 0 : 1) +
+        countUnavailableOutlineEntries(entry.items),
+      0,
+    );
+  }
+
+  function outlineDestinationStatus(dest: PdfDestination, url: string | null, pageNumber: number | null) {
+    if (url) return "External link";
+    if (!dest) return "No destination";
+    if (!pageNumber) return "Destination unavailable";
+    return null;
+  }
+
+  function isOutlineEntryNavigable(entry: OutlineEntry) {
+    return Boolean(entry.url || (entry.dest && entry.pageNumber));
+  }
+
   async function goToOutlineEntry(entry: OutlineEntry) {
     if (entry.url) {
       status = "External outline links are not opened in this spike.";
       return false;
     }
-    if (!entry.dest || !pdfLinkService) {
+    if (!entry.dest || !entry.pageNumber || !pdfLinkService) {
       status = "Outline item has no navigable PDF destination.";
       return false;
     }
-    await pdfLinkService.goToDestination(entry.dest as string | unknown[]);
-    status = `Navigated to ${entry.title}.`;
-    return true;
+    try {
+      await pdfLinkService.goToDestination(entry.dest as string | unknown[]);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (pdfViewer && entry.pageNumber && pdfViewer.currentPageNumber !== entry.pageNumber) {
+        await scrollToPage(entry.pageNumber);
+      }
+      status = `Navigated to ${entry.title}.`;
+      return true;
+    } catch (error) {
+      status = `Outline navigation failed: ${formatError(error)}`;
+      return false;
+    }
   }
 
   async function activateFirstOutlineItem() {
@@ -1186,6 +1231,13 @@
     const first = annotationEntries[0];
     if (!first) return false;
     return activateAnnotationEntry(first);
+  }
+
+  async function activateAnnotationBySourceId(sourceId: string) {
+    await refreshAnnotationSidebar();
+    const entry = annotationEntries.find((candidate) => candidate.sourceId === sourceId);
+    if (!entry) return false;
+    return activateAnnotationEntry(entry);
   }
 
   function groupAnnotationEntriesByPage(entries: AnnotationEntry[]): AnnotationPageGroup[] {
@@ -1366,11 +1418,13 @@
     if (!element) return false;
     const rect = element.getBoundingClientRect();
     const page = element.closest<HTMLElement>(".page");
+    const bounds = entry.bounds ? elementPageBounds(element) : null;
     return (
       rect.width > 0 &&
       rect.height > 0 &&
       page?.dataset.pageNumber === String(entry.page) &&
-      annotationTargetElements(entry.page, entry.kind).includes(element)
+      annotationTargetElements(entry.page, entry.kind).includes(element) &&
+      (!entry.bounds || (bounds !== null && boundsOverlapRatio(bounds, entry.bounds) > 0.55))
     );
   }
 
@@ -2346,6 +2400,7 @@
       pages: pdfDocument?.numPages ?? 0,
       currentPageNumber: pdfViewer?.currentPageNumber ?? null,
       status,
+      outlineStatus,
       activeTool,
       defaultHighlightColor,
       defaultFreeTextColor,
@@ -2882,8 +2937,11 @@
                   {#each group.entries as entry (entry.id)}
                     <li>
                       <button
+                        id={`annotation-row-${entry.sourceId}`}
                         class="annotation-item"
                         class:active={selectedAnnotationEntryId === entry.id}
+                        data-entry-id={entry.id}
+                        data-source-id={entry.sourceId}
                         onclick={() => void activateAnnotationEntry(entry)}
                         title={`${entry.label} on page ${entry.page}`}
                       >
@@ -2927,12 +2985,14 @@
         class="outline-item"
         style={`padding-left: ${12 + depth * 16}px`}
         onclick={() => void goToOutlineEntry(entry)}
-        disabled={!entry.dest && !entry.url}
-        title={entry.title}
+        disabled={!isOutlineEntryNavigable(entry)}
+        title={entry.destinationStatus ? `${entry.title} - ${entry.destinationStatus}` : entry.title}
       >
         <span>{entry.title}</span>
         {#if entry.pageNumber}
           <span class="page-number">{entry.pageNumber}</span>
+        {:else if entry.destinationStatus}
+          <span class="page-number">{entry.destinationStatus}</span>
         {/if}
       </button>
       {#if entry.items.length > 0}
