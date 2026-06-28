@@ -1546,6 +1546,12 @@
   function setTool(tool: EditorTool) {
     if (!pdfViewer) return;
     const previousTool = activeTool;
+    if (tool === "highlight" && annotationEditorUIManager) {
+      annotationEditorUIManager.updateParams(
+        pdfjsLib.AnnotationEditorParamsType.HIGHLIGHT_COLOR,
+        highlightColors[defaultHighlightColor],
+      );
+    }
     activeTool = tool;
     pdfViewer.annotationEditorMode = { mode: editorModes[tool] };
     if (tool === "highlight" && annotationEditorUIManager && previousTool === "highlight") {
@@ -1988,9 +1994,28 @@
     const before = countHighlightEditorsInManager();
     const previousHighlightEditorIds = new Set(highlightEditorIds());
     const switchedIntoHighlightMode = activeTool !== "highlight";
+    const finishCreatedHighlight = () => {
+      cacheNewHighlightDetails(previousHighlightEditorIds, selectionText);
+      document.getSelection()?.removeAllRanges();
+      if (resetModeToNone) {
+        setTool("none");
+        annotationEditorUIManager?.unselectAll();
+        syncSelectedEditorState();
+      }
+      rememberedSelectionText = "";
+      rememberedSelectionRanges = [];
+      isDirty = true;
+      void refreshAnnotationSidebar();
+      queueEditorStateRefresh(150, 500);
+      status = createdStatus;
+      return true;
+    };
     if (switchedIntoHighlightMode) {
       setTool("highlight");
       await new Promise((resolve) => setTimeout(resolve, 150));
+      if (countHighlightEditorsInManager() > before) {
+        return finishCreatedHighlight();
+      }
     }
     uiManager.unselectAll();
     syncSelectedEditorState();
@@ -2021,20 +2046,7 @@
     uiManager.highlightSelection(methodOfCreation);
     for (let attempt = 0; attempt < 10; attempt += 1) {
       if (countHighlightEditorsInManager() > before) {
-        cacheNewHighlightDetails(previousHighlightEditorIds, selectionText);
-        document.getSelection()?.removeAllRanges();
-        if (resetModeToNone) {
-          setTool("none");
-          annotationEditorUIManager?.unselectAll();
-          syncSelectedEditorState();
-        }
-        rememberedSelectionText = "";
-        rememberedSelectionRanges = [];
-        isDirty = true;
-        void refreshAnnotationSidebar();
-        queueEditorStateRefresh(150, 500);
-        status = createdStatus;
-        return true;
+        return finishCreatedHighlight();
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
@@ -2990,7 +3002,7 @@
       >
         <span>{entry.title}</span>
         {#if entry.pageNumber}
-          <span class="page-number">{entry.pageNumber}</span>
+          <span class="page-number">Page {entry.pageNumber}</span>
         {:else if entry.destinationStatus}
           <span class="page-number">{entry.destinationStatus}</span>
         {/if}
@@ -3170,10 +3182,12 @@
 
   .nav-panel {
     display: grid;
+    min-height: 0;
     min-width: 0;
     grid-template-rows: 44px minmax(0, 1fr);
     border-right: 1px solid #d7dce2;
     background: #ffffff;
+    overflow: hidden;
   }
 
   .nav-tabs {
@@ -3190,8 +3204,10 @@
   }
 
   .nav-content {
+    min-height: 0;
     min-width: 0;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .nav-heading {
@@ -3265,6 +3281,10 @@
     background: transparent;
   }
 
+  .outline-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
   .outline-item span:first-child,
   .annotation-detail {
     overflow: hidden;
@@ -3303,6 +3323,7 @@
   .page-number {
     color: #7a838f;
     font-size: 12px;
+    white-space: nowrap;
   }
 
   .viewer-shell {

@@ -33,9 +33,57 @@ test("outline sidebar navigates to page two", async ({ page }) => {
     )
     .toContain("1. Networking and Resource Loading");
 
-  await page.getByRole("button", { name: "1. Networking and Resource Loading 2" }).click();
+  await page.getByRole("button", { name: "1. Networking and Resource Loading Page 2" }).click();
   await expect(page.getByText("Navigated to 1. Networking and Resource Loading.")).toBeVisible();
   await expect(page.getByText("Networking and resource loading pipeline")).toBeVisible();
+});
+
+test("outline sidebar scrolls all entries and keeps page labels inline", async ({ page }) => {
+  await loadFixture(page);
+
+  await expect(page.locator(".outline-item")).toHaveCount(54);
+
+  const layout = await page.evaluate(() => {
+    const nav = document.querySelector<HTMLElement>(".nav-content");
+    const firstItem = document.querySelector<HTMLElement>(".outline-item");
+    const firstTitle = firstItem?.querySelector<HTMLElement>("span:first-child");
+    const firstPage = firstItem?.querySelector<HTMLElement>(".page-number");
+    if (!nav || !firstItem || !firstTitle || !firstPage) {
+      throw new Error("Missing outline layout elements");
+    }
+
+    const firstTitleRect = firstTitle.getBoundingClientRect();
+    const firstPageRect = firstPage.getBoundingClientRect();
+    nav.scrollTop = nav.scrollHeight;
+    const navRect = nav.getBoundingClientRect();
+    const lastVisibleText = [...document.querySelectorAll<HTMLElement>(".outline-item")]
+      .filter((item) => {
+        const itemRect = item.getBoundingClientRect();
+        return itemRect.bottom > navRect.top && itemRect.top < navRect.bottom;
+      })
+      .at(-1)
+      ?.textContent
+      ?.trim();
+
+    return {
+      canScroll: nav.scrollHeight > nav.clientHeight,
+      scrolled: nav.scrollTop > 0,
+      firstPageText: firstPage.textContent?.trim(),
+      firstPageIsInline: Math.abs(firstTitleRect.top - firstPageRect.top) < 3,
+      firstPageIsRightOfTitle: firstPageRect.left >= firstTitleRect.right,
+      lastVisibleText,
+    };
+  });
+
+  expect(layout).toMatchObject({
+    canScroll: true,
+    scrolled: true,
+    firstPageText: "Page 1",
+    firstPageIsInline: true,
+    firstPageIsRightOfTitle: true,
+  });
+  expect(layout.lastVisibleText).toContain("Credits");
+  expect(layout.lastVisibleText).toContain("Page 23");
 });
 
 test("outline sidebar handles PDFs with no outline", async ({ page }) => {
@@ -70,7 +118,7 @@ test("outline sidebar keeps valid items when one outline destination is broken",
   await expect(brokenButton).toBeDisabled();
   await expect(page.getByText(/not navigable/)).toBeVisible();
 
-  await page.getByRole("button", { name: "1. Networking and Resource Loading 2" }).click();
+  await page.getByRole("button", { name: "1. Networking and Resource Loading Page 2" }).click();
   await expect(page.getByText("Navigated to 1. Networking and Resource Loading.")).toBeVisible();
   await expect(page.getByText("Networking and resource loading pipeline")).toBeVisible();
 });
