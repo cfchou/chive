@@ -1233,23 +1233,53 @@
 
   async function activatePdfAnnotationEntry(entry: AnnotationEntry) {
     for (let attempt = 0; attempt < 12; attempt += 1) {
+      if (entry.kind === "ink" && activeTool !== "none") {
+        const exactElement = document.getElementById(pdfAnnotationElementId(entry.sourceId));
+        if (!isUsableAnnotationElement(exactElement, entry)) {
+          setTool("none");
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+      }
       const element = annotationTargetElementForEntry(entry);
       if (element) {
+        selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
         await focusAnnotationElement(element);
+        if (entry.kind === "ink") {
+          return locatePdfAnnotationEntry(entry);
+        }
         if (await activatePersistedEditorEntry(entry)) {
           return true;
         }
         const rect = element.getBoundingClientRect();
         const x = Math.round(rect.left + Math.min(Math.max(rect.width / 2, 4), Math.max(rect.width - 4, 4)));
         const y = Math.round(rect.top + Math.min(Math.max(rect.height / 2, 4), Math.max(rect.height - 4, 4)));
-        if (entry.kind === "highlight") return activateHighlightEditorAtPoint(x, y);
-        if (entry.kind === "freetext") return activateFreeTextEditorAtPoint(x, y);
-        return activateInkEditorAtPoint(x, y);
+        const activated =
+          entry.kind === "highlight"
+            ? await activateHighlightEditorAtPoint(x, y)
+            : entry.kind === "freetext"
+              ? await activateFreeTextEditorAtPoint(x, y)
+              : await activateInkEditorAtPoint(x, y);
+        return activated;
       }
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
     status = `Could not find ${entry.label.toLowerCase()} on page ${entry.page}.`;
     return false;
+  }
+
+  function locatePdfAnnotationEntry(entry: AnnotationEntry) {
+    if (activeTool !== "none") {
+      setTool("none");
+    }
+    annotationEditorUIManager?.unselectAll();
+    selectedAnnotationEntryId = entry.id;
+    selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
+    selectedAnnotationKind = null;
+    selectedAnnotationColor = null;
+    hasSelectedHighlight = false;
+    selectedHighlightColor = null;
+    status = `Located ${entry.label.toLowerCase()} on page ${entry.page}.`;
+    return true;
   }
 
   async function activatePersistedEditorEntry(entry: AnnotationEntry) {
@@ -1302,7 +1332,7 @@
 
   function annotationTargetElementForEntry(entry: AnnotationEntry) {
     const exactElement =
-      entry.source === "pdf" ? document.getElementById(`pdfjs_internal_id_${entry.sourceId}`) : null;
+      entry.source === "pdf" ? document.getElementById(pdfAnnotationElementId(entry.sourceId)) : null;
     if (isUsableAnnotationElement(exactElement, entry)) {
       return exactElement;
     }

@@ -67,9 +67,83 @@ test("annotation sidebar snippets survive repeated fixture loads", async ({ page
   await expectSidebarHasUsefulHighlight(page);
 });
 
+test("annotation sidebar locates each persisted ink row after editor mode changes", async ({ page }) => {
+  await loadFixture(page);
+
+  const result = await page.evaluate(async () => {
+    type SidebarEntry = AnnotationEntry & {
+      bounds: { top: number; bottom: number } | null;
+      sourceId: string;
+    };
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const entries = () => window.__pdfSpike!.annotationSidebarSummary() as SidebarEntry[];
+    const pageBounds = (entry: SidebarEntry) => {
+      const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
+      if (!pageElement || !entry.bounds) throw new Error(`Missing page bounds for ${entry.id}`);
+      return {
+        top: pageElement.offsetTop + entry.bounds.top * pageElement.offsetHeight,
+        bottom: pageElement.offsetTop + entry.bounds.bottom * pageElement.offsetHeight,
+      };
+    };
+    const focusBox = (entry: SidebarEntry) => {
+      const stats = window.__pdfSpike!.stats();
+      const box = stats.annotationFocusBox as { top: number; height: number } | null;
+      if (!box) throw new Error(`Missing focus box; stats=${JSON.stringify(stats)}`);
+      return {
+        top: box.top,
+        bottom: box.top + box.height,
+        activeTool: stats.activeTool,
+        selectedPersistedAnnotationKey: stats.selectedPersistedAnnotationKey,
+        expectedPersistedAnnotationKey: `${entry.page}:${entry.sourceId}`,
+      };
+    };
+    const clickEntry = async (entry: SidebarEntry) => {
+      const rowIndex = entries().findIndex((candidate) => candidate.id === entry.id);
+      const row = [...document.querySelectorAll(".annotation-item")][rowIndex];
+      if (!(row instanceof HTMLElement)) throw new Error(`Annotation row not found for ${entry.id}`);
+      row.click();
+      await sleep(1200);
+      return focusBox(entry);
+    };
+    const runPair = async (pageNumber: number, firstIndex: number, secondIndex: number) => {
+      await window.__pdfSpike!.loadUrl("/sample.pdf", "sample.pdf");
+      await sleep(500);
+      [...document.querySelectorAll<HTMLButtonElement>(".nav-tabs button")]
+        .find((button) => button.textContent?.trim() === "Annotations")
+        ?.click();
+      await sleep(300);
+      const inks = entries().filter((entry) => entry.page === pageNumber && entry.kind === "ink");
+      if (inks.length <= Math.max(firstIndex, secondIndex)) {
+        throw new Error(`Expected enough page ${pageNumber} ink rows; entries=${JSON.stringify(inks)}`);
+      }
+      return {
+        pageNumber,
+        pair: [firstIndex + 1, secondIndex + 1],
+        firstInk: await clickEntry(inks[firstIndex]),
+        secondInk: await clickEntry(inks[secondIndex]),
+        firstExpected: pageBounds(inks[firstIndex]),
+        secondExpected: pageBounds(inks[secondIndex]),
+      };
+    };
+    return [await runPair(2, 0, 1), await runPair(2, 1, 2), await runPair(3, 0, 1)];
+  });
+
+  for (const pairResult of result) {
+    expect(pairResult.secondInk.top, `page ${pairResult.pageNumber} ink ${pairResult.pair.join("->")}`).toBeGreaterThan(
+      pairResult.firstInk.top,
+    );
+    expect(Math.abs(pairResult.firstInk.top - pairResult.firstExpected.top)).toBeLessThan(30);
+    expect(Math.abs(pairResult.secondInk.top - pairResult.secondExpected.top)).toBeLessThan(30);
+    expect(pairResult.firstInk.activeTool).toBe("none");
+    expect(pairResult.secondInk.activeTool).toBe("none");
+    expect(pairResult.firstInk.selectedPersistedAnnotationKey).toBe(pairResult.firstInk.expectedPersistedAnnotationKey);
+    expect(pairResult.secondInk.selectedPersistedAnnotationKey).toBe(pairResult.secondInk.expectedPersistedAnnotationKey);
+  }
+});
+
 test("annotation sidebar stays synced across load, click, delete, edit, and create", async ({ page }) => {
   const result = await page.evaluate(async () => {
-    type SidebarEntry = AnnotationEntry & { source: "live" | "pdf"; sortTop: number };
+    type SidebarEntry = AnnotationEntry & { source: "live" | "pdf"; sortTop: number; sourceId: string };
 
     const tab = () =>
       [...document.querySelectorAll<HTMLButtonElement>(".nav-tabs button")].find(
@@ -187,24 +261,36 @@ test("annotation sidebar stays synced across load, click, delete, edit, and crea
         const row = [...document.querySelectorAll(".annotation-item")][rowIndex];
         if (!(row instanceof HTMLElement)) throw new Error(`Could not find annotation row for ${entry.detail}`);
         row.click();
-        await sleep(800);
-        const focusText = textInsideFocusBox();
         const expectedTokens = significantTokens(entry.detail);
-        const matchingTokens = expectedTokens.filter((token) => focusText.includes(token));
-        if (matchingTokens.length < Math.min(2, expectedTokens.length)) {
-          throw new Error(`Annotation row points to wrong content; expected=${entry.detail}; focus=${focusText}`);
+        let focusText = "";
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          await sleep(150);
+          focusText = textInsideFocusBox();
+          const matchingTokens = expectedTokens.filter((token) => focusText.includes(token));
+          if (matchingTokens.length >= Math.min(2, expectedTokens.length)) {
+            break;
+          }
+          if (attempt === 19) {
+            throw new Error(`Annotation row points to wrong content; expected=${entry.detail}; focus=${focusText}`);
+          }
         }
       }
     };
     const clickEntryAndWait = async (predicate: (entry: SidebarEntry) => boolean, selectedKind: string) => {
-      const rowIndex = entries().findIndex(predicate);
+      const entry = entries().find(predicate);
+      if (!entry) throw new Error(`Annotation entry not found; entries=${JSON.stringify(entries())}`);
+      const rowIndex = entries().findIndex((candidate) => candidate.id === entry.id);
       if (rowIndex < 0) throw new Error(`Annotation entry not found; entries=${JSON.stringify(entries())}`);
       const row = [...document.querySelectorAll(".annotation-item")][rowIndex];
       if (!(row instanceof HTMLElement)) throw new Error(`Annotation row not found at index ${rowIndex}`);
+      const expectedPersistedKey = entry.source === "pdf" ? `${entry.page}:${entry.sourceId}` : null;
       row.click();
       for (let attempt = 0; attempt < 30; attempt += 1) {
         const stats = window.__pdfSpike!.stats();
-        if (stats.selectedAnnotationKind === selectedKind) {
+        if (
+          stats.selectedAnnotationKind === selectedKind &&
+          (!expectedPersistedKey || stats.selectedPersistedAnnotationKey === expectedPersistedKey)
+        ) {
           return;
         }
         await sleep(150);
