@@ -32,11 +32,9 @@ References:
 - `docs/adr/0006-test-pdfjs-in-native-tauri-webview-not-only-browser.md`
 - `docs/adr/0007-add-native-wkwebview-smoke-tests-with-wdio-tauri.md`
 
-## In Progress
-
 ### PDF structure and navigation sidebar
 
-Status: partially derisked
+Status: derisked
 
 Covered:
 
