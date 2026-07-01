@@ -28,6 +28,7 @@ const app = browser as unknown as WdioBrowser;
 const samplePdfPath = path.resolve(process.cwd(), "static/sample.pdf");
 const noOutlinePdfPath = path.resolve(process.cwd(), "static/no-outline.pdf");
 const brokenOutlinePdfPath = path.resolve(process.cwd(), "static/broken-outline.pdf");
+const bookmarkPdfPath = "/tmp/pdfspike-native-bookmark.pdf";
 
 async function waitForPdfSpike() {
   await app.waitUntil(
@@ -246,5 +247,158 @@ describe("native WKWebView PDF smoke", () => {
       expect(state.entries).toHaveLength(0);
       expect(state.emptyStateText === "This PDF has no outline." || state.emptyStateText === null).toBe(true);
     }
+  });
+
+  it("creates, reloads, and navigates PDF-native bookmarks in native WKWebView", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+
+    await app.execute(async (samplePath) => {
+      await window.__pdfSpike!.loadPath(samplePath);
+    }, samplePdfPath);
+    await app.waitUntil(
+      async () =>
+        app.execute(
+          () => Number(window.__pdfSpike!.stats().pages ?? 0) > 0 && window.__pdfSpike!.outlineSummary().length > 0,
+        ),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native sample PDF did not render with outline",
+      },
+    );
+
+    await app.execute(() => {
+      const tab = (label: string) =>
+        [...document.querySelectorAll<HTMLButtonElement>(".nav-tabs button")].find(
+          (button) => button.textContent?.trim() === label,
+        );
+      tab("Outline")?.click();
+      const outlineButton = [...document.querySelectorAll<HTMLButtonElement>(".outline-item")].find((button) =>
+        button.textContent?.includes("JIT tiers table"),
+      );
+      if (!outlineButton) throw new Error("Missing JIT tiers table outline button");
+      outlineButton.click();
+    });
+    await app.waitUntil(async () => app.execute(() => window.__pdfSpike!.stats().currentPageNumber === 13), {
+      timeout: 30_000,
+      timeoutMsg: "native outline navigation failed",
+    });
+
+    await app.execute(() => {
+      const tab = (label: string) =>
+        [...document.querySelectorAll<HTMLButtonElement>(".nav-tabs button")].find(
+          (button) => button.textContent?.trim() === label,
+        );
+      tab("Bookmarks")?.click();
+    });
+    await app.waitUntil(
+      async () => app.execute(() => Boolean(document.querySelector<HTMLButtonElement>("[aria-label='Add bookmark']"))),
+      {
+        timeout: 10_000,
+        timeoutMsg: "native add bookmark button did not appear",
+      },
+    );
+    await app.execute(() => {
+      document.querySelector<HTMLButtonElement>("[aria-label='Add bookmark']")?.click();
+    });
+    await app.waitUntil(
+      async () =>
+        app.execute(() => Boolean(document.querySelector<HTMLInputElement>("input[aria-label='Bookmark title']"))),
+      {
+        timeout: 10_000,
+        timeoutMsg: "native bookmark title input did not appear",
+      },
+    );
+    await app.execute(() => {
+      const input = document.querySelector<HTMLInputElement>("input[aria-label='Bookmark title']");
+      if (!input) throw new Error("Missing bookmark title input");
+      input.value = "Native bookmark";
+      input.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          data: "Native bookmark",
+          inputType: "insertText",
+        }),
+      );
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          key: "Enter",
+        }),
+      );
+    });
+    await app.execute(async (outputPath) => {
+      await window.__pdfSpike!.saveToPath(outputPath);
+    }, bookmarkPdfPath);
+    await app.execute(async (outputPath) => {
+      await window.__pdfSpike!.loadPath(outputPath);
+    }, bookmarkPdfPath);
+    await app.waitUntil(async () => app.execute(() => Number(window.__pdfSpike!.stats().pages ?? 0) > 0), {
+      timeout: 30_000,
+      timeoutMsg: "native bookmark PDF did not reload",
+    });
+
+    await app.execute(() => {
+      const tab = (label: string) =>
+        [...document.querySelectorAll<HTMLButtonElement>(".nav-tabs button")].find(
+          (button) => button.textContent?.trim() === label,
+        );
+      tab("Bookmarks")?.click();
+    });
+    await app.waitUntil(
+      async () =>
+        app.execute(() =>
+          Boolean(
+            [...document.querySelectorAll<HTMLButtonElement>(".bookmark-item")].find((button) =>
+              button.textContent?.includes("Native bookmark"),
+            ),
+          ),
+        ),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native bookmark row did not appear after reload",
+      },
+    );
+
+    const state = await app.execute(() => {
+      const bookmarkButton = [...document.querySelectorAll<HTMLButtonElement>(".bookmark-item")].find((button) =>
+        button.textContent?.includes("Native bookmark"),
+      );
+      bookmarkButton?.click();
+      return {
+        hasBookmarkRow: Boolean(bookmarkButton),
+      };
+    });
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const container = document.querySelector<HTMLElement>(".pdf-container");
+          const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+          if (!container || !pageElement) return false;
+          const containerRect = container.getBoundingClientRect();
+          const pageRect = pageElement.getBoundingClientRect();
+          return pageRect.bottom > containerRect.top && pageRect.top < containerRect.bottom;
+        }),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native bookmark navigation failed",
+      },
+    );
+
+    expect(state.hasBookmarkRow).toBe(true);
+    expect(
+      await app.execute(() => {
+        const container = document.querySelector<HTMLElement>(".pdf-container");
+        const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+        if (!container || !pageElement) return false;
+        const containerRect = container.getBoundingClientRect();
+        const pageRect = pageElement.getBoundingClientRect();
+        return pageRect.bottom > containerRect.top && pageRect.top < containerRect.bottom;
+      }),
+    ).toBe(true);
   });
 });

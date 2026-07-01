@@ -1,4 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { execFile } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import {
   type AnnotationEntry,
   collectPageErrors,
@@ -11,6 +14,7 @@ import {
 } from "./helpers/pdf-spike";
 
 const pageErrors: string[] = [];
+const execFileAsync = promisify(execFile);
 
 test.beforeEach(async ({ page }) => {
   pageErrors.length = 0;
@@ -121,6 +125,169 @@ test("outline sidebar keeps valid items when one outline destination is broken",
   await page.getByRole("button", { name: "1. Networking and Resource Loading Page 2" }).click();
   await expect(page.getByText("Navigated to 1. Networking and Resource Loading.")).toBeVisible();
   await expect(page.getByText("Networking and resource loading pipeline")).toBeVisible();
+});
+
+test("bookmark sidebar creates a current-page bookmark with a page marker", async ({ page }) => {
+  await loadFixture(page);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        window.__pdfSpike!.outlineSummary().map((entry: { title: string }) => entry.title),
+      ),
+    )
+    .toContain("How Modern Browsers Work");
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+
+  await expect(page.getByRole("button", { name: "How Modern Browsers Work", exact: true })).toBeVisible();
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(1);
+});
+
+test("bookmark title defaults to the nearest previous outline item", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "JIT tiers table Page 13" }).click();
+  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+
+  await expect(page.getByRole("button", { name: "JIT tiers table", exact: true })).toBeVisible();
+});
+
+test("bookmark row can be renamed inline", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Renamed bookmark");
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+
+  await expect(page.getByRole("button", { name: "Renamed bookmark", exact: true })).toBeVisible();
+  await expect(page.getByText("Unsaved changes")).toBeVisible();
+});
+
+test("bookmark row can be deleted", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+
+  await page.getByRole("button", { name: /Delete bookmark How Modern Browsers Work/ }).click();
+
+  await expect(page.getByRole("button", { name: "How Modern Browsers Work", exact: true })).toHaveCount(0);
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(0);
+});
+
+test("bookmark persists after save and reopen", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Persistent bookmark");
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-bookmark.pdf");
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+
+  await expect(page.getByRole("button", { name: "Persistent bookmark", exact: true })).toBeVisible();
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(1);
+});
+
+test("deleted bookmark stays deleted after save and reopen", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-bookmark-delete.pdf");
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+
+  await page.getByRole("button", { name: /Delete bookmark How Modern Browsers Work/ }).click();
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-bookmark-delete.pdf");
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+
+  await expect(page.getByRole("button", { name: "How Modern Browsers Work", exact: true })).toHaveCount(0);
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(0);
+});
+
+test("bookmark row navigates after save and reopen", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "JIT tiers table Page 13" }).click();
+  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-bookmark-navigation.pdf");
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+
+  await page.getByRole("button", { name: "JIT tiers table", exact: true }).click();
+
+  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().currentPageNumber)).toBe(13);
+});
+
+test("bookmark row restores the saved page location after reopen", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "JIT tiers table Page 13" }).click();
+  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
+  const targetFraction = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+    if (!container || !pageElement) throw new Error("Missing page 13 layout");
+    container.scrollTop = pageElement.offsetTop + pageElement.offsetHeight * 0.45;
+    return (container.scrollTop - pageElement.offsetTop) / pageElement.offsetHeight;
+  });
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Mid-page bookmark");
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-bookmark-location.pdf");
+  await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    if (container) container.scrollTop = 0;
+  });
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Mid-page bookmark", exact: true }).click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const container = document.querySelector<HTMLElement>(".pdf-container");
+        const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+        if (!container || !pageElement) return -1;
+        return (container.scrollTop - pageElement.offsetTop) / pageElement.offsetHeight;
+      }),
+    )
+    .toBeGreaterThan(targetFraction - 0.1);
+});
+
+test("saved PDF contains a My Bookmarks outline group", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).fill("qpdf bookmark");
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await page.evaluate(async () => {
+    await window.__pdfSpike!.saveToPath("/tmp/pdfspike-playwright-bookmark-qpdf.pdf");
+  });
+  const bytes = (await page.evaluate(() =>
+    window.__pdfSpike!.debugSavedBytes("/tmp/pdfspike-playwright-bookmark-qpdf.pdf"),
+  )) as number[];
+  const diskPath = "/tmp/pdfspike-playwright-bookmark-qpdf.pdf";
+  await writeFile(diskPath, Buffer.from(bytes));
+
+  const { stdout } = await execFileAsync("qpdf", ["--json", "--json-key=outlines", diskPath]);
+  const outlines = JSON.parse(stdout).outlines as { title: string; kids?: { title: string }[] }[];
+
+  expect(outlines[0]?.title).toBe("My Bookmarks");
+  expect(outlines[0]?.kids?.map((entry) => entry.title)).toContain("qpdf bookmark");
 });
 
 test("annotation sidebar keeps useful highlight snippets after load and click", async ({ page }) => {

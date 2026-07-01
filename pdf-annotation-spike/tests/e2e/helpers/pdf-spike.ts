@@ -8,6 +8,7 @@ export type PdfSpikeApi = {
   createPageFreeText: (text?: string, pageNumber?: number) => Promise<boolean>;
   createSelectionHighlightInToolMode: () => Promise<boolean>;
   deleteSelected: () => boolean;
+  debugSavedBytes: (path: string) => number[];
   editSelectedFreeText: (text: string) => Promise<boolean>;
   loadPath: (path: string) => Promise<void>;
   loadUrl: (url: string, label?: string) => Promise<void>;

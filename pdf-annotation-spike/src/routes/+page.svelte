@@ -18,7 +18,7 @@
 
   type PdfDocument = Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>;
   type EditorTool = "none" | "highlight" | "text" | "ink";
-  type NavigationTab = "outline" | "annotations";
+  type NavigationTab = "outline" | "bookmarks" | "annotations";
   type HighlightColorName = "yellow" | "green" | "blue" | "pink";
   type FreeTextColorName = "black" | "green" | "blue" | "pink";
   type InkColorName = "black" | "red" | "yellow" | "blue" | "pink";
@@ -44,6 +44,14 @@
     pageNumber: number | null;
     destinationStatus: string | null;
     items: OutlineEntry[];
+  };
+  type BookmarkEntry = {
+    id: string;
+    title: string;
+    pageNumber: number;
+    pageRef: string;
+    pageHeight: number;
+    targetY: number;
   };
   type AnnotationEntry = {
     id: string;
@@ -123,6 +131,7 @@
     moveSelected: (x: number, y: number) => boolean;
     editSelectedFreeText: (text: string) => Promise<boolean>;
     deleteSelected: () => boolean;
+    debugSavedBytes: (path: string) => number[];
     highlightSelection: () => void;
     stats: () => Record<string, unknown>;
     setTool: (tool: EditorTool) => void;
@@ -130,6 +139,7 @@
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
   const pdfjsWasmUrl = "/pdfjs-wasm/";
+  const bookmarkRootTitle = "My Bookmarks";
 
   let containerEl: HTMLDivElement;
   let viewerEl: HTMLDivElement;
@@ -140,6 +150,9 @@
   let outlineEntries = $state<OutlineEntry[]>([]);
   let outlineStatus = $state("Open a PDF to inspect its outline.");
   let navigationTab = $state<NavigationTab>("outline");
+  let bookmarkEntries = $state<BookmarkEntry[]>([]);
+  let bookmarkStatus = $state("Open a PDF to inspect bookmarks.");
+  let editingBookmarkId = $state<string | null>(null);
   let annotationEntries = $state<AnnotationEntry[]>([]);
   let annotationStatus = $state("Open a PDF to inspect annotations.");
   let selectedAnnotationEntryId = $state<string | null>(null);
@@ -155,6 +168,7 @@
   let defaultInkOpacity = $state(1);
   let selectedAnnotationKind = $state<SelectedAnnotationKind>(null);
   let selectedAnnotationColor = $state<string | null>(null);
+  let lastActivatedOutlineEntry: OutlineEntry | null = null;
   let hasSelectedHighlight = $state(false);
   let selectedHighlightColor = $state<HighlightColorName | null>(null);
   let scaleLabel = $state("Fit Width");
@@ -250,6 +264,7 @@
       moveSelected: moveSelectedAnnotation,
       editSelectedFreeText,
       deleteSelected: deleteSelectedAnnotation,
+      debugSavedBytes,
       highlightSelection: () => highlightSelection(),
       stats: getDebugStats,
       setTool,
@@ -1095,6 +1110,8 @@
   async function loadOutline(document: PdfDocument) {
     outlineEntries = [];
     outlineStatus = "Loading outline...";
+    bookmarkEntries = [];
+    bookmarkStatus = "Loading bookmarks...";
     try {
       const documentWithOutline = document as PdfDocument & {
         getDestination: (id: string) => Promise<unknown[] | null>;
@@ -1104,10 +1121,30 @@
       const rawOutline = await documentWithOutline.getOutline();
       if (!rawOutline || rawOutline.length === 0) {
         outlineStatus = "This PDF has no outline.";
+        bookmarkStatus = "No bookmarks yet.";
+        return;
+      }
+      const bookmarkRoot = rawOutline.find((item) => item.title?.trim() === bookmarkRootTitle);
+      const documentOutline = rawOutline.filter((item) => item !== bookmarkRoot);
+      if (bookmarkRoot?.items?.length) {
+        bookmarkEntries = (
+          await Promise.all(
+            bookmarkRoot.items.map((item, index) =>
+              normalizeBookmarkEntry(documentWithOutline, item, `${index + 1}`),
+            ),
+          )
+        ).filter((entry): entry is BookmarkEntry => Boolean(entry));
+      }
+      bookmarkStatus =
+        bookmarkEntries.length === 0
+          ? "No bookmarks yet."
+          : `${bookmarkEntries.length} bookmark${bookmarkEntries.length === 1 ? "" : "s"}.`;
+      if (documentOutline.length === 0) {
+        outlineStatus = "This PDF has no outline.";
         return;
       }
       outlineEntries = await Promise.all(
-        rawOutline.map((item, index) => normalizeOutlineEntry(documentWithOutline, item, `${index + 1}`)),
+        documentOutline.map((item, index) => normalizeOutlineEntry(documentWithOutline, item, `${index + 1}`)),
       );
       const count = countOutlineEntries(outlineEntries);
       const unavailableCount = countUnavailableOutlineEntries(outlineEntries);
@@ -1118,6 +1155,31 @@
     } catch (error) {
       outlineStatus = `Outline failed: ${formatError(error)}`;
     }
+  }
+
+  async function normalizeBookmarkEntry(
+    document: PdfDocument & {
+      getDestination: (id: string) => Promise<unknown[] | null>;
+      getPageIndex: (ref: unknown) => Promise<number>;
+    },
+    item: PdfOutlineRaw,
+    id: string,
+  ) {
+    const dest = item.dest ?? null;
+    const pageNumber = await resolveOutlinePageNumber(document, dest);
+    if (!pageNumber) return null;
+    const pageTarget = await bookmarkPageTarget(pageNumber);
+    if (!pageTarget) return null;
+    const explicitDestination = await resolveOutlineDestination(document, dest);
+    const savedTargetY = typeof explicitDestination?.[3] === "number" ? explicitDestination[3] : pageTarget.pageHeight;
+    return {
+      id: `pdf-bookmark:${id}`,
+      title: item.title?.trim() || `Page ${pageNumber}`,
+      pageNumber,
+      pageRef: pageTarget.pageRef,
+      pageHeight: pageTarget.pageHeight,
+      targetY: clampPdfY(savedTargetY, pageTarget.pageHeight),
+    };
   }
 
   async function normalizeOutlineEntry(
@@ -1152,12 +1214,7 @@
     dest: PdfDestination,
   ) {
     if (!dest) return null;
-    let explicitDestination: unknown[] | null = null;
-    try {
-      explicitDestination = typeof dest === "string" ? await document.getDestination(dest) : dest;
-    } catch {
-      return null;
-    }
+    const explicitDestination = await resolveOutlineDestination(document, dest);
     const pageReference = explicitDestination?.[0];
     if (typeof pageReference === "number") {
       return pageReference + 1;
@@ -1167,6 +1224,20 @@
     }
     try {
       return (await document.getPageIndex(pageReference)) + 1;
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolveOutlineDestination(
+    document: {
+      getDestination: (id: string) => Promise<unknown[] | null>;
+    },
+    dest: PdfDestination,
+  ) {
+    if (!dest) return null;
+    try {
+      return typeof dest === "string" ? await document.getDestination(dest) : dest;
     } catch {
       return null;
     }
@@ -1197,6 +1268,139 @@
     return Boolean(entry.url || (entry.dest && entry.pageNumber));
   }
 
+  async function createBookmarkForCurrentPage() {
+    if (!pdfDocument || !pdfViewer) {
+      status = "Open a PDF before creating bookmarks.";
+      return;
+    }
+    const pageNumber = pdfViewer.currentPageNumber || 1;
+    const pageTarget = await bookmarkPageTarget(pageNumber);
+    if (!pageTarget) {
+      status = "Could not resolve current page for bookmark.";
+      return;
+    }
+    const title = defaultBookmarkTitle(pageNumber);
+    const entry: BookmarkEntry = {
+      id: `bookmark:${Date.now()}:${pageNumber}`,
+      title,
+      pageNumber,
+      pageRef: pageTarget.pageRef,
+      pageHeight: pageTarget.pageHeight,
+      targetY: pageTarget.targetY,
+    };
+    bookmarkEntries = [...bookmarkEntries, entry];
+    bookmarkStatus = `${bookmarkEntries.length} bookmark${bookmarkEntries.length === 1 ? "" : "s"}.`;
+    navigationTab = "bookmarks";
+    editingBookmarkId = entry.id;
+    isDirty = true;
+    status = `Added bookmark ${title}.`;
+  }
+
+  function updateBookmarkTitle(id: string, title: string) {
+    bookmarkEntries = bookmarkEntries.map((entry) =>
+      entry.id === id ? { ...entry, title: title.trim() || `Page ${entry.pageNumber}` } : entry,
+    );
+    isDirty = true;
+  }
+
+  function handleBookmarkTitleKey(event: KeyboardEvent) {
+    if (event.key === "Enter") {
+      editingBookmarkId = null;
+      event.preventDefault();
+    }
+    if (event.key === "Escape") {
+      editingBookmarkId = null;
+      event.preventDefault();
+    }
+  }
+
+  function deleteBookmark(id: string) {
+    const removed = bookmarkEntries.find((entry) => entry.id === id);
+    bookmarkEntries = bookmarkEntries.filter((entry) => entry.id !== id);
+    bookmarkStatus =
+      bookmarkEntries.length === 0
+        ? "No bookmarks yet."
+        : `${bookmarkEntries.length} bookmark${bookmarkEntries.length === 1 ? "" : "s"}.`;
+    if (editingBookmarkId === id) {
+      editingBookmarkId = null;
+    }
+    isDirty = true;
+    status = removed ? `Deleted bookmark ${removed.title}.` : "Deleted bookmark.";
+  }
+
+  function defaultBookmarkTitle(pageNumber: number) {
+    if (lastActivatedOutlineEntry?.pageNumber === pageNumber) {
+      return lastActivatedOutlineEntry.title;
+    }
+    const candidates = flattenOutlineEntries(outlineEntries)
+      .filter((entry) => entry.pageNumber !== null && entry.pageNumber <= pageNumber)
+      .sort((left, right) => (left.pageNumber ?? 0) - (right.pageNumber ?? 0));
+    return candidates.at(-1)?.title ?? `Page ${pageNumber}`;
+  }
+
+  function flattenOutlineEntries(entries: OutlineEntry[]): OutlineEntry[] {
+    return entries.flatMap((entry) => [entry, ...flattenOutlineEntries(entry.items)]);
+  }
+
+  async function bookmarkPageTarget(pageNumber: number) {
+    if (!pdfDocument) return null;
+    const page = await pdfDocument.getPage(pageNumber);
+    const ref = (page as unknown as { ref?: { num: number; gen?: number } }).ref;
+    const view = (page as unknown as { view?: number[] }).view;
+    const viewport = page.getViewport({ scale: 1 });
+    const pageRef =
+      pdfRefString(ref) ??
+      (lastActivatedOutlineEntry?.pageNumber === pageNumber
+        ? pdfRefString(explicitDestinationRef(lastActivatedOutlineEntry.dest))
+        : null);
+    if (!pageRef) return null;
+    return {
+      pageRef,
+      pageHeight: Number(view?.[3] ?? viewport.height),
+      targetY: bookmarkTargetYForPage(pageNumber, Number(view?.[3] ?? viewport.height)),
+    };
+  }
+
+  function bookmarkTargetYForPage(pageNumber: number, pageHeight: number) {
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    if (!containerEl || !pageElement) return pageHeight;
+    const offsetIntoPage = Math.max(0, containerEl.scrollTop - pageElement.offsetTop);
+    const scale = pageElement.offsetHeight > 0 ? pageElement.offsetHeight / pageHeight : 1;
+    return clampPdfY(pageHeight - offsetIntoPage / scale, pageHeight);
+  }
+
+  function clampPdfY(value: number, pageHeight: number) {
+    return Math.max(0, Math.min(pageHeight, value));
+  }
+
+  function explicitDestinationRef(dest: PdfDestination) {
+    return Array.isArray(dest) ? dest[0] : null;
+  }
+
+  function pdfRefString(ref: unknown) {
+    if (typeof ref === "object" && ref !== null && "num" in ref) {
+      const candidate = ref as { num: unknown; gen?: unknown };
+      if (typeof candidate.num === "number") {
+        return `${candidate.num} ${typeof candidate.gen === "number" ? candidate.gen : 0} R`;
+      }
+    }
+    return null;
+  }
+
+  async function goToBookmarkEntry(entry: BookmarkEntry) {
+    await scrollToBookmarkTarget(entry);
+    status = `Navigated to ${entry.title}.`;
+  }
+
+  async function scrollToBookmarkTarget(entry: BookmarkEntry) {
+    await scrollToPage(entry.pageNumber);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.pageNumber}"]`);
+    if (!pageElement || !containerEl) return;
+    const offsetIntoPage = ((entry.pageHeight - entry.targetY) / entry.pageHeight) * pageElement.offsetHeight;
+    containerEl.scrollTop = Math.max(0, pageElement.offsetTop + offsetIntoPage);
+  }
+
   async function goToOutlineEntry(entry: OutlineEntry) {
     if (entry.url) {
       status = "External outline links are not opened in this spike.";
@@ -1212,6 +1416,7 @@
       if (pdfViewer && entry.pageNumber && pdfViewer.currentPageNumber !== entry.pageNumber) {
         await scrollToPage(entry.pageNumber);
       }
+      lastActivatedOutlineEntry = entry;
       status = `Navigated to ${entry.title}.`;
       return true;
     } catch (error) {
@@ -2521,7 +2726,7 @@
     isBusy = true;
     status = "Saving annotations into PDF...";
     try {
-      const saved = await pdfDocument.saveDocument();
+      const saved = await savePdfDocumentBytes();
       await invoke("write_pdf_atomic", {
         path,
         bytes: Array.from(saved),
@@ -2549,12 +2754,264 @@
     if (!pdfDocument) {
       throw new Error("No PDF loaded");
     }
-    const saved = await pdfDocument.saveDocument();
-    debugFileStore.set(path, new Uint8Array(saved));
+    const saved = await savePdfDocumentBytes();
+    debugFileStore.set(path, saved);
     currentPath = path;
     isDirty = false;
     await refreshAnnotationSidebar();
     status = `Saved debug snapshot ${path}`;
+  }
+
+  function debugSavedBytes(path: string) {
+    const bytes = debugFileStore.get(path);
+    if (!bytes) throw new Error(`No debug snapshot stored for ${path}`);
+    return Array.from(bytes);
+  }
+
+  async function savePdfDocumentBytes() {
+    if (!pdfDocument) throw new Error("No PDF loaded");
+    const saved = new Uint8Array(await pdfDocument.saveDocument());
+    return appendBookmarkOutline(saved, bookmarkEntries);
+  }
+
+  function appendBookmarkOutline(bytes: Uint8Array, bookmarks: BookmarkEntry[]) {
+    const baseBytes = removeBookmarkOutline(bytes);
+    if (bookmarks.length === 0) return baseBytes;
+
+    const bytesWithBookmarksRemoved = baseBytes;
+    const text = new TextDecoder("latin1").decode(bytesWithBookmarksRemoved);
+    const startxrefMatch = [...text.matchAll(/startxref\s+(\d+)\s+%%EOF/g)].at(-1);
+    const trailerMatch = [...text.matchAll(/trailer\s*<<(.*?)>>\s*startxref/gs)].at(-1);
+    if (!startxrefMatch || !trailerMatch) {
+      throw new Error("Could not find PDF trailer for bookmark outline update");
+    }
+
+    const trailer = trailerMatch[1];
+    const size = Number(trailer.match(/\/Size\s+(\d+)/)?.[1]);
+    const rootObject = Number(trailer.match(/\/Root\s+(\d+)\s+\d+\s+R/)?.[1]);
+    const previousXref = Number(startxrefMatch[1]);
+    if (!size || !rootObject || Number.isNaN(previousXref)) {
+      throw new Error("Could not read PDF trailer references for bookmark outline update");
+    }
+
+    const catalog = readObjectBody(text, rootObject);
+    const outlinesObject = Number(catalog.match(/\/Outlines\s+(\d+)\s+\d+\s+R/)?.[1]);
+    if (!outlinesObject) {
+      throw new Error("PDF has no outline tree for bookmark insertion");
+    }
+
+    const outlineRoot = readObjectBody(text, outlinesObject);
+    const oldFirstObject = Number(outlineRoot.match(/\/First\s+(\d+)\s+\d+\s+R/)?.[1]);
+    const oldLastObject = Number(outlineRoot.match(/\/Last\s+(\d+)\s+\d+\s+R/)?.[1]);
+    const oldCount = Number(outlineRoot.match(/\/Count\s+(-?\d+)/)?.[1] ?? 0);
+    if (!oldFirstObject || !oldLastObject) {
+      throw new Error("PDF outline tree has no top-level entries");
+    }
+
+    const bookmarkRootObject = size;
+    const firstBookmarkObject = size + 1;
+    const nextSize = size + 1 + bookmarks.length * 2;
+    const objectWrites: { objectNumber: number; body: string }[] = [];
+
+    const childObjects = bookmarks.map((bookmark, index) => {
+      const itemObject = firstBookmarkObject + index * 2;
+      const destObject = itemObject + 1;
+      const previousObject = index === 0 ? null : firstBookmarkObject + (index - 1) * 2;
+      const nextObject = index === bookmarks.length - 1 ? null : firstBookmarkObject + (index + 1) * 2;
+      objectWrites.push({
+        objectNumber: destObject,
+        body: `[ ${bookmark.pageRef} /XYZ 0 ${formatPdfNumber(bookmark.targetY)} 0 ]`,
+      });
+      objectWrites.push({
+        objectNumber: itemObject,
+        body: [
+          "<<",
+          `/Title ${pdfString(bookmark.title)}`,
+          `/Dest ${destObject} 0 R`,
+          `/Parent ${bookmarkRootObject} 0 R`,
+          previousObject ? `/Prev ${previousObject} 0 R` : "",
+          nextObject ? `/Next ${nextObject} 0 R` : "",
+          ">>",
+        ]
+          .filter(Boolean)
+          .join(" "),
+      });
+      return itemObject;
+    });
+
+    objectWrites.push({
+      objectNumber: bookmarkRootObject,
+      body: [
+        "<<",
+        `/Title ${pdfString(bookmarkRootTitle)}`,
+        `/Parent ${outlinesObject} 0 R`,
+        `/First ${childObjects[0]} 0 R`,
+        `/Last ${childObjects.at(-1)} 0 R`,
+        `/Count ${bookmarks.length}`,
+        `/Next ${oldFirstObject} 0 R`,
+        ">>",
+      ].join(" "),
+    });
+    objectWrites.push({
+      objectNumber: outlinesObject,
+      body: rewritePdfDictionary(outlineRoot, {
+        First: `${bookmarkRootObject} 0 R`,
+        Count: String(oldCount + 1),
+      }),
+    });
+    objectWrites.push({
+      objectNumber: oldFirstObject,
+      body: rewritePdfDictionary(readObjectBody(text, oldFirstObject), {
+        Prev: `${bookmarkRootObject} 0 R`,
+      }),
+    });
+
+    return appendIncrementalPdfUpdate(bytesWithBookmarksRemoved, objectWrites, nextSize, rootObject, previousXref);
+  }
+
+  function removeBookmarkOutline(bytes: Uint8Array) {
+    const text = new TextDecoder("latin1").decode(bytes);
+    const startxrefMatch = [...text.matchAll(/startxref\s+(\d+)\s+%%EOF/g)].at(-1);
+    const trailerMatch = [...text.matchAll(/trailer\s*<<(.*?)>>\s*startxref/gs)].at(-1);
+    if (!startxrefMatch || !trailerMatch) return bytes;
+
+    const trailer = trailerMatch[1];
+    const size = Number(trailer.match(/\/Size\s+(\d+)/)?.[1]);
+    const rootObject = Number(trailer.match(/\/Root\s+(\d+)\s+\d+\s+R/)?.[1]);
+    const previousXref = Number(startxrefMatch[1]);
+    if (!size || !rootObject || Number.isNaN(previousXref)) return bytes;
+
+    const catalog = readObjectBody(text, rootObject);
+    const outlinesObject = Number(catalog.match(/\/Outlines\s+(\d+)\s+\d+\s+R/)?.[1]);
+    if (!outlinesObject) return bytes;
+
+    const bookmarkRootObject = findBookmarkRootObject(text, outlinesObject);
+    if (!bookmarkRootObject) return bytes;
+
+    const outlineRoot = readObjectBody(text, outlinesObject);
+    const bookmarkRoot = readObjectBody(text, bookmarkRootObject);
+    const oldFirstObject = Number(outlineRoot.match(/\/First\s+(\d+)\s+\d+\s+R/)?.[1]);
+    const oldLastObject = Number(outlineRoot.match(/\/Last\s+(\d+)\s+\d+\s+R/)?.[1]);
+    const oldCount = Number(outlineRoot.match(/\/Count\s+(-?\d+)/)?.[1] ?? 0);
+    const previousObject = Number(bookmarkRoot.match(/\/Prev\s+(\d+)\s+\d+\s+R/)?.[1]);
+    const nextObject = Number(bookmarkRoot.match(/\/Next\s+(\d+)\s+\d+\s+R/)?.[1]);
+    const objectWrites: { objectNumber: number; body: string }[] = [];
+
+    const outlineReplacements: Record<string, string> = {
+      Count: String(Math.max(0, oldCount - 1)),
+    };
+    if (oldFirstObject === bookmarkRootObject && nextObject) {
+      outlineReplacements.First = `${nextObject} 0 R`;
+    }
+    if (oldLastObject === bookmarkRootObject && previousObject) {
+      outlineReplacements.Last = `${previousObject} 0 R`;
+    }
+    objectWrites.push({
+      objectNumber: outlinesObject,
+      body: rewritePdfDictionary(outlineRoot, outlineReplacements),
+    });
+
+    if (previousObject) {
+      const previousBody = readObjectBody(text, previousObject);
+      objectWrites.push({
+        objectNumber: previousObject,
+        body: nextObject
+          ? rewritePdfDictionary(previousBody, { Next: `${nextObject} 0 R` })
+          : removePdfDictionaryKeys(previousBody, ["Next"]),
+      });
+    }
+    if (nextObject) {
+      const nextBody = readObjectBody(text, nextObject);
+      objectWrites.push({
+        objectNumber: nextObject,
+        body: previousObject
+          ? rewritePdfDictionary(nextBody, { Prev: `${previousObject} 0 R` })
+          : removePdfDictionaryKeys(nextBody, ["Prev"]),
+      });
+    }
+
+    return appendIncrementalPdfUpdate(bytes, objectWrites, size, rootObject, previousXref);
+  }
+
+  function findBookmarkRootObject(pdfText: string, outlinesObject: number) {
+    const objectPattern = /(?:^|\n)(\d+)\s+0\s+obj\s*([\s\S]*?)\s*endobj/g;
+    let match: RegExpExecArray | null;
+    let found: number | null = null;
+    while ((match = objectPattern.exec(pdfText))) {
+      const body = match[2];
+      if (
+        body.includes(`/Title (${bookmarkRootTitle})`) &&
+        body.includes(`/Parent ${outlinesObject} 0 R`)
+      ) {
+        found = Number(match[1]);
+      }
+    }
+    return found;
+  }
+
+  function readObjectBody(pdfText: string, objectNumber: number) {
+    const matches = [...pdfText.matchAll(new RegExp(`(?:^|\\n)${objectNumber}\\s+0\\s+obj\\s*([\\s\\S]*?)\\s*endobj`, "g"))];
+    const match = matches.at(-1);
+    if (!match) throw new Error(`Could not find PDF object ${objectNumber}`);
+    return match[1].trim();
+  }
+
+  function rewritePdfDictionary(body: string, replacements: Record<string, string>) {
+    let rewritten = body.trim();
+    for (const [key, value] of Object.entries(replacements)) {
+      const keyPattern = new RegExp(`/${key}\\s+(?:-?\\d+|\\[[^\\]]*\\]|\\([^)]*\\)|<<[\\s\\S]*?>>|/\\w+)(?:\\s+\\d+\\s+R)?`);
+      if (keyPattern.test(rewritten)) {
+        rewritten = rewritten.replace(keyPattern, `/${key} ${value}`);
+      } else {
+        rewritten = rewritten.replace(/>>\s*$/, `/${key} ${value} >>`);
+      }
+    }
+    return rewritten;
+  }
+
+  function removePdfDictionaryKeys(body: string, keys: string[]) {
+    let rewritten = body.trim();
+    for (const key of keys) {
+      const keyPattern = new RegExp(`\\s*/${key}\\s+(?:-?\\d+|\\[[^\\]]*\\]|\\([^)]*\\)|<<[\\s\\S]*?>>|/\\w+)(?:\\s+\\d+\\s+R)?`);
+      rewritten = rewritten.replace(keyPattern, "");
+    }
+    return rewritten;
+  }
+
+  function appendIncrementalPdfUpdate(
+    bytes: Uint8Array,
+    objectWrites: { objectNumber: number; body: string }[],
+    size: number,
+    rootObject: number,
+    previousXref: number,
+  ) {
+    let update = "\n";
+    const offsets = new Map<number, number>();
+    for (const objectWrite of objectWrites.sort((left, right) => left.objectNumber - right.objectNumber)) {
+      offsets.set(objectWrite.objectNumber, bytes.length + update.length);
+      update += `${objectWrite.objectNumber} 0 obj\n${objectWrite.body}\nendobj\n`;
+    }
+    const xrefOffset = bytes.length + update.length;
+    update += "xref\n";
+    for (const objectNumber of [...offsets.keys()].sort((left, right) => left - right)) {
+      update += `${objectNumber} 1\n${String(offsets.get(objectNumber)).padStart(10, "0")} 00000 n \n`;
+    }
+    update += `trailer\n<< /Size ${size} /Root ${rootObject} 0 R /Prev ${previousXref} >>\n`;
+    update += `startxref\n${xrefOffset}\n%%EOF\n`;
+
+    const encodedUpdate = new TextEncoder().encode(update);
+    const output = new Uint8Array(bytes.length + encodedUpdate.length);
+    output.set(bytes);
+    output.set(encodedUpdate, bytes.length);
+    return output;
+  }
+
+  function pdfString(value: string) {
+    return `(${value.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)")})`;
+  }
+
+  function formatPdfNumber(value: number) {
+    return Number.isInteger(value) ? String(value) : value.toFixed(3);
   }
 
   async function debugLoadPath(path: string) {
@@ -2730,10 +3187,14 @@
     annotationEditorUIManager = null;
     outlineEntries = [];
     outlineStatus = "Open a PDF to inspect its outline.";
+    bookmarkEntries = [];
+    bookmarkStatus = "Open a PDF to inspect bookmarks.";
+    editingBookmarkId = null;
     annotationEntries = [];
     annotationStatus = "Open a PDF to inspect annotations.";
     selectedAnnotationEntryId = null;
     selectedPersistedAnnotationKey = null;
+    lastActivatedOutlineEntry = null;
     annotationFocusBox = null;
     annotationDetailCache.clear();
     pendingDeletedPersistedAnnotationKeys.clear();
@@ -2904,6 +3365,14 @@
         Outline
       </button>
       <button
+        class:active={navigationTab === "bookmarks"}
+        role="tab"
+        aria-selected={navigationTab === "bookmarks"}
+        onclick={() => (navigationTab = "bookmarks")}
+      >
+        Bookmarks
+      </button>
+      <button
         class:active={navigationTab === "annotations"}
         role="tab"
         aria-selected={navigationTab === "annotations"}
@@ -2929,6 +3398,54 @@
           </ul>
         {:else}
           <p class="empty-state">{outlineStatus}</p>
+        {/if}
+      </div>
+    {:else if navigationTab === "bookmarks"}
+      <div class="nav-content" role="tabpanel" aria-label="Bookmarks">
+        <div class="nav-heading">
+          <span class="label">Bookmarks</span>
+          <button class="icon-action" onclick={() => void createBookmarkForCurrentPage()} disabled={!pdfDocument} aria-label="Add bookmark">
+            +
+          </button>
+        </div>
+        {#if bookmarkEntries.length > 0}
+          <ul class="bookmark-list">
+            {#each bookmarkEntries as entry (entry.id)}
+              <li>
+                <div class="bookmark-row">
+                  <button
+                    class="bookmark-item"
+                    onclick={() => void goToBookmarkEntry(entry)}
+                    title={`${entry.title} on page ${entry.pageNumber}`}
+                  >
+                    <span class="bookmark-icon" aria-hidden="true"></span>
+                    {#if editingBookmarkId === entry.id}
+                      <input
+                        aria-label="Bookmark title"
+                        value={entry.title}
+                        oninput={(event) => updateBookmarkTitle(entry.id, event.currentTarget.value)}
+                        onkeydown={handleBookmarkTitleKey}
+                        onblur={() => (editingBookmarkId = null)}
+                        onclick={(event) => event.stopPropagation()}
+                      />
+                    {:else}
+                      <span>{entry.title}</span>
+                    {/if}
+                  </button>
+                  <button
+                    class="bookmark-delete"
+                    onclick={() => deleteBookmark(entry.id)}
+                    aria-label={`Delete bookmark ${entry.title}`}
+                    title={`Delete bookmark ${entry.title}`}
+                  >
+                    x
+                  </button>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="empty-state">{bookmarkStatus}</p>
         {/if}
       </div>
     {:else}
@@ -2985,6 +3502,9 @@
           aria-hidden="true"
         ></div>
       {/if}
+      {#each bookmarkEntries as entry (entry.id)}
+        <div class="bookmark-page-marker" title={`Bookmark: ${entry.title}`} aria-hidden="true"></div>
+      {/each}
       <div class="pdfViewer" bind:this={viewerEl}></div>
     </div>
   </section>
@@ -3226,6 +3746,18 @@
     white-space: nowrap;
   }
 
+  .icon-action {
+    display: grid;
+    width: 24px;
+    min-height: 24px;
+    place-items: center;
+    border: 1px solid #cfd6df;
+    border-radius: 4px;
+    padding: 0;
+    font-size: 16px;
+    line-height: 1;
+  }
+
   .empty-state {
     margin: 0;
     padding: 16px 12px;
@@ -3236,6 +3768,7 @@
 
   .outline-list,
   .outline-list ul,
+  .bookmark-list,
   .annotation-list ul {
     margin: 0;
     padding: 0;
@@ -3267,6 +3800,7 @@
   }
 
   .outline-item,
+  .bookmark-item,
   .annotation-item {
     display: grid;
     width: 100%;
@@ -3281,11 +3815,36 @@
     background: transparent;
   }
 
+  .bookmark-item {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+
+  .bookmark-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 32px;
+    align-items: stretch;
+  }
+
+  .bookmark-delete {
+    min-height: 34px;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    color: #8a929c;
+    background: transparent;
+  }
+
+  .bookmark-delete:hover:not(:disabled) {
+    color: #b3261e;
+    background: #fff0ee;
+  }
+
   .outline-item {
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .outline-item span:first-child,
+  .bookmark-item span:last-child,
   .annotation-detail {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -3293,8 +3852,30 @@
   }
 
   .outline-item:hover:not(:disabled),
+  .bookmark-item:hover:not(:disabled),
   .annotation-item:hover:not(:disabled) {
     background: #edf4ff;
+  }
+
+  .bookmark-icon,
+  .bookmark-page-marker {
+    background: #f04444;
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%);
+  }
+
+  .bookmark-icon {
+    width: 10px;
+    height: 16px;
+  }
+
+  .bookmark-item input {
+    min-width: 0;
+    width: 100%;
+    border: 1px solid #8bbcff;
+    border-radius: 3px;
+    padding: 3px 5px;
+    color: #1e2329;
+    font: inherit;
   }
 
   .annotation-item {
@@ -3361,6 +3942,16 @@
     position: absolute;
     z-index: 20;
     border: 1px dashed #2387d8;
+    pointer-events: none;
+  }
+
+  .bookmark-page-marker {
+    position: absolute;
+    top: 18px;
+    right: 26px;
+    z-index: 19;
+    width: 12px;
+    height: 22px;
     pointer-events: none;
   }
 
