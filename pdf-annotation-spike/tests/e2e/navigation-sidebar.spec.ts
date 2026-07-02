@@ -139,12 +139,13 @@ test("bookmark sidebar creates a current-page bookmark with a page marker", asyn
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
 
   await expect(page.getByRole("button", { name: "How Modern Browsers Work", exact: true })).toBeVisible();
   await expect(page.locator(".bookmark-page-marker")).toHaveCount(1);
 });
 
-test("bookmark title defaults to the nearest previous outline item", async ({ page }) => {
+test("bookmark title uses the first words from text at an outline destination", async ({ page }) => {
   await loadFixture(page);
 
   await page.getByRole("button", { name: "JIT tiers table Page 13" }).click();
@@ -152,8 +153,63 @@ test("bookmark title defaults to the nearest previous outline item", async ({ pa
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
 
-  await expect(page.getByRole("button", { name: "JIT tiers table", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "TIER NAME ROLE", exact: true })).toBeVisible();
+});
+
+test("bookmark title uses the first words from the text line at the anchor", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "Background Compilation Page 12" }).click();
+  await expect(page.getByText("Navigated to Background Compilation.")).toBeVisible();
+  await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const pageElement = document.querySelector<HTMLElement>('.page[data-page-number="12"]');
+    const lineSpan = [...document.querySelectorAll<HTMLElement>('.page[data-page-number="12"] .textLayer span')]
+      .find((span) => {
+        const rect = span.getBoundingClientRect();
+        return rect.height > 0 && span.textContent?.replace(/\s+/g, " ").trim().startsWith("Starting with Chrome 66");
+      });
+    if (!container || !pageElement || !lineSpan) {
+      throw new Error("Missing bookmark title text-line fixture");
+    }
+    const pageRect = pageElement.getBoundingClientRect();
+    const lineRect = lineSpan.getBoundingClientRect();
+    container.scrollTop = pageElement.offsetTop + lineRect.top - pageRect.top;
+  });
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+
+  await expect(page.getByRole("button", { name: "Starting with Chrome 66", exact: true })).toBeVisible();
+});
+
+test("bookmark title uses the visible page-top heading when multiple outline items share a page", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "JIT Compilation Tiers Page 12" }).click();
+  await expect(page.getByText("Navigated to JIT Compilation Tiers.")).toBeVisible();
+
+  await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const pageElement = document.querySelector<HTMLElement>('.page[data-page-number="12"]');
+    if (!container || !pageElement) {
+      throw new Error("Missing page 12 scroll target");
+    }
+    container.scrollTop = pageElement.offsetTop;
+  });
+  await expect(
+    page.locator('.page[data-page-number="12"]').getByText("Background Compilation", { exact: true }),
+  ).toBeVisible();
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+
+  await expect(page.getByRole("button", { name: "Background Compilation", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "JIT Compilation Tiers", exact: true })).toHaveCount(0);
 });
 
 test("bookmark row can be renamed inline", async ({ page }) => {
@@ -166,6 +222,30 @@ test("bookmark row can be renamed inline", async ({ page }) => {
 
   await expect(page.getByRole("button", { name: "Renamed bookmark", exact: true })).toBeVisible();
   await expect(page.getByText("Unsaved changes")).toBeVisible();
+});
+
+test("bookmark title editor closes when another bookmark is clicked", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).fill("First bookmark");
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  const clickPoint = await page.evaluate(() => {
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='1']");
+    if (!pageElement) throw new Error("Missing page 1 layout");
+    const pageRect = pageElement.getBoundingClientRect();
+    return {
+      x: pageRect.left,
+      y: pageRect.top + pageRect.height * 0.35,
+    };
+  });
+  await page.mouse.click(clickPoint.x, clickPoint.y);
+  await expect(page.getByRole("textbox", { name: "Bookmark title" })).toBeVisible();
+
+  await page.getByRole("button", { name: "First bookmark", exact: true }).click();
+
+  await expect(page.getByRole("textbox", { name: "Bookmark title" })).toHaveCount(0);
 });
 
 test("bookmark row can be deleted", async ({ page }) => {
@@ -224,9 +304,9 @@ test("bookmark row navigates after save and reopen", async ({ page }) => {
   await saveAndReopen(page, "/tmp/pdfspike-playwright-bookmark-navigation.pdf");
   await page.getByRole("tab", { name: "Bookmarks" }).click();
 
-  await page.getByRole("button", { name: "JIT tiers table", exact: true }).click();
+  await page.getByRole("button", { name: "TIER NAME ROLE", exact: true }).click();
 
-  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
+  await expect(page.getByText("Navigated to TIER NAME ROLE.")).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().currentPageNumber)).toBe(13);
 });
 
@@ -265,6 +345,265 @@ test("bookmark row restores the saved page location after reopen", async ({ page
       }),
     )
     .toBeGreaterThan(targetFraction - 0.1);
+
+  const anchorGap = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const marker = document.querySelector<HTMLElement>(".bookmark-page-marker");
+    if (!container || !marker) throw new Error("Missing bookmark marker");
+    return {
+      markerHeight: marker.offsetHeight,
+      markerGap: marker.offsetTop - container.scrollTop,
+    };
+  });
+  expect(anchorGap.markerGap).toBeCloseTo(anchorGap.markerHeight, 0);
+});
+
+test("bookmark page markers sit on the saved page-rail anchors", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "JIT tiers table Page 13" }).click();
+  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
+  const positions = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+    if (!container || !pageElement) throw new Error("Missing page 13 layout");
+    const firstTop = pageElement.offsetTop + pageElement.offsetHeight * 0.08;
+    const secondTop = pageElement.offsetTop + pageElement.offsetHeight * 0.55;
+    container.scrollTop = firstTop;
+    return { firstTop, secondTop };
+  });
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).fill("First rail anchor");
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+
+  await page.evaluate((scrollTop) => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    if (!container) throw new Error("Missing PDF container");
+    container.scrollTop = scrollTop;
+  }, positions.secondTop);
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Second rail anchor");
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+
+  const markerLayout = await page.evaluate(() => {
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+    const markers = [...document.querySelectorAll<HTMLElement>(".bookmark-page-marker")];
+    if (!pageElement || markers.length !== 2) throw new Error("Missing rail markers");
+    return markers
+      .map((marker) => ({
+        page: marker.dataset.pageNumber,
+        top: marker.offsetTop - pageElement.offsetTop,
+        pageHeight: pageElement.offsetHeight,
+      }))
+      .sort((left, right) => left.top - right.top);
+  });
+
+  expect(markerLayout.map((entry) => entry.page)).toEqual(["13", "13"]);
+  expect(markerLayout[0].top / markerLayout[0].pageHeight).toBeCloseTo(0.08, 1);
+  expect(markerLayout[1].top / markerLayout[1].pageHeight).toBeCloseTo(0.55, 1);
+});
+
+test("clicking the page rail creates a bookmark at that anchor", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "JIT tiers table Page 13" }).click();
+  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
+  const clickPoint = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+    if (!container || !pageElement) throw new Error("Missing page 13 layout");
+    container.scrollTop = pageElement.offsetTop + pageElement.offsetHeight * 0.25;
+    const pageRect = pageElement.getBoundingClientRect();
+    return {
+      x: pageRect.left - 12,
+      y: pageRect.top + pageRect.height * 0.42,
+    };
+  });
+  await page.mouse.click(clickPoint.x, clickPoint.y);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(1);
+  const markerLayout = await page.evaluate(() => {
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+    const marker = document.querySelector<HTMLElement>(".bookmark-page-marker");
+    if (!pageElement || !marker) throw new Error("Missing rail marker");
+    const styles = getComputedStyle(marker);
+    return {
+      page: marker.dataset.pageNumber,
+      fraction: (marker.offsetTop - pageElement.offsetTop) / pageElement.offsetHeight,
+      markerLeft: marker.offsetLeft,
+      pageLeft: pageElement.offsetLeft,
+      topLeftRadius: styles.borderTopLeftRadius,
+      topRightRadius: styles.borderTopRightRadius,
+    };
+  });
+  expect(markerLayout.page).toBe("13");
+  expect(markerLayout.fraction).toBeCloseTo(0.42, 1);
+  expect(markerLayout.markerLeft).toBe(markerLayout.pageLeft);
+  expect(markerLayout.topLeftRadius).toBe("0px");
+  expect(markerLayout.topRightRadius).toBe("0px");
+});
+
+test("clicking a page-rail bookmark marker removes that bookmark", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "JIT tiers table Page 13" }).click();
+  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
+  const clickPoint = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+    if (!container || !pageElement) throw new Error("Missing page 13 layout");
+    container.scrollTop = pageElement.offsetTop + pageElement.offsetHeight * 0.25;
+    const pageRect = pageElement.getBoundingClientRect();
+    return {
+      x: pageRect.left - 12,
+      y: pageRect.top + pageRect.height * 0.42,
+    };
+  });
+  await page.mouse.click(clickPoint.x, clickPoint.y);
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(1);
+  await expect(page.locator(".bookmark-row")).toHaveCount(1);
+
+  await page.locator(".bookmark-page-marker").click();
+
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(0);
+  await expect(page.locator(".bookmark-row")).toHaveCount(0);
+});
+
+test("clicking the page rail titles the bookmark from the clicked anchor text", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "Painting / Rasterization Page 9" }).click();
+  await expect(page.getByText("Navigated to Painting / Rasterization.")).toBeVisible();
+  const clickPoint = await page.evaluate(() => {
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='9']");
+    const lineSpan = [...document.querySelectorAll<HTMLElement>(".page[data-page-number='9'] .textLayer span")]
+      .find((span) => {
+        const rect = span.getBoundingClientRect();
+        return rect.height > 0 && span.textContent?.replace(/\s+/g, " ").trim().startsWith("On the renderer's main");
+      });
+    if (!pageElement || !lineSpan) throw new Error("Missing page 9 anchor line");
+    const pageRect = pageElement.getBoundingClientRect();
+    const lineRect = lineSpan.getBoundingClientRect();
+    return {
+      x: pageRect.left - 12,
+      y: lineRect.top + lineRect.height / 2,
+    };
+  });
+  await page.mouse.click(clickPoint.x, clickPoint.y);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await expect(page.getByRole("button", { name: "On the renderer's main", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "4. Painting, Compositing, and", exact: true })).toHaveCount(0);
+});
+
+test("hovering the page rail shows the add cue at the pointer anchor", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "JIT tiers table Page 13" }).click();
+  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
+  const hoverPoint = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+    if (!container || !pageElement) throw new Error("Missing page 13 layout");
+    container.scrollTop = pageElement.offsetTop + pageElement.offsetHeight * 0.2;
+    const pageRect = pageElement.getBoundingClientRect();
+    return {
+      x: pageRect.left + 12,
+      y: pageRect.top + pageRect.height * 0.37,
+    };
+  });
+  await page.mouse.move(hoverPoint.x, hoverPoint.y);
+
+  const cueLayout = await page.evaluate(() => {
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+    const focus = document.querySelector<HTMLElement>(".bookmark-rail-focus-cue");
+    const hint = document.querySelector<HTMLElement>(".bookmark-rail-add-cue");
+    if (!pageElement || !focus || !hint) return null;
+    const focusRect = focus.getBoundingClientRect();
+    const hintRect = hint.getBoundingClientRect();
+    const focusStyle = getComputedStyle(focus);
+    const hintStyle = getComputedStyle(hint);
+    return {
+      focusBackgroundColor: focusStyle.backgroundColor,
+      focusCenterX: focusRect.left + focusRect.width / 2,
+      focusCenterY: focusRect.top + focusRect.height / 2,
+      focusRadius: focusStyle.borderRadius,
+      focusText: focus.textContent?.trim(),
+      hintBackgroundColor: hintStyle.backgroundColor,
+      hintCenterX: hintRect.left + hintRect.width / 2,
+      hintCenterY: hintRect.top + hintRect.height / 2,
+      hintRadius: hintStyle.borderRadius,
+      hintText: hint.textContent?.trim(),
+      pageLeft: pageElement.getBoundingClientRect().left,
+    };
+  });
+  expect(cueLayout).not.toBeNull();
+  expect(cueLayout?.focusText).toBe("+");
+  expect(cueLayout?.hintText).toBe("+");
+  expect(cueLayout?.focusBackgroundColor).toBe("rgb(255, 255, 255)");
+  expect(cueLayout?.hintBackgroundColor).toBe("rgb(34, 197, 94)");
+  expect(cueLayout?.focusRadius).toBe("999px");
+  expect(cueLayout?.hintRadius).toBe("999px");
+  expect(Math.abs((cueLayout?.focusCenterX ?? 0) - (cueLayout?.pageLeft ?? 0))).toBeLessThan(2);
+  expect(Math.abs((cueLayout?.focusCenterY ?? 0) - hoverPoint.y)).toBeLessThan(2);
+  expect((cueLayout?.hintCenterX ?? 0)).toBeGreaterThan(hoverPoint.x);
+  expect((cueLayout?.hintCenterY ?? 0)).toBeGreaterThan(hoverPoint.y);
+});
+
+test("hovering an existing page-rail bookmark marker DMZ hides the add cue", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(1);
+
+  const dmzPoints = await page.evaluate(() => {
+    const marker = document.querySelector<HTMLElement>(".bookmark-page-marker");
+    if (!marker) throw new Error("Missing bookmark marker");
+    const rect = marker.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    return [
+      { x, y: rect.top + rect.height / 2 },
+      { x, y: rect.top - rect.height * 0.75 },
+      { x, y: rect.bottom + rect.height * 0.75 },
+    ];
+  });
+
+  for (const point of dmzPoints) {
+    await page.mouse.move(point.x, point.y);
+    await expect(page.locator(".bookmark-rail-focus-cue")).toHaveCount(0);
+    await expect(page.locator(".bookmark-rail-add-cue")).toHaveCount(0);
+  }
+});
+
+test("bookmark rows and rail markers highlight each other on hover", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Linked rail marker");
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+
+  await page.getByRole("button", { name: "Linked rail marker", exact: true }).hover();
+  await expect(page.locator(".bookmark-page-marker.bookmark-hovered")).toHaveCount(1);
+  await expect(page.locator(".bookmark-page-marker.bookmark-hovered")).toHaveCSS(
+    "background-color",
+    "rgb(17, 24, 39)",
+  );
+
+  const markerCenter = await page.evaluate(() => {
+    const marker = document.querySelector<HTMLElement>(".bookmark-page-marker");
+    if (!marker) throw new Error("Missing bookmark marker");
+    const rect = marker.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  });
+  await page.mouse.move(markerCenter.x, markerCenter.y);
+  await expect(page.locator(".bookmark-page-marker")).toHaveCSS("background-color", "rgb(17, 24, 39)");
+  await expect(page.locator(".bookmark-item.bookmark-hovered")).toHaveCount(1);
 });
 
 test("saved PDF contains a My Bookmarks outline group", async ({ page }) => {

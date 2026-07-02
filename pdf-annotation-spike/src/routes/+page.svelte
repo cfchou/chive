@@ -42,6 +42,7 @@
     dest: PdfDestination;
     url: string | null;
     pageNumber: number | null;
+    targetY: number | null;
     destinationStatus: string | null;
     items: OutlineEntry[];
   };
@@ -140,19 +141,33 @@
   pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
   const pdfjsWasmUrl = "/pdfjs-wasm/";
   const bookmarkRootTitle = "My Bookmarks";
+  const bookmarkTitleSnapTolerancePdfPoints = 4;
+  const bookmarkTitleLookaheadPdfPoints = 180;
+  const bookmarkTitleWordCount = 4;
+  const bookmarkRailAnchorWidthPx = 12;
+  const bookmarkRailAnchorHeightPx = 22;
 
   let containerEl: HTMLDivElement;
   let viewerEl: HTMLDivElement;
   let pdfViewer: PDFViewer | null = null;
   let pdfLinkService: PDFLinkService | null = null;
   let pdfDocument = $state<PdfDocument | null>(null);
-  let annotationEditorUIManager = $state<AnnotationEditorUIManager | null>(null);
+  let annotationEditorUIManager: AnnotationEditorUIManager | null = null;
   let outlineEntries = $state<OutlineEntry[]>([]);
   let outlineStatus = $state("Open a PDF to inspect its outline.");
   let navigationTab = $state<NavigationTab>("outline");
   let bookmarkEntries = $state<BookmarkEntry[]>([]);
   let bookmarkStatus = $state("Open a PDF to inspect bookmarks.");
   let editingBookmarkId = $state<string | null>(null);
+  let bookmarkRailHoverCue = $state<{
+    pageNumber: number;
+    focusLeft: number;
+    focusTop: number;
+    hintLeft: number;
+    hintTop: number;
+  } | null>(null);
+  let hoveredBookmarkId = $state<string | null>(null);
+  let bookmarkRailLayoutVersion = $state(0);
   let annotationEntries = $state<AnnotationEntry[]>([]);
   let annotationStatus = $state("Open a PDF to inspect annotations.");
   let selectedAnnotationEntryId = $state<string | null>(null);
@@ -240,6 +255,11 @@
     document.addEventListener("selectionchange", rememberSelection);
     document.addEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
     containerEl?.addEventListener("pointerdown", handlePdfPointerDown, { capture: true });
+    const handleRailClick = (event: MouseEvent) => void handlePdfContainerClick(event);
+    const clearRailHoverCue = () => (bookmarkRailHoverCue = null);
+    containerEl?.addEventListener("click", handleRailClick);
+    containerEl?.addEventListener("mousemove", handlePdfContainerMouseMove);
+    containerEl?.addEventListener("mouseleave", clearRailHoverCue);
     debugWindow.__pdfSpike = {
       annotationSummary: getAnnotationSummary,
       annotationSidebarSummary: () => annotationEntries,
@@ -270,6 +290,9 @@
       setTool,
     };
     return () => {
+      containerEl?.removeEventListener("mouseleave", clearRailHoverCue);
+      containerEl?.removeEventListener("mousemove", handlePdfContainerMouseMove);
+      containerEl?.removeEventListener("click", handleRailClick);
       containerEl?.removeEventListener("pointerdown", handlePdfPointerDown, { capture: true });
       document.removeEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
       document.removeEventListener("selectionchange", rememberSelection);
@@ -386,6 +409,7 @@
       });
       scaleLabel = "Fit Width";
       status = `Rendered ${label}`;
+      refreshBookmarkRailLayout();
       queueAnnotationSidebarRefresh(0);
       queueAnnotationSidebarRefresh(300);
       queueAnnotationSidebarRefresh(1000);
@@ -396,7 +420,10 @@
       "annotationlayerrendered",
       "annotationeditorlayerrendered",
     ]) {
-      eventBus.on(eventName, () => scheduleAnnotationSidebarRefresh(120));
+      eventBus.on(eventName, () => {
+        refreshBookmarkRailLayout();
+        scheduleAnnotationSidebarRefresh(120);
+      });
     }
     eventBus.on("editingstateschanged", syncSelectedEditorState);
     eventBus.on("annotationeditorparamschanged", syncSelectedEditorState);
@@ -1192,13 +1219,15 @@
   ): Promise<OutlineEntry> {
     const children = item.items ?? [];
     const dest = item.dest ?? null;
-    const pageNumber = await resolveOutlinePageNumber(document, dest);
+    const explicitDestination = await resolveOutlineDestination(document, dest);
+    const pageNumber = await resolveOutlinePageNumberFromDestination(document, explicitDestination);
     return {
       id,
       title: item.title?.trim() || "Untitled",
       dest,
       url: item.url ?? null,
       pageNumber,
+      targetY: typeof explicitDestination?.[3] === "number" ? explicitDestination[3] : null,
       destinationStatus: outlineDestinationStatus(dest, item.url ?? null, pageNumber),
       items: await Promise.all(
         children.map((child, index) => normalizeOutlineEntry(document, child, `${id}.${index + 1}`)),
@@ -1215,6 +1244,15 @@
   ) {
     if (!dest) return null;
     const explicitDestination = await resolveOutlineDestination(document, dest);
+    return resolveOutlinePageNumberFromDestination(document, explicitDestination);
+  }
+
+  async function resolveOutlinePageNumberFromDestination(
+    document: {
+      getPageIndex: (ref: unknown) => Promise<number>;
+    },
+    explicitDestination: unknown[] | null,
+  ) {
     const pageReference = explicitDestination?.[0];
     if (typeof pageReference === "number") {
       return pageReference + 1;
@@ -1275,11 +1313,88 @@
     }
     const pageNumber = pdfViewer.currentPageNumber || 1;
     const pageTarget = await bookmarkPageTarget(pageNumber);
+    await createBookmarkFromTarget(pageTarget);
+  }
+
+  async function handlePdfContainerClick(event: MouseEvent) {
+    if ((event.target as Element | null)?.closest("button, input")) return;
+    editingBookmarkId = null;
+    const hit = bookmarkRailHitAtPoint(event.clientX, event.clientY);
+    if (!hit) return;
+    await createBookmarkAtPageRailPoint(event.clientY, hit.pageNumber);
+  }
+
+  function handlePdfContainerMouseMove(event: MouseEvent) {
+    if (bookmarkMarkerDmzHitAtPoint(event.clientX, event.clientY)) {
+      bookmarkRailHoverCue = null;
+      return;
+    }
+    const hit = bookmarkRailHitAtPoint(event.clientX, event.clientY);
+    if (!hit || !containerEl) {
+      bookmarkRailHoverCue = null;
+      return;
+    }
+    const containerRect = containerEl.getBoundingClientRect();
+    const pointerLeft = containerEl.scrollLeft + event.clientX - containerRect.left;
+    const pointerTop = containerEl.scrollTop + event.clientY - containerRect.top;
+    bookmarkRailHoverCue = {
+      pageNumber: hit.pageNumber,
+      focusLeft: hit.pageElement.offsetLeft,
+      focusTop: pointerTop,
+      hintLeft: pointerLeft + 22,
+      hintTop: pointerTop + 22,
+    };
+  }
+
+  function bookmarkMarkerDmzHitAtPoint(clientX: number, clientY: number) {
+    return [...document.querySelectorAll<HTMLElement>(".bookmark-page-marker")].some((marker) => {
+      const rect = marker.getBoundingClientRect();
+      return (
+        clientX >= rect.left - 28 &&
+        clientX <= rect.right + 8 &&
+        clientY >= rect.top - rect.height &&
+        clientY <= rect.bottom + rect.height
+      );
+    });
+  }
+
+  function bookmarkRailHitAtPoint(clientX: number, clientY: number) {
+    const pageElements = [...(viewerEl?.querySelectorAll<HTMLElement>(".page[data-page-number]") ?? [])];
+    const pageElement = pageElements.find((candidate) => {
+      const rect = candidate.getBoundingClientRect();
+      return (
+        Math.abs(clientX - rect.left) <= bookmarkRailAnchorWidthPx &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom
+      );
+    });
+    const pageNumber = Number(pageElement?.dataset.pageNumber);
+    return pageElement && Number.isInteger(pageNumber) && pageNumber > 0 ? { pageElement, pageNumber } : null;
+  }
+
+  async function createBookmarkAtPageRailPoint(clientY: number, pageNumber: number) {
+    if (!pdfDocument) {
+      status = "Open a PDF before creating bookmarks.";
+      return;
+    }
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    if (!pageElement) {
+      status = "Could not resolve page rail for bookmark.";
+      return;
+    }
+    const pageRect = pageElement.getBoundingClientRect();
+    const offsetIntoPage = Math.max(0, Math.min(pageRect.height, clientY - pageRect.top));
+    const pageTarget = await bookmarkPageTarget(pageNumber, offsetIntoPage);
+    await createBookmarkFromTarget(pageTarget);
+  }
+
+  async function createBookmarkFromTarget(pageTarget: Awaited<ReturnType<typeof bookmarkPageTarget>>) {
     if (!pageTarget) {
       status = "Could not resolve current page for bookmark.";
       return;
     }
-    const title = defaultBookmarkTitle(pageNumber);
+    const pageNumber = pageTarget.pageNumber;
+    const title = defaultBookmarkTitle(pageNumber, pageTarget.targetY, pageTarget.pageHeight);
     const entry: BookmarkEntry = {
       id: `bookmark:${Date.now()}:${pageNumber}`,
       title,
@@ -1328,21 +1443,90 @@
     status = removed ? `Deleted bookmark ${removed.title}.` : "Deleted bookmark.";
   }
 
-  function defaultBookmarkTitle(pageNumber: number) {
-    if (lastActivatedOutlineEntry?.pageNumber === pageNumber) {
-      return lastActivatedOutlineEntry.title;
+  function defaultBookmarkTitle(pageNumber: number, targetY: number, pageHeight: number) {
+    return textLineBookmarkTitle(pageNumber, targetY, pageHeight) ?? outlineBookmarkTitle(pageNumber, targetY);
+  }
+
+  function textLineBookmarkTitle(pageNumber: number, targetY: number, pageHeight: number) {
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const textLayer = pageElement?.querySelector<HTMLElement>(".textLayer");
+    if (!pageElement || !textLayer || pageHeight <= 0) return null;
+
+    const pageRect = pageElement.getBoundingClientRect();
+    const anchorTop = ((pageHeight - targetY) / pageHeight) * pageElement.offsetHeight;
+    const lines = [...textLayer.querySelectorAll<HTMLElement>("span")]
+      .map((span) => {
+        const text = span.textContent?.replace(/\s+/g, " ").trim() ?? "";
+        const rect = span.getBoundingClientRect();
+        return {
+          text,
+          top: rect.top - pageRect.top,
+          left: rect.left - pageRect.left,
+          height: rect.height,
+        };
+      })
+      .filter((line) => line.text.length > 0 && line.height > 0 && line.top <= anchorTop + 6)
+      .sort((left, right) => left.top - right.top || left.left - right.left);
+    const lineGroups: { top: number; items: { text: string; left: number }[] }[] = [];
+    for (const line of lines) {
+      const group = lineGroups.find((candidate) => Math.abs(candidate.top - line.top) < 4);
+      if (group) {
+        group.items.push({ text: line.text, left: line.left });
+      } else {
+        lineGroups.push({ top: line.top, items: [{ text: line.text, left: line.left }] });
+      }
     }
-    const candidates = flattenOutlineEntries(outlineEntries)
-      .filter((entry) => entry.pageNumber !== null && entry.pageNumber <= pageNumber)
+    const anchorLine = lineGroups.at(-1);
+    if (!anchorLine) return null;
+    const lineText = anchorLine.items
+      .sort((left, right) => left.left - right.left)
+      .map((item) => item.text)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .replace(/^[•\-–—]\s*/, "")
+      .trim();
+    return firstWords(lineText, bookmarkTitleWordCount) || null;
+  }
+
+  function firstWords(text: string, count: number) {
+    return text
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, count)
+      .join(" ")
+      .replace(/[,:;.!?]+$/, "");
+  }
+
+  function outlineBookmarkTitle(pageNumber: number, targetY: number) {
+    const candidates = flattenOutlineEntries(outlineEntries).filter(
+      (entry) => entry.pageNumber !== null && entry.pageNumber <= pageNumber,
+    );
+    const samePageCandidates = candidates.filter(
+      (entry): entry is OutlineEntry & { targetY: number } => entry.pageNumber === pageNumber && entry.targetY !== null,
+    );
+    const previousSamePageCandidates = samePageCandidates
+      .filter((entry) => entry.targetY >= targetY - bookmarkTitleSnapTolerancePdfPoints)
+      .sort((left, right) => (left.targetY ?? 0) - (right.targetY ?? 0));
+    if (previousSamePageCandidates.length > 0) {
+      return previousSamePageCandidates[0].title;
+    }
+    const upcomingSamePageCandidates = samePageCandidates
+      .filter((entry) => entry.targetY < targetY && entry.targetY >= targetY - bookmarkTitleLookaheadPdfPoints)
+      .sort((left, right) => (right.targetY ?? 0) - (left.targetY ?? 0));
+    if (upcomingSamePageCandidates.length > 0) {
+      return upcomingSamePageCandidates[0].title;
+    }
+    const previousPageCandidates = candidates
+      .filter((entry) => entry.pageNumber !== pageNumber)
       .sort((left, right) => (left.pageNumber ?? 0) - (right.pageNumber ?? 0));
-    return candidates.at(-1)?.title ?? `Page ${pageNumber}`;
+    return previousPageCandidates.at(-1)?.title ?? `Page ${pageNumber}`;
   }
 
   function flattenOutlineEntries(entries: OutlineEntry[]): OutlineEntry[] {
     return entries.flatMap((entry) => [entry, ...flattenOutlineEntries(entry.items)]);
   }
 
-  async function bookmarkPageTarget(pageNumber: number) {
+  async function bookmarkPageTarget(pageNumber: number, offsetIntoPage?: number) {
     if (!pdfDocument) return null;
     const page = await pdfDocument.getPage(pageNumber);
     const ref = (page as unknown as { ref?: { num: number; gen?: number } }).ref;
@@ -1355,16 +1539,17 @@
         : null);
     if (!pageRef) return null;
     return {
+      pageNumber,
       pageRef,
       pageHeight: Number(view?.[3] ?? viewport.height),
-      targetY: bookmarkTargetYForPage(pageNumber, Number(view?.[3] ?? viewport.height)),
+      targetY: bookmarkTargetYForPage(pageNumber, Number(view?.[3] ?? viewport.height), offsetIntoPage),
     };
   }
 
-  function bookmarkTargetYForPage(pageNumber: number, pageHeight: number) {
+  function bookmarkTargetYForPage(pageNumber: number, pageHeight: number, explicitOffsetIntoPage?: number) {
     const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
     if (!containerEl || !pageElement) return pageHeight;
-    const offsetIntoPage = Math.max(0, containerEl.scrollTop - pageElement.offsetTop);
+    const offsetIntoPage = explicitOffsetIntoPage ?? Math.max(0, containerEl.scrollTop - pageElement.offsetTop);
     const scale = pageElement.offsetHeight > 0 ? pageElement.offsetHeight / pageHeight : 1;
     return clampPdfY(pageHeight - offsetIntoPage / scale, pageHeight);
   }
@@ -1388,17 +1573,40 @@
   }
 
   async function goToBookmarkEntry(entry: BookmarkEntry) {
+    editingBookmarkId = null;
     await scrollToBookmarkTarget(entry);
     status = `Navigated to ${entry.title}.`;
   }
 
   async function scrollToBookmarkTarget(entry: BookmarkEntry) {
+    if (scrollBookmarkTargetIntoView(entry)) return;
     await scrollToPage(entry.pageNumber);
     await new Promise((resolve) => setTimeout(resolve, 100));
+    scrollBookmarkTargetIntoView(entry);
+  }
+
+  function scrollBookmarkTargetIntoView(entry: BookmarkEntry) {
     const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.pageNumber}"]`);
-    if (!pageElement || !containerEl) return;
+    if (!pageElement || !containerEl) return false;
     const offsetIntoPage = ((entry.pageHeight - entry.targetY) / entry.pageHeight) * pageElement.offsetHeight;
-    containerEl.scrollTop = Math.max(0, pageElement.offsetTop + offsetIntoPage);
+    containerEl.scrollTop = Math.max(0, pageElement.offsetTop + offsetIntoPage - bookmarkRailAnchorHeightPx);
+    return true;
+  }
+
+  function bookmarkMarkerStyle(entry: BookmarkEntry) {
+    bookmarkRailLayoutVersion;
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.pageNumber}"]`);
+    if (!pageElement || entry.pageHeight <= 0) {
+      return "left: 12px; top: 18px";
+    }
+    const offsetIntoPage = ((entry.pageHeight - entry.targetY) / entry.pageHeight) * pageElement.offsetHeight;
+    const left = pageElement.offsetLeft;
+    const top = pageElement.offsetTop + offsetIntoPage;
+    return `left: ${left}px; top: ${top}px`;
+  }
+
+  function refreshBookmarkRailLayout() {
+    bookmarkRailLayoutVersion += 1;
   }
 
   async function goToOutlineEntry(entry: OutlineEntry) {
@@ -1489,6 +1697,13 @@
   }
 
   async function activatePdfAnnotationEntry(entry: AnnotationEntry) {
+    annotationEditorUIManager?.unselectAll();
+    selectedAnnotationKind = null;
+    selectedAnnotationColor = null;
+    hasSelectedHighlight = false;
+    selectedHighlightColor = null;
+    selectedAnnotationEntryId = entry.id;
+    selectedPersistedAnnotationKey = null;
     for (let attempt = 0; attempt < 12; attempt += 1) {
       if (entry.kind === "ink" && activeTool !== "none") {
         const exactElement = document.getElementById(pdfAnnotationElementId(entry.sourceId));
@@ -1540,24 +1755,34 @@
   }
 
   async function activatePersistedEditorEntry(entry: AnnotationEntry) {
+    const manager = annotationEditorUIManager;
     const tool = editorToolForAnnotationKind(entry.kind);
-    if (!annotationEditorUIManager || !tool) return false;
+    if (!manager || !tool || !managerHasValidSignal(manager)) return false;
     if (activeTool !== tool) {
       setTool(tool);
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
-    let editor = findEditorByPersistedSourceId(entry.sourceId, entry.kind);
+    let editor = findEditorByPersistedSourceId(entry.sourceId, entry.kind, manager);
     for (let attempt = 0; !editor && attempt < 12; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
-      editor = findEditorByPersistedSourceId(entry.sourceId, entry.kind);
+      editor = findEditorByPersistedSourceId(entry.sourceId, entry.kind, manager);
     }
-    if (!editor) return false;
+    if (
+      !editor ||
+      annotationEditorUIManager !== manager ||
+      !managerHasValidSignal(manager) ||
+      !editorBelongsToManager(editor, manager) ||
+      !editorHasValidManagerSignal(editor)
+    ) {
+      return false;
+    }
+    const persistedKey = persistedAnnotationKey(entry.page, entry.sourceId);
+    selectedPersistedAnnotationKey = persistedKey;
+    persistedAnnotationKeyByEditorId.set(editor.id, persistedKey);
     await focusEditorById(editor.id);
-    annotationEditorUIManager.setSelected(editor);
-    syncSelectedEditorState();
+    selectEditorIgnoringPdfjsSignalBug(manager, editor);
+    syncSelectedEditorState(persistedKey);
     selectedAnnotationEntryId = entry.id;
-    selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
-    persistedAnnotationKeyByEditorId.set(editor.id, selectedPersistedAnnotationKey);
     if (entry.kind === "highlight") {
       status = "Selected highlight. Change color or delete it, then save.";
     } else if (entry.kind === "freetext") {
@@ -1575,16 +1800,68 @@
     return null;
   }
 
-  function findEditorByPersistedSourceId(sourceId: string, kind: Exclude<SelectedAnnotationKind, null>) {
-    if (!annotationEditorUIManager || !pdfDocument) return null;
+  function findEditorByPersistedSourceId(
+    sourceId: string,
+    kind: Exclude<SelectedAnnotationKind, null>,
+    manager = annotationEditorUIManager,
+  ) {
+    if (!manager || !pdfDocument) return null;
     for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
-      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
-        if (!editor.deleted && annotationKindForEditor(editor) === kind && persistedSourceIdForEditor(editor) === sourceId) {
+      for (const editor of manager.getEditors(pageIndex)) {
+        if (
+          editorBelongsToManager(editor, manager) &&
+          !editor.deleted &&
+          annotationKindForEditor(editor) === kind &&
+          persistedSourceIdForEditor(editor) === sourceId
+        ) {
           return editor;
         }
       }
     }
     return null;
+  }
+
+  function editorBelongsToCurrentManager(editor: AnnotationEditor | null | undefined) {
+    if (!editor || !annotationEditorUIManager) return false;
+    return editorBelongsToManager(editor, annotationEditorUIManager);
+  }
+
+  function editorBelongsToManager(
+    editor: AnnotationEditor | null | undefined,
+    manager: AnnotationEditorUIManager,
+  ) {
+    return Boolean(editor && (editor as unknown as { _uiManager?: unknown })._uiManager === manager);
+  }
+
+  function managerHasValidSignal(manager: AnnotationEditorUIManager) {
+    return isUsableAbortSignal((manager as unknown as { _signal?: unknown })._signal);
+  }
+
+  function editorHasValidManagerSignal(editor: AnnotationEditor) {
+    const manager = (editor as unknown as { _uiManager?: { _signal?: unknown } })._uiManager;
+    return isUsableAbortSignal(manager?._signal);
+  }
+
+  function isUsableAbortSignal(signal: unknown) {
+    if (!(signal instanceof AbortSignal)) return false;
+    const target = new EventTarget();
+    try {
+      target.addEventListener("pdfspike-signal-check", () => undefined, { signal });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function selectEditorIgnoringPdfjsSignalBug(manager: AnnotationEditorUIManager, editor: AnnotationEditor) {
+    try {
+      manager.setSelected(editor);
+    } catch (error) {
+      const message = formatError(error);
+      if (!message.includes("AbortSignal") || !message.includes("addEventListener")) {
+        throw error;
+      }
+    }
   }
 
   function annotationTargetElementForEntry(entry: AnnotationEntry) {
@@ -1832,15 +2109,24 @@
         editorElement.click();
         await new Promise((resolve) => setTimeout(resolve, 50));
         syncSelectedEditorState(persistedKeyHint);
-        if (annotationEditorUIManager.firstSelectedEditor) {
+        if (selectedEditorMatchesPersistedHint(annotationEditorUIManager.firstSelectedEditor, persistedKeyHint)) {
           status = "Selected highlight. Change color or delete it, then save.";
           return true;
         }
+        annotationEditorUIManager.unselectAll();
       }
       await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 100));
     }
     status = "Could not activate clicked highlight for editing.";
     return false;
+  }
+
+  function selectedEditorMatchesPersistedHint(
+    editor: AnnotationEditor | null | undefined,
+    persistedKeyHint: string | null,
+  ) {
+    if (!editor || !editorBelongsToCurrentManager(editor)) return false;
+    return !persistedKeyHint || persistedAnnotationKeyForEditor(editor) === persistedKeyHint;
   }
 
   function findHighlightEditorById(editorId: string) {
@@ -1861,7 +2147,7 @@
     }
     for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
       for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
-        if (predicate(editor) && !editor.deleted && editor.id === editorId) {
+        if (editorBelongsToCurrentManager(editor) && predicate(editor) && !editor.deleted && editor.id === editorId) {
           return editor;
         }
       }
@@ -1969,10 +2255,14 @@
         }
         await new Promise((resolve) => setTimeout(resolve, 50));
         syncSelectedEditorState(persistedKeyHint);
-        if (isFreeTextEditor(annotationEditorUIManager.firstSelectedEditor)) {
+        if (
+          isFreeTextEditor(annotationEditorUIManager.firstSelectedEditor) &&
+          selectedEditorMatchesPersistedHint(annotationEditorUIManager.firstSelectedEditor, persistedKeyHint)
+        ) {
           status = "Selected free text. Press Enter to edit text, change color, or delete it.";
           return true;
         }
+        annotationEditorUIManager.unselectAll();
       }
       await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 100));
     }
@@ -2054,10 +2344,14 @@
         }
         await new Promise((resolve) => setTimeout(resolve, 50));
         syncSelectedEditorState(persistedKeyHint);
-        if (isInkEditor(annotationEditorUIManager.firstSelectedEditor)) {
+        if (
+          isInkEditor(annotationEditorUIManager.firstSelectedEditor) &&
+          selectedEditorMatchesPersistedHint(annotationEditorUIManager.firstSelectedEditor, persistedKeyHint)
+        ) {
           status = "Selected ink. Change color or delete it, then save.";
           return true;
         }
+        annotationEditorUIManager.unselectAll();
       }
       await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 100));
     }
@@ -2299,16 +2593,20 @@
   }
 
   function syncSelectedEditorState(persistedKeyHint: string | null = null) {
+    const firstSelectedEditor = annotationEditorUIManager?.firstSelectedEditor;
+    const editor = editorBelongsToCurrentManager(firstSelectedEditor) ? firstSelectedEditor : null;
     if (activeTool === "none") {
-      selectedAnnotationKind = null;
-      selectedAnnotationColor = null;
-      hasSelectedHighlight = false;
-      selectedHighlightColor = null;
-      selectedAnnotationEntryId = null;
-      selectedPersistedAnnotationKey = null;
-      return;
+      const editorKey = persistedAnnotationKeyForEditor(editor);
+      if (!editor || !selectedPersistedAnnotationKey || editorKey !== selectedPersistedAnnotationKey) {
+        selectedAnnotationKind = null;
+        selectedAnnotationColor = null;
+        hasSelectedHighlight = false;
+        selectedHighlightColor = null;
+        selectedAnnotationEntryId = null;
+        selectedPersistedAnnotationKey = null;
+        return;
+      }
     }
-    const editor = annotationEditorUIManager?.firstSelectedEditor;
     if (!editor) {
       selectedAnnotationKind = null;
       selectedAnnotationColor = null;
@@ -2555,9 +2853,14 @@
 
   function deleteSelectedAnnotation() {
     const manager = annotationEditorUIManager;
-    const selectedEditor = manager?.firstSelectedEditor;
-    if (!selectedEditor) {
+    const firstSelectedEditor = manager?.firstSelectedEditor;
+    const selectedEditor = editorBelongsToCurrentManager(firstSelectedEditor) ? firstSelectedEditor : null;
+    if (!manager || !selectedEditor) {
       status = "Select an annotation first, then delete it.";
+      return false;
+    }
+    if (selectedPersistedAnnotationKey && persistedAnnotationKeyForEditor(selectedEditor) !== selectedPersistedAnnotationKey) {
+      status = "Selected annotation changed before delete. Select it again, then delete.";
       return false;
     }
     const wasHighlight = isHighlightEditor(selectedEditor);
@@ -3179,6 +3482,7 @@
   }
 
   function teardownViewer() {
+    annotationEditorUIManager?.unselectAll();
     pdfViewer?.setDocument(null as never);
     (pdfDocument as { destroy?: () => void } | null)?.destroy?.();
     pdfViewer = null;
@@ -3194,6 +3498,11 @@
     annotationStatus = "Open a PDF to inspect annotations.";
     selectedAnnotationEntryId = null;
     selectedPersistedAnnotationKey = null;
+    selectedAnnotationKind = null;
+    selectedAnnotationColor = null;
+    hasSelectedHighlight = false;
+    selectedHighlightColor = null;
+    activeTool = "none";
     lastActivatedOutlineEntry = null;
     annotationFocusBox = null;
     annotationDetailCache.clear();
@@ -3413,25 +3722,37 @@
             {#each bookmarkEntries as entry (entry.id)}
               <li>
                 <div class="bookmark-row">
-                  <button
-                    class="bookmark-item"
-                    onclick={() => void goToBookmarkEntry(entry)}
-                    title={`${entry.title} on page ${entry.pageNumber}`}
-                  >
-                    <span class="bookmark-icon" aria-hidden="true"></span>
-                    {#if editingBookmarkId === entry.id}
+                  {#if editingBookmarkId === entry.id}
+                    <div
+                      class="bookmark-item bookmark-item-editing"
+                      class:bookmark-hovered={hoveredBookmarkId === entry.id}
+                      role="group"
+                      aria-label={`Editing bookmark ${entry.title}`}
+                      onmouseenter={() => (hoveredBookmarkId = entry.id)}
+                      onmouseleave={() => (hoveredBookmarkId = null)}
+                    >
+                      <span class="bookmark-icon" aria-hidden="true"></span>
                       <input
                         aria-label="Bookmark title"
                         value={entry.title}
                         oninput={(event) => updateBookmarkTitle(entry.id, event.currentTarget.value)}
                         onkeydown={handleBookmarkTitleKey}
                         onblur={() => (editingBookmarkId = null)}
-                        onclick={(event) => event.stopPropagation()}
                       />
-                    {:else}
+                    </div>
+                  {:else}
+                    <button
+                      class="bookmark-item"
+                      class:bookmark-hovered={hoveredBookmarkId === entry.id}
+                      onclick={() => void goToBookmarkEntry(entry)}
+                      onmouseenter={() => (hoveredBookmarkId = entry.id)}
+                      onmouseleave={() => (hoveredBookmarkId = null)}
+                      title={`${entry.title} on page ${entry.pageNumber}`}
+                    >
+                      <span class="bookmark-icon" aria-hidden="true"></span>
                       <span>{entry.title}</span>
-                    {/if}
-                  </button>
+                    </button>
+                  {/if}
                   <button
                     class="bookmark-delete"
                     onclick={() => deleteBookmark(entry.id)}
@@ -3494,7 +3815,12 @@
     <div class="viewer-toolbar">
       <span>{currentPath || "No PDF loaded"}</span>
     </div>
-    <div class="pdf-container" bind:this={containerEl}>
+    <div
+      class="pdf-container"
+      bind:this={containerEl}
+      role="region"
+      aria-label="PDF pages"
+    >
       {#if annotationFocusBox}
         <div
           class="annotation-focus-box"
@@ -3503,8 +3829,40 @@
         ></div>
       {/if}
       {#each bookmarkEntries as entry (entry.id)}
-        <div class="bookmark-page-marker" title={`Bookmark: ${entry.title}`} aria-hidden="true"></div>
+        <button
+          type="button"
+          class="bookmark-page-marker"
+          class:bookmark-hovered={hoveredBookmarkId === entry.id}
+          data-page-number={entry.pageNumber}
+          style={bookmarkMarkerStyle(entry)}
+          onclick={(event) => {
+            event.stopPropagation();
+            deleteBookmark(entry.id);
+          }}
+          onmouseenter={() => (hoveredBookmarkId = entry.id)}
+          onmouseleave={() => (hoveredBookmarkId = null)}
+          title={`Remove bookmark: ${entry.title}`}
+          aria-label={`Remove bookmark ${entry.title}`}
+        ></button>
       {/each}
+      {#if bookmarkRailHoverCue}
+        <div
+          class="bookmark-rail-focus-cue"
+          data-page-number={bookmarkRailHoverCue.pageNumber}
+          style={`left: ${bookmarkRailHoverCue.focusLeft}px; top: ${bookmarkRailHoverCue.focusTop}px`}
+          aria-hidden="true"
+        >
+          +
+        </div>
+        <div
+          class="bookmark-rail-add-cue"
+          data-page-number={bookmarkRailHoverCue.pageNumber}
+          style={`left: ${bookmarkRailHoverCue.hintLeft}px; top: ${bookmarkRailHoverCue.hintTop}px`}
+          aria-hidden="true"
+        >
+          +
+        </div>
+      {/if}
       <div class="pdfViewer" bind:this={viewerEl}></div>
     </div>
   </section>
@@ -3853,6 +4211,7 @@
 
   .outline-item:hover:not(:disabled),
   .bookmark-item:hover:not(:disabled),
+  .bookmark-item.bookmark-hovered,
   .annotation-item:hover:not(:disabled) {
     background: #edf4ff;
   }
@@ -3947,12 +4306,60 @@
 
   .bookmark-page-marker {
     position: absolute;
-    top: 18px;
-    right: 26px;
     z-index: 19;
     width: 12px;
     height: 22px;
+    min-height: 0;
+    appearance: none;
+    border-radius: 0;
+    border: 0;
+    padding: 0;
+    transform: translateY(-2px);
+    cursor: pointer;
+    pointer-events: auto;
+  }
+
+  button.bookmark-page-marker:hover,
+  button.bookmark-page-marker.bookmark-hovered {
+    background: #111827;
+    filter: drop-shadow(0 0 0.28rem rgba(17, 24, 39, 0.86));
+    transform: translateY(-2px) scale(1.12);
+  }
+
+  .bookmark-rail-focus-cue,
+  .bookmark-rail-add-cue {
+    position: absolute;
+    z-index: 20;
+    display: grid;
+    box-sizing: border-box;
+    place-items: center;
+    font-weight: 700;
+    line-height: 1;
     pointer-events: none;
+  }
+
+  .bookmark-rail-focus-cue {
+    width: 22px;
+    height: 22px;
+    border: 1px solid #9aa3ad;
+    border-radius: 999px;
+    color: #1f2933;
+    background: #ffffff;
+    box-shadow: 0 1px 5px rgba(15, 23, 42, 0.18);
+    font-size: 16px;
+    transform: translate(-50%, -50%);
+  }
+
+  .bookmark-rail-add-cue {
+    width: 36px;
+    height: 36px;
+    border: 2px solid #ffffff;
+    border-radius: 999px;
+    color: #ffffff;
+    background: #22c55e;
+    box-shadow: 0 2px 7px rgba(15, 80, 40, 0.32);
+    font-size: 24px;
+    transform: translate(-50%, -50%);
   }
 
   .pdfViewer {
