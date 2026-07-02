@@ -5,6 +5,7 @@ export type PdfSpikeApi = {
   activateFirstOutlineItem: () => Promise<boolean>;
   annotationSidebarSummary: () => AnnotationEntry[];
   annotationSummary: () => Promise<PageAnnotationSummary[]>;
+  bookmarkSummary: () => BookmarkEntry[];
   createPageFreeText: (text?: string, pageNumber?: number) => Promise<boolean>;
   createSelectionHighlightInToolMode: () => Promise<boolean>;
   deleteSelected: () => boolean;
@@ -24,6 +25,15 @@ export type PdfSpikeApi = {
   setInkThickness: (thickness: number) => void;
   setTool: (tool: "none" | "highlight" | "text" | "ink") => void;
   stats: () => Record<string, unknown>;
+};
+
+export type BookmarkEntry = {
+  id: string;
+  title: string;
+  pageNumber: number;
+  pageHeight: number;
+  targetY: number;
+  destinationY: number;
 };
 
 export type AnnotationEntry = {

@@ -53,6 +53,7 @@
     pageRef: string;
     pageHeight: number;
     targetY: number;
+    destinationY: number;
   };
   type AnnotationEntry = {
     id: string;
@@ -111,6 +112,7 @@
   type SpikeDebugApi = {
     annotationSummary: () => Promise<Record<string, unknown>[]>;
     annotationSidebarSummary: () => AnnotationEntry[];
+    bookmarkSummary: () => BookmarkEntry[];
     outlineSummary: () => OutlineEntry[];
     activateFirstOutlineItem: () => Promise<boolean>;
     activateFirstAnnotationItem: () => Promise<boolean>;
@@ -263,6 +265,7 @@
     debugWindow.__pdfSpike = {
       annotationSummary: getAnnotationSummary,
       annotationSidebarSummary: () => annotationEntries,
+      bookmarkSummary: () => bookmarkEntries,
       outlineSummary: () => outlineEntries,
       activateFirstOutlineItem,
       activateFirstAnnotationItem,
@@ -1154,13 +1157,14 @@
       const bookmarkRoot = rawOutline.find((item) => item.title?.trim() === bookmarkRootTitle);
       const documentOutline = rawOutline.filter((item) => item !== bookmarkRoot);
       if (bookmarkRoot?.items?.length) {
-        bookmarkEntries = (
-          await Promise.all(
-            bookmarkRoot.items.map((item, index) =>
-              normalizeBookmarkEntry(documentWithOutline, item, `${index + 1}`),
-            ),
-          )
-        ).filter((entry): entry is BookmarkEntry => Boolean(entry));
+        const normalizedBookmarks = await Promise.all(
+          bookmarkRoot.items.map((item, index) =>
+            normalizeBookmarkEntry(documentWithOutline, item, `${index + 1}`),
+          ),
+        );
+        bookmarkEntries = sortBookmarkEntries(
+          normalizedBookmarks.filter((entry): entry is BookmarkEntry => Boolean(entry)),
+        );
       }
       bookmarkStatus =
         bookmarkEntries.length === 0
@@ -1198,14 +1202,16 @@
     const pageTarget = await bookmarkPageTarget(pageNumber);
     if (!pageTarget) return null;
     const explicitDestination = await resolveOutlineDestination(document, dest);
-    const savedTargetY = typeof explicitDestination?.[3] === "number" ? explicitDestination[3] : pageTarget.pageHeight;
+    const savedDestinationY = typeof explicitDestination?.[3] === "number" ? explicitDestination[3] : pageTarget.pageHeight;
+    const targetY = bookmarkAnchorYFromDestination(pageNumber, savedDestinationY, pageTarget.pageHeight);
     return {
       id: `pdf-bookmark:${id}`,
       title: item.title?.trim() || `Page ${pageNumber}`,
       pageNumber,
       pageRef: pageTarget.pageRef,
       pageHeight: pageTarget.pageHeight,
-      targetY: clampPdfY(savedTargetY, pageTarget.pageHeight),
+      targetY,
+      destinationY: bookmarkDestinationY(pageNumber, targetY, pageTarget.pageHeight),
     };
   }
 
@@ -1402,8 +1408,9 @@
       pageRef: pageTarget.pageRef,
       pageHeight: pageTarget.pageHeight,
       targetY: pageTarget.targetY,
+      destinationY: bookmarkDestinationY(pageNumber, pageTarget.targetY, pageTarget.pageHeight),
     };
-    bookmarkEntries = [...bookmarkEntries, entry];
+    bookmarkEntries = sortBookmarkEntries([...bookmarkEntries, entry]);
     bookmarkStatus = `${bookmarkEntries.length} bookmark${bookmarkEntries.length === 1 ? "" : "s"}.`;
     navigationTab = "bookmarks";
     editingBookmarkId = entry.id;
@@ -1416,6 +1423,16 @@
       entry.id === id ? { ...entry, title: title.trim() || `Page ${entry.pageNumber}` } : entry,
     );
     isDirty = true;
+  }
+
+  function sortBookmarkEntries(entries: BookmarkEntry[]) {
+    return [...entries].sort((left, right) => {
+      const pageOrder = left.pageNumber - right.pageNumber;
+      if (pageOrder !== 0) return pageOrder;
+      const pagePositionOrder = right.targetY - left.targetY;
+      if (pagePositionOrder !== 0) return pagePositionOrder;
+      return left.id.localeCompare(right.id);
+    });
   }
 
   function handleBookmarkTitleKey(event: KeyboardEvent) {
@@ -1552,6 +1569,20 @@
     const offsetIntoPage = explicitOffsetIntoPage ?? Math.max(0, containerEl.scrollTop - pageElement.offsetTop);
     const scale = pageElement.offsetHeight > 0 ? pageElement.offsetHeight / pageHeight : 1;
     return clampPdfY(pageHeight - offsetIntoPage / scale, pageHeight);
+  }
+
+  function bookmarkAnchorInsetPdfPoints(pageNumber: number, pageHeight: number) {
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const scale = pageElement && pageElement.offsetHeight > 0 ? pageElement.offsetHeight / pageHeight : 1;
+    return bookmarkRailAnchorHeightPx / scale;
+  }
+
+  function bookmarkDestinationY(pageNumber: number, targetY: number, pageHeight: number) {
+    return clampPdfY(targetY + bookmarkAnchorInsetPdfPoints(pageNumber, pageHeight), pageHeight);
+  }
+
+  function bookmarkAnchorYFromDestination(pageNumber: number, destinationY: number, pageHeight: number) {
+    return clampPdfY(destinationY - bookmarkAnchorInsetPdfPoints(pageNumber, pageHeight), pageHeight);
   }
 
   function clampPdfY(value: number, pageHeight: number) {
@@ -3123,7 +3154,7 @@
       const nextObject = index === bookmarks.length - 1 ? null : firstBookmarkObject + (index + 1) * 2;
       objectWrites.push({
         objectNumber: destObject,
-        body: `[ ${bookmark.pageRef} /XYZ 0 ${formatPdfNumber(bookmark.targetY)} 0 ]`,
+        body: `[ ${bookmark.pageRef} /XYZ 0 ${formatPdfNumber(bookmark.destinationY)} 0 ]`,
       });
       objectWrites.push({
         objectNumber: itemObject,
