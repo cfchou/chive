@@ -49,31 +49,33 @@ Covered:
 Deferred:
 
 - thumbnails, including lazy thumbnail rendering for large/scanned PDFs
-- PDF-native bookmark write/edit behavior
 
-## Next Candidates
+### PDF-native bookmarks
 
-### 1. PDF-native bookmarks
+Status: derisked
 
 Goal: prove that PDF-native bookmarks can be read, written, and used as navigation targets.
 
-Questions:
+Covered:
 
-- Can we read and eventually write PDF-native bookmarks?
-- Can clicking a PDF-native bookmark scroll to the correct page/location?
+- PDF-native bookmark extraction when available
+- app-created bookmark save into PDF outline under `My Bookmarks`
+- bookmark row create/rename/delete
+- bookmark row sorting on create/delete
+- bookmark persistence after save/reopen
+- bookmark click navigation to saved page/location
+- page-rail bookmark anchor create/remove workflow
+- bookmark title derivation from anchor text line
+- Playwright browser regression coverage
+- WDIO Tauri native smoke run passed for current implementation
 
-Success criteria:
+Remaining validation:
 
-- PDF-native bookmarks are read when available
-- PDF-native bookmarks can be created or edited when PDF.js/pdf-lib support is enough
-- bookmark data persists after save/reopen
-- click bookmark item -> PDF scrolls/selects target
+- one manual external-reader pass in Preview/PDF Expert/Acrobat for `/XYZ` positioning differences
 
-Deferred success criteria:
+## Next Candidates
 
-- thumbnail tab renders first N thumbnails lazily
-
-### 2. Reader shell with two dockable sidebars
+### 1. Reader shell with two dockable sidebars
 
 Goal: prove the main app shell can support left/right sidebars and dockable tabs.
 
@@ -99,7 +101,7 @@ Success criteria:
 - active tab/focus state is clear
 - PDF viewport remains usable at common widths
 
-### 3. Command registry and configurable keybindings
+### 2. Command registry and configurable keybindings
 
 Goal: prove keyboard control can be centralized and later user-configurable.
 
@@ -173,7 +175,7 @@ Success criteria:
 - command registry supports remapping later
 - keybinding conflicts are explicit
 
-### 4. Vim-like PDF text cursor / visual mode
+### 3. Vim-like PDF text cursor / visual mode
 
 Goal: determine whether keyboard-only PDF text selection is feasible.
 
@@ -202,7 +204,7 @@ Success criteria:
 - selected text can be passed to AI context
 - behavior degrades clearly on scanned PDFs
 
-### 5. AI selection-to-chat
+### 4. AI selection-to-chat
 
 Goal: prove selected PDF content can be sent to an AI chat window as explicit context.
 
@@ -245,7 +247,7 @@ Success criteria:
 - user can see what PDF content is about to be uploaded
 - no vector DB or document-wide indexing required
 
-### 6. AI document RAG and artifact storage
+### 5. AI document RAG and artifact storage
 
 Goal: prove whole-document AI questions and persistent AI artifacts can work without weakening PDF portability.
 

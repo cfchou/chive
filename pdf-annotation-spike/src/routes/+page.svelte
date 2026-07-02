@@ -89,6 +89,7 @@
     pageIndex?: number;
     commit?: () => void;
     enterInEditMode?: () => void;
+    remove?: () => void;
     serialize?: (isForCopying?: boolean, context?: Record<string, unknown> | null) => Record<string, unknown> | null;
   };
   type AnnotationEditorLayerRef = {
@@ -661,6 +662,14 @@
 
   function persistedAnnotationKey(pageNumber: number, sourceId: string) {
     return `${pageNumber}:${sourceId}`;
+  }
+
+  function persistedAnnotationKeyParts(key: string) {
+    const separator = key.indexOf(":");
+    if (separator < 0) return null;
+    const pageNumber = Number(key.slice(0, separator));
+    const sourceId = key.slice(separator + 1);
+    return Number.isInteger(pageNumber) && pageNumber > 0 && sourceId ? { pageNumber, sourceId } : null;
   }
 
   function pageNumberForAnnotationElement(element: Element) {
@@ -2891,8 +2900,52 @@
       return false;
     }
     if (selectedPersistedAnnotationKey && persistedAnnotationKeyForEditor(selectedEditor) !== selectedPersistedAnnotationKey) {
-      status = "Selected annotation changed before delete. Select it again, then delete.";
-      return false;
+      const persistedSelection = persistedAnnotationKeyParts(selectedPersistedAnnotationKey);
+      const expectedEditor =
+        persistedSelection && selectedAnnotationKind
+          ? findEditorByPersistedSourceId(persistedSelection.sourceId, selectedAnnotationKind, manager)
+          : null;
+      if (expectedEditor && editorBelongsToManager(expectedEditor, manager) && expectedEditor.remove) {
+        const wasHighlight = selectedAnnotationKind === "highlight";
+        const wasFreeText = selectedAnnotationKind === "freetext";
+        pendingDeletedPersistedAnnotationKeys.add(selectedPersistedAnnotationKey);
+        expectedEditor.remove();
+        selectedAnnotationKind = null;
+        selectedAnnotationColor = null;
+        hasSelectedHighlight = false;
+        selectedHighlightColor = null;
+        selectedAnnotationEntryId = null;
+        selectedPersistedAnnotationKey = null;
+        isDirty = true;
+        void refreshAnnotationSidebar();
+        queueEditorStateRefresh(100, 250, 500);
+        status = wasHighlight
+          ? "Deleted selected highlight. Save to persist it into the PDF."
+          : wasFreeText
+            ? "Deleted selected free text. Save to persist it into the PDF."
+            : "Deleted selected annotation. Save to persist it into the PDF.";
+        return true;
+      }
+      if (
+        !selectedAnnotationKind ||
+        !persistedSelection ||
+        !isPersistedAnnotationHidden(persistedSelection.pageNumber, persistedSelection.sourceId)
+      ) {
+        status = "Selected annotation changed before delete. Select it again, then delete.";
+        return false;
+      }
+      pendingDeletedPersistedAnnotationKeys.add(selectedPersistedAnnotationKey);
+      selectedAnnotationKind = null;
+      selectedAnnotationColor = null;
+      hasSelectedHighlight = false;
+      selectedHighlightColor = null;
+      selectedAnnotationEntryId = null;
+      selectedPersistedAnnotationKey = null;
+      isDirty = true;
+      void refreshAnnotationSidebar();
+      queueEditorStateRefresh(100, 250, 500);
+      status = "Deleted selected annotation. Save to persist it into the PDF.";
+      return true;
     }
     const wasHighlight = isHighlightEditor(selectedEditor);
     const wasFreeText = isFreeTextEditor(selectedEditor);
