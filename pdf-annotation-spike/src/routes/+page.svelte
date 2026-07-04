@@ -17,6 +17,7 @@
   }
 
   type PdfDocument = Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>;
+  type PdfPage = Awaited<ReturnType<PdfDocument["getPage"]>>;
   type EditorTool = "none" | "highlight" | "text" | "ink";
   type NavigationTab = "outline" | "bookmarks" | "annotations";
   type HighlightColorName = "yellow" | "green" | "blue" | "pink";
@@ -47,6 +48,7 @@
     url: string | null;
     pageNumber: number | null;
     targetY: number | null;
+    pageHeight: number | null;
     color: string | null;
     colorDirty: boolean;
     destinationStatus: string | null;
@@ -167,10 +169,13 @@
   let outlineEntries = $state<OutlineEntry[]>([]);
   let outlineStatus = $state("Open a PDF to inspect its outline.");
   let outlineColorMenuId = $state<string | null>(null);
+  let collapsedOutlineIds = $state<string[]>([]);
+  let activeOutlineEntryId = $state<string | null>(null);
   let navigationTab = $state<NavigationTab>("outline");
   let bookmarkEntries = $state<BookmarkEntry[]>([]);
   let bookmarkStatus = $state("Open a PDF to inspect bookmarks.");
   let editingBookmarkId = $state<string | null>(null);
+  let activeBookmarkId = $state<string | null>(null);
   let bookmarkColorMenuId = $state<string | null>(null);
   let bookmarkRailHoverCue = $state<{
     pageNumber: number;
@@ -238,6 +243,10 @@
     { name: "blue", label: "blue", color: "#3b82f6" },
     { name: "purple", label: "purple", color: "#a855f7" },
   ];
+  const bookmarkPalette = [
+    { name: "pink", label: "pink", color: "#ec4899" },
+    ...outlinePalette.filter((option) => option.color !== null),
+  ];
   const defaultBookmarkColor = "#f04444";
   const inkThicknesses = [1, 3, 8, 14] as const;
 
@@ -278,9 +287,18 @@
     document.addEventListener("selectionchange", rememberSelection);
     document.addEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
     containerEl?.addEventListener("pointerdown", handlePdfPointerDown, { capture: true });
+    let activeOutlineFrame = 0;
+    const handlePdfScroll = () => {
+      if (activeOutlineFrame) return;
+      activeOutlineFrame = requestAnimationFrame(() => {
+        activeOutlineFrame = 0;
+        refreshActiveOutlineFromScroll();
+      });
+    };
     const handleRailClick = (event: MouseEvent) => void handlePdfContainerClick(event);
     const clearRailHoverCue = () => (bookmarkRailHoverCue = null);
     containerEl?.addEventListener("click", handleRailClick);
+    containerEl?.addEventListener("scroll", handlePdfScroll);
     containerEl?.addEventListener("mousemove", handlePdfContainerMouseMove);
     containerEl?.addEventListener("mouseleave", clearRailHoverCue);
     debugWindow.__pdfSpike = {
@@ -317,8 +335,10 @@
     return () => {
       containerEl?.removeEventListener("mouseleave", clearRailHoverCue);
       containerEl?.removeEventListener("mousemove", handlePdfContainerMouseMove);
+      containerEl?.removeEventListener("scroll", handlePdfScroll);
       containerEl?.removeEventListener("click", handleRailClick);
       containerEl?.removeEventListener("pointerdown", handlePdfPointerDown, { capture: true });
+      if (activeOutlineFrame) cancelAnimationFrame(activeOutlineFrame);
       document.removeEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
       document.removeEventListener("selectionchange", rememberSelection);
       delete debugWindow.__pdfSpike;
@@ -1167,6 +1187,7 @@
   async function loadOutline(document: PdfDocument) {
     outlineEntries = [];
     outlineStatus = "Loading outline...";
+    activeOutlineEntryId = null;
     bookmarkEntries = [];
     bookmarkStatus = "Loading bookmarks...";
     try {
@@ -1201,12 +1222,14 @@
       outlineEntries = await Promise.all(
         documentOutline.map((item, index) => normalizeOutlineEntry(documentWithOutline, item, `${index + 1}`)),
       );
+      collapsedOutlineIds = [];
       const count = countOutlineEntries(outlineEntries);
       const unavailableCount = countUnavailableOutlineEntries(outlineEntries);
       outlineStatus =
         unavailableCount > 0
           ? `${count} outline ${count === 1 ? "item" : "items"}; ${unavailableCount} not navigable`
           : `${count} outline ${count === 1 ? "item" : "items"}`;
+      requestAnimationFrame(refreshActiveOutlineFromScroll);
     } catch (error) {
       outlineStatus = `Outline failed: ${formatError(error)}`;
     }
@@ -1243,6 +1266,7 @@
   async function normalizeOutlineEntry(
     document: PdfDocument & {
       getDestination: (id: string) => Promise<unknown[] | null>;
+      getPage: (pageNumber: number) => Promise<PdfPage>;
       getPageIndex: (ref: unknown) => Promise<number>;
     },
     item: PdfOutlineRaw,
@@ -1252,6 +1276,7 @@
     const dest = item.dest ?? null;
     const explicitDestination = await resolveOutlineDestination(document, dest);
     const pageNumber = await resolveOutlinePageNumberFromDestination(document, explicitDestination);
+    const pageHeight = pageNumber ? await outlinePageHeight(document, pageNumber) : null;
     return {
       id,
       title: item.title?.trim() || "Untitled",
@@ -1259,6 +1284,7 @@
       url: item.url ?? null,
       pageNumber,
       targetY: typeof explicitDestination?.[3] === "number" ? explicitDestination[3] : null,
+      pageHeight,
       color: normalizeOutlineColor(item.color),
       colorDirty: false,
       destinationStatus: outlineDestinationStatus(dest, item.url ?? null, pageNumber),
@@ -1266,6 +1292,12 @@
         children.map((child, index) => normalizeOutlineEntry(document, child, `${id}.${index + 1}`)),
       ),
     };
+  }
+
+  async function outlinePageHeight(document: { getPage: (pageNumber: number) => Promise<PdfPage> }, pageNumber: number) {
+    const page = await document.getPage(pageNumber);
+    const view = (page as unknown as { view?: number[] }).view;
+    return Number(view?.[3] ?? page.getViewport({ scale: 1 }).height);
   }
 
   function updateOutlineColor(id: string, color: string | null) {
@@ -1278,6 +1310,100 @@
     outlineEntries = updateEntries(outlineEntries);
     outlineColorMenuId = null;
     isDirty = true;
+  }
+
+  function isOutlineCollapsed(id: string) {
+    return collapsedOutlineIds.includes(id);
+  }
+
+  function toggleOutlineCollapsed(id: string) {
+    collapsedOutlineIds = isOutlineCollapsed(id)
+      ? collapsedOutlineIds.filter((candidate) => candidate !== id)
+      : [...collapsedOutlineIds, id];
+    outlineColorMenuId = null;
+  }
+
+  function collapseAllOutlineItems() {
+    collapsedOutlineIds = flattenOutlineEntries(outlineEntries)
+      .filter((entry) => entry.items.length > 0)
+      .map((entry) => entry.id);
+    outlineColorMenuId = null;
+  }
+
+  function expandAllOutlineItems() {
+    collapsedOutlineIds = [];
+    outlineColorMenuId = null;
+  }
+
+  function isActiveOutlineRow(id: string) {
+    return visibleActiveOutlineEntryId(outlineEntries, activeOutlineEntryId) === id;
+  }
+
+  function visibleActiveOutlineEntryId(entries: OutlineEntry[], activeId: string | null) {
+    if (!activeId) return null;
+    const path = outlinePathToEntry(entries, activeId);
+    if (path.length === 0) return null;
+    for (let index = 0; index < path.length - 1; index += 1) {
+      if (isOutlineCollapsed(path[index].id)) {
+        return path[index].id;
+      }
+    }
+    return path.at(-1)?.id ?? null;
+  }
+
+  function outlinePathToEntry(entries: OutlineEntry[], id: string): OutlineEntry[] {
+    for (const entry of entries) {
+      if (entry.id === id) return [entry];
+      const childPath = outlinePathToEntry(entry.items, id);
+      if (childPath.length > 0) return [entry, ...childPath];
+    }
+    return [];
+  }
+
+  function refreshActiveOutlineFromScroll() {
+    if (!containerEl || outlineEntries.length === 0) {
+      activeOutlineEntryId = null;
+      return;
+    }
+    const anchorTop = containerEl.scrollTop + 96;
+    const pageElements = [...(viewerEl?.querySelectorAll<HTMLElement>(".page[data-page-number]") ?? [])]
+      .map((element) => ({ element, pageNumber: Number(element.dataset.pageNumber) }))
+      .filter((entry) => Number.isInteger(entry.pageNumber) && entry.pageNumber > 0)
+      .sort((left, right) => left.element.offsetTop - right.element.offsetTop);
+    const visiblePage =
+      pageElements.find(
+        ({ element }) => anchorTop >= element.offsetTop && anchorTop < element.offsetTop + element.offsetHeight,
+      ) ??
+      pageElements.filter(({ element }) => element.offsetTop <= anchorTop).at(-1) ??
+      pageElements[0];
+    if (!visiblePage) {
+      activeOutlineEntryId = null;
+      return;
+    }
+    const flatEntries = flattenOutlineEntries(outlineEntries).filter((entry) => entry.pageNumber);
+    const pageHeight =
+      flatEntries.find((entry) => entry.pageNumber === visiblePage.pageNumber)?.pageHeight ??
+      visiblePage.element.offsetHeight;
+    const scale = pageHeight > 0 ? visiblePage.element.offsetHeight / pageHeight : 1;
+    const offsetIntoPage = Math.max(
+      0,
+      Math.min(visiblePage.element.offsetHeight, anchorTop - visiblePage.element.offsetTop),
+    );
+    const currentY = pageHeight - offsetIntoPage / scale;
+    const candidates = flatEntries
+      .filter((entry) => {
+        if (!entry.pageNumber) return false;
+        if (entry.pageNumber < visiblePage.pageNumber) return true;
+        if (entry.pageNumber > visiblePage.pageNumber) return false;
+        return (entry.targetY ?? entry.pageHeight ?? pageHeight) >= currentY - 2;
+      })
+      .sort((left, right) => {
+        const pageOrder = (left.pageNumber ?? 0) - (right.pageNumber ?? 0);
+        if (pageOrder !== 0) return pageOrder;
+        return (right.targetY ?? right.pageHeight ?? pageHeight) - (left.targetY ?? left.pageHeight ?? pageHeight);
+      });
+    const active = candidates.at(-1) ?? flatEntries[0] ?? null;
+    activeOutlineEntryId = active?.id ?? null;
   }
 
   function outlineColorStyle(color: string | null) {
@@ -1476,7 +1602,7 @@
     bookmarkEntries = sortBookmarkEntries([...bookmarkEntries, entry]);
     bookmarkStatus = bookmarkCountLabel(bookmarkEntries.length);
     navigationTab = "bookmarks";
-    editingBookmarkId = entry.id;
+    editingBookmarkId = null;
     isDirty = true;
     status = `Added bookmark ${title}.`;
   }
@@ -1684,11 +1810,13 @@
 
   async function goToBookmarkEntry(entry: BookmarkEntry) {
     editingBookmarkId = null;
+    activeBookmarkId = entry.id;
     await scrollToBookmarkTarget(entry);
     status = `Navigated to ${entry.title}.`;
   }
 
   async function editBookmarkAndGoToEntry(entry: BookmarkEntry) {
+    activeBookmarkId = entry.id;
     startEditingBookmark(entry.id);
     await scrollToBookmarkTarget(entry);
     status = `Navigated to ${entry.title}.`;
@@ -1739,6 +1867,7 @@
       status = "Outline item has no navigable PDF destination.";
       return false;
     }
+    activeOutlineEntryId = entry.id;
     try {
       await pdfLinkService.goToDestination(entry.dest as string | unknown[]);
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1746,6 +1875,7 @@
         await scrollToPage(entry.pageNumber);
       }
       lastActivatedOutlineEntry = entry;
+      requestAnimationFrame(refreshActiveOutlineFromScroll);
       status = `Navigated to ${entry.title}.`;
       return true;
     } catch (error) {
@@ -3747,9 +3877,12 @@
     annotationEditorUIManager = null;
     outlineEntries = [];
     outlineStatus = "Open a PDF to inspect its outline.";
+    collapsedOutlineIds = [];
+    activeOutlineEntryId = null;
     bookmarkEntries = [];
     bookmarkStatus = "Open a PDF to inspect bookmarks.";
     editingBookmarkId = null;
+    activeBookmarkId = null;
     annotationEntries = [];
     annotationStatus = "Open a PDF to inspect annotations.";
     selectedAnnotationEntryId = null;
@@ -3955,7 +4088,35 @@
       <div class="nav-content" role="tabpanel" aria-label="Outline">
         <div class="nav-heading">
           <span class="label">Outline</span>
-          <span>{outlineStatus}</span>
+          <span class="nav-heading-actions">
+            <button
+              type="button"
+              class="nav-heading-icon"
+              aria-label="Expand all outline items"
+              title="Expand all outline items"
+              disabled={outlineEntries.length === 0}
+              onclick={expandAllOutlineItems}
+            >
+              <svg class="nav-heading-svg" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M6 5.5 10 9.5 14 5.5"></path>
+                <path d="M6 10.5 10 14.5 14 10.5"></path>
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="nav-heading-icon"
+              aria-label="Collapse all outline items"
+              title="Collapse all outline items"
+              disabled={outlineEntries.length === 0}
+              onclick={collapseAllOutlineItems}
+            >
+              <svg class="nav-heading-svg" viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M6 9.5 10 5.5 14 9.5"></path>
+                <path d="M6 14.5 10 10.5 14 14.5"></path>
+              </svg>
+            </button>
+            <span class="nav-heading-count">{outlineStatus}</span>
+          </span>
         </div>
         {#if outlineEntries.length > 0}
           <ul class="outline-list">
@@ -3980,6 +4141,7 @@
                     <div
                       class="bookmark-item bookmark-item-editing"
                       class:bookmark-hovered={hoveredBookmarkId === entry.id}
+                      class:bookmark-active={activeBookmarkId === entry.id}
                       role="group"
                       aria-label={`Editing bookmark ${entry.title}`}
                       onmouseenter={() => (hoveredBookmarkId = entry.id)}
@@ -4008,6 +4170,7 @@
                     <div
                       class="bookmark-item"
                       class:bookmark-hovered={hoveredBookmarkId === entry.id}
+                      class:bookmark-active={activeBookmarkId === entry.id}
                       role="group"
                       aria-label={`Bookmark ${entry.title}`}
                       onmouseenter={() => (hoveredBookmarkId = entry.id)}
@@ -4027,9 +4190,10 @@
                       <button
                         type="button"
                         class="bookmark-title-button"
-                        onclick={() => void editBookmarkAndGoToEntry(entry)}
+                        onclick={() => void goToBookmarkEntry(entry)}
+                        ondblclick={() => void editBookmarkAndGoToEntry(entry)}
                         aria-label={entry.title}
-                        title={`Edit bookmark ${entry.title}`}
+                        title={`${entry.title} on page ${entry.pageNumber}`}
                       >
                         {entry.title}
                       </button>
@@ -4037,11 +4201,11 @@
                   {/if}
                   {#if bookmarkColorMenuId === entry.id}
                     <div class="outline-color-menu bookmark-color-menu" role="menu" aria-label="Bookmark colors">
-                      {#each outlinePalette as option (option.name)}
+                      {#each bookmarkPalette as option (option.name)}
                         <button
                           type="button"
                           class="outline-color-option"
-                          style={`--outline-color: ${option.color ?? "transparent"}`}
+                          style={`--outline-color: ${option.color}`}
                           aria-label={`Set bookmark color ${option.label}`}
                           title={`Set bookmark color ${option.label}`}
                           onpointerdown={(event) => event.preventDefault()}
@@ -4169,12 +4333,36 @@
 
 {#snippet outlineItems(entries: OutlineEntry[], depth = 0)}
   {#each entries as entry (entry.id)}
+    {@const hasChildren = entry.items.length > 0}
+    {@const collapsed = isOutlineCollapsed(entry.id)}
     <li class="outline-row">
-      <div class="outline-row-main">
+      <div
+        class="outline-row-main"
+        class:outline-active={isActiveOutlineRow(entry.id)}
+        class:outline-collapsed-row={hasChildren && collapsed}
+        data-outline-id={entry.id}
+        style={`${outlineColorStyle(entry.color)}; padding-left: ${12 + depth * 16}px`}
+      >
+        {#if hasChildren}
+          <button
+            type="button"
+            class="outline-toggle"
+            aria-label={`${collapsed ? "Expand" : "Collapse"} outline item ${entry.title}`}
+            aria-expanded={!collapsed}
+            title={`${collapsed ? "Expand" : "Collapse"} outline item ${entry.title}`}
+            onclick={() => toggleOutlineCollapsed(entry.id)}
+          >
+            <span class:collapsed aria-hidden="true"></span>
+          </button>
+        {:else}
+          <span class="outline-toggle-spacer" aria-hidden="true"></span>
+        {/if}
         <button
           class="outline-item"
-          style={`${outlineColorStyle(entry.color)}; padding-left: ${12 + depth * 16}px`}
-          onclick={() => void goToOutlineEntry(entry)}
+          onclick={(event) => {
+            event.currentTarget.blur();
+            void goToOutlineEntry(entry);
+          }}
           disabled={!isOutlineEntryNavigable(entry)}
           title={entry.destinationStatus ? `${entry.title} - ${entry.destinationStatus}` : entry.title}
         >
@@ -4212,7 +4400,7 @@
           </div>
         {/if}
       </div>
-      {#if entry.items.length > 0}
+      {#if hasChildren && !collapsed}
         <ul>
           {@render outlineItems(entry.items, depth + 1)}
         </ul>
@@ -4425,10 +4613,53 @@
     font-size: 12px;
   }
 
-  .nav-heading span:last-child {
+  .nav-heading-actions {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .nav-heading-count,
+  .nav-heading > span:last-child {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .nav-heading-icon {
+    display: grid;
+    box-sizing: border-box;
+    width: 20px;
+    height: 20px;
+    min-height: 0;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 0;
+    color: #5b6470;
+    background: transparent;
+  }
+
+  .nav-heading-icon:hover:not(:disabled),
+  .nav-heading-icon:focus-visible {
+    border-color: #cfd6df;
+    background: #ffffff;
+  }
+
+  .nav-heading-icon:disabled {
+    color: #b5bdc8;
+  }
+
+  .nav-heading-svg {
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    fill: none;
   }
 
   .empty-state {
@@ -4459,6 +4690,13 @@
 
   .outline-row-main {
     position: relative;
+    display: grid;
+    box-sizing: border-box;
+    width: 100%;
+    grid-template-columns: 20px minmax(0, 1fr) 34px 32px;
+    align-items: stretch;
+    min-width: 0;
+    background: var(--outline-bg-color, transparent);
   }
 
   .annotation-page-group + .annotation-page-group {
@@ -4530,14 +4768,53 @@
   }
 
   .outline-item {
-    grid-template-columns: minmax(0, 1fr) auto;
-    background: var(--outline-bg-color, transparent);
+    box-sizing: border-box;
+    grid-column: 2 / 4;
+    grid-template-columns: minmax(0, 1fr) 34px;
+    min-width: 0;
+    padding: 6px 0 6px 4px;
+    background: transparent;
+  }
+
+  .outline-toggle,
+  .outline-toggle-spacer {
+    width: 20px;
+    min-height: 34px;
+  }
+
+  .outline-toggle {
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    color: #7a8491;
+    background: transparent;
+  }
+
+  .outline-toggle:hover,
+  .outline-toggle:focus-visible {
+    color: #2f3742;
+    background: rgba(255, 255, 255, 0.5);
+  }
+
+  .outline-toggle span {
+    width: 7px;
+    height: 7px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+  }
+
+  .outline-toggle span.collapsed {
+    transform: rotate(-45deg);
   }
 
   .outline-color-button {
-    position: absolute;
-    top: 8px;
-    right: 8px;
+    position: static;
+    grid-column: 4;
+    align-self: center;
+    justify-self: center;
     display: grid;
     box-sizing: border-box;
     width: 16px;
@@ -4554,6 +4831,7 @@
     box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.82);
     line-height: 0;
   }
+
 
   .outline-row-main:hover > .outline-color-button,
   .outline-row-main:focus-within > .outline-color-button,
@@ -4573,16 +4851,22 @@
   .outline-title,
   .bookmark-title-button,
   .annotation-detail {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .outline-item:hover:not(:disabled),
+  .outline-row-main:hover,
   .bookmark-item:hover:not(:disabled),
   .bookmark-item.bookmark-hovered,
+  .bookmark-item.bookmark-active,
   .annotation-item:hover:not(:disabled) {
     background: var(--outline-hover-bg-color, #edf4ff);
+  }
+
+  .outline-row-main.outline-active {
+    box-shadow: inset 0 0 0 9999px rgba(47, 111, 203, 0.1);
   }
 
   .bookmark-icon,
@@ -4640,17 +4924,17 @@
     right: 0;
     z-index: 40;
     display: grid;
-    grid-template-columns: repeat(4, 24px);
-    gap: 4px;
+    grid-template-columns: repeat(4, 18px);
+    gap: 6px;
     border: 1px solid #c8d0da;
-    padding: 6px;
+    padding: 8px;
     background: #ffffff;
     box-shadow: 0 6px 18px rgba(17, 24, 39, 0.18);
   }
 
   .outline-row-main .outline-color-menu-outline {
     top: 30px;
-    right: 6px;
+    right: 8px;
   }
 
   .bookmark-color-menu {
@@ -4661,20 +4945,28 @@
 
   .outline-color-option {
     display: grid;
-    width: 24px;
-    height: 24px;
+    width: 18px;
+    height: 18px;
+    min-height: 0;
     place-items: center;
-    border: 1px solid #c8d0da;
+    border: 0;
     border-radius: 50%;
     padding: 0;
-    background: #ffffff;
+    background: transparent;
   }
 
   .outline-color-option span {
+    box-sizing: border-box;
     width: 14px;
     height: 14px;
+    border: 1px solid #c8d0da;
     border-radius: 50%;
     background: var(--outline-color, transparent);
+  }
+
+  .outline-color-option:hover span,
+  .outline-color-option:focus-visible span {
+    box-shadow: 0 0 0 2px #d8e8ff;
   }
 
   .annotation-item {
@@ -4701,6 +4993,7 @@
   }
 
   .page-number {
+    justify-self: end;
     color: #7a838f;
     font-size: 12px;
     white-space: nowrap;

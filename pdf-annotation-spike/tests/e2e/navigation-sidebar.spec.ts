@@ -22,6 +22,26 @@ async function addCurrentPageBookmark(page: Page) {
   await page.evaluate(() => window.__pdfSpike!.createBookmarkForCurrentPage());
 }
 
+async function editBookmarkTitle(page: Page, currentTitle: string, nextTitle: string) {
+  await page.locator(".bookmark-title-button").filter({ hasText: currentTitle }).last().dblclick();
+  await page.getByRole("textbox", { name: "Bookmark title" }).fill(nextTitle);
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+}
+
+async function editLatestBookmarkTitle(page: Page, nextTitle: string) {
+  const currentTitle = await page.evaluate(() => {
+    const entries = (window.__pdfSpike!.bookmarkSummary() as BookmarkEntry[]).filter((entry) =>
+      entry.id.startsWith("bookmark:"),
+    );
+    const latest = entries.sort((left, right) => Number(left.id.split(":")[1]) - Number(right.id.split(":")[1])).at(-1);
+    return latest?.title;
+  });
+  if (!currentTitle) {
+    throw new Error("Missing latest bookmark title");
+  }
+  await editBookmarkTitle(page, currentTitle, nextTitle);
+}
+
 async function expectNavHeadingCountInset(page: Page, panelLabel: string, minimumInset: number) {
   const inset = await page.evaluate((label) => {
     const panel = document.querySelector<HTMLElement>(`.nav-content[aria-label="${label}"]`);
@@ -33,6 +53,32 @@ async function expectNavHeadingCountInset(page: Page, panelLabel: string, minimu
     return Math.round(heading.getBoundingClientRect().right - count.getBoundingClientRect().right);
   }, panelLabel);
   expect(inset).toBeGreaterThanOrEqual(minimumInset);
+}
+
+async function scrollPdfToOutlineTitle(page: Page, title: string) {
+  await page.evaluate((targetTitle) => {
+    type OutlineLike = {
+      title: string;
+      pageNumber: number | null;
+      targetY: number | null;
+      pageHeight?: number | null;
+      items: OutlineLike[];
+    };
+    const flatten = (entries: OutlineLike[]): OutlineLike[] =>
+      entries.flatMap((entry) => [entry, ...flatten(entry.items ?? [])]);
+    const entry = flatten(window.__pdfSpike!.outlineSummary() as OutlineLike[]).find((candidate) =>
+      candidate.title.startsWith(targetTitle),
+    );
+    if (!entry?.pageNumber) throw new Error(`Missing outline entry ${targetTitle}`);
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${entry.pageNumber}"]`);
+    if (!container || !pageElement) throw new Error(`Missing PDF page ${entry.pageNumber}`);
+    const pageHeight = entry.pageHeight ?? pageElement.offsetHeight;
+    const targetY = entry.targetY ?? pageHeight;
+    const scale = pageHeight > 0 ? pageElement.offsetHeight / pageHeight : 1;
+    container.scrollTop = Math.max(0, pageElement.offsetTop + Math.max(0, pageHeight - targetY) * scale - 80);
+    container.dispatchEvent(new Event("scroll"));
+  }, title);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -108,7 +154,8 @@ test("outline sidebar displays native outline colors", async ({ page }) => {
     [...document.querySelectorAll<HTMLElement>(".outline-item")].reduce<Record<string, string>>((colors, item) => {
       const title = item.querySelector(".outline-title")?.textContent?.trim();
       if (title) {
-        colors[title] = getComputedStyle(item).backgroundColor;
+        const row = item.closest<HTMLElement>(".outline-row-main");
+        colors[title] = row ? getComputedStyle(row).backgroundColor : "";
       }
       return colors;
     }, {}),
@@ -119,11 +166,161 @@ test("outline sidebar displays native outline colors", async ({ page }) => {
   expect(rowColors["Default Outline"]).toBe("rgba(0, 0, 0, 0)");
 });
 
+test("outline rows with children collapse and expand from chevrons and header icons", async ({ page }) => {
+  await loadFixture(page);
+
+  const parentToggle = page.getByRole("button", { name: "Collapse outline item 1. Networking and Resource Loading" });
+  const leafToggle = page.getByRole("button", { name: /outline item Speculative Loading and Resource Optimization/ });
+  const childRow = page.locator(".outline-item").filter({ hasText: "Speculative Loading and Resource Optimization" });
+
+  await expect(parentToggle).toHaveAttribute("aria-expanded", "true");
+  await expect(childRow).toBeVisible();
+  await expect(leafToggle).toHaveCount(0);
+
+  const gutterLayout = await page.evaluate(() => {
+    const parent = [...document.querySelectorAll<HTMLElement>(".outline-row-main")].find((row) =>
+      row.textContent?.includes("1. Networking and Resource Loading"),
+    );
+    const leaf = [...document.querySelectorAll<HTMLElement>(".outline-row-main")].find((row) =>
+      row.textContent?.includes("Speculative Loading and Resource Optimization"),
+    );
+    if (!parent || !leaf) throw new Error("Missing outline rows");
+    return {
+      parentColumns: getComputedStyle(parent).gridTemplateColumns,
+      leafColumns: getComputedStyle(leaf).gridTemplateColumns,
+      leafHasToggle: Boolean(leaf.querySelector(".outline-toggle")),
+      leafHasSpacer: Boolean(leaf.querySelector(".outline-toggle-spacer")),
+    };
+  });
+  expect(gutterLayout.parentColumns.startsWith("20px ")).toBe(true);
+  expect(gutterLayout.leafColumns.startsWith("20px ")).toBe(true);
+  expect(gutterLayout.leafHasToggle).toBe(false);
+  expect(gutterLayout.leafHasSpacer).toBe(true);
+
+  await parentToggle.click();
+  await expect(page.getByRole("button", { name: "Expand outline item 1. Networking and Resource Loading" })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  await expect(childRow).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Expand outline item 1. Networking and Resource Loading" }).click();
+  await expect(childRow).toBeVisible();
+
+  await page.getByRole("button", { name: "Collapse all outline items" }).click();
+  await expect(childRow).toHaveCount(0);
+  await expect.poll(() => page.locator(".outline-item").count()).toBeLessThan(54);
+  const collapsedLayout = await page.evaluate(() => {
+    const nav = document.querySelector<HTMLElement>('.nav-content[aria-label="Outline"]');
+    const rows = [...document.querySelectorAll<HTMLElement>(".outline-row-main")];
+    if (!nav || rows.length === 0) throw new Error("Missing collapsed outline rows");
+    const navRight = nav.getBoundingClientRect().right;
+    return rows.map((row) => {
+      const pageNumber = row.querySelector<HTMLElement>(".page-number");
+      const title = row.querySelector<HTMLElement>(".outline-title");
+      const rowRect = row.getBoundingClientRect();
+      const isCollapsedParent = row.classList.contains("outline-collapsed-row");
+      return {
+        rowRight: Math.round(rowRect.right),
+        pageRight: pageNumber ? Math.round(pageNumber.getBoundingClientRect().right) : null,
+        navRight: Math.round(navRight),
+        isCollapsedParent,
+        titleOverflows: title ? title.scrollWidth > title.clientWidth : false,
+      };
+    });
+  });
+  expect(collapsedLayout.every((row) => row.rowRight <= row.navRight)).toBe(true);
+  expect(collapsedLayout.every((row) => row.pageRight === null || row.pageRight <= row.navRight - 32)).toBe(true);
+  expect(collapsedLayout.some((row) => row.titleOverflows)).toBe(true);
+  const collapsedColorInset = await page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>('.nav-content[aria-label="Outline"]');
+    const trigger = document.querySelector<HTMLElement>('[aria-label="Outline color 1. Networking and Resource Loading"]');
+    if (!panel || !trigger) throw new Error("Missing collapsed outline color trigger");
+    return Math.round(panel.getBoundingClientRect().right - trigger.getBoundingClientRect().right);
+  });
+  expect(collapsedColorInset).toBe(8);
+
+  await page.getByRole("button", { name: "Expand all outline items" }).click();
+  await expect(page.locator(".outline-item")).toHaveCount(54);
+  await expect(childRow).toBeVisible();
+});
+
+test("scrolling PDF dims matching outline row or visible collapsed ancestor", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "3. Styling and Layout 7" }).click();
+  await expect(page.getByText("Navigated to 3. Styling and Layout.")).toBeVisible();
+  await scrollPdfToOutlineTitle(page, "6. Module Loading and Import Maps");
+  await expect
+    .poll(() =>
+      page
+        .locator(".outline-row-main.outline-active .outline-title")
+        .allTextContents(),
+    )
+    .toEqual(["6. Module Loading and Import Maps"]);
+  await expect(
+    page.locator(".outline-row-main.outline-active .outline-title").filter({ hasText: "3. Styling and Layout" }),
+  ).toHaveCount(0);
+
+  await scrollPdfToOutlineTitle(page, "6. Module Loading and Import Maps");
+  await expect
+    .poll(() =>
+      page
+        .locator(".outline-row-main.outline-active .outline-title")
+        .first()
+        .textContent(),
+    )
+    .toContain("6. Module Loading and Import Maps");
+
+  await page.getByRole("button", { name: "Collapse outline item 5. Inside the JavaScript Engine (V8)" }).click();
+  await scrollPdfToOutlineTitle(page, "JIT tiers table");
+  await expect
+    .poll(() =>
+      page
+        .locator(".outline-row-main.outline-active .outline-title")
+        .first()
+        .textContent(),
+    )
+    .toContain("5. Inside the JavaScript Engine (V8)");
+  await expect(page.locator(".outline-item").filter({ hasText: "JIT tiers table" })).toHaveCount(0);
+});
+
 test("imported outline color can be edited and persists through native outline color", async ({ page }) => {
   await loadFixture(page, "/colored-outline.pdf", "colored-outline.pdf");
 
   await page.getByRole("button", { name: "Red Outline 1" }).hover();
   await page.getByRole("button", { name: "Outline color Red Outline" }).click();
+  const paletteGeometry = await page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>('.nav-content[aria-label="Outline"]');
+    const option = document.querySelector<HTMLElement>(".outline-color-option");
+    const dot = option?.querySelector<HTMLElement>("span");
+    const menu = document.querySelector<HTMLElement>(".outline-color-menu-outline");
+    const trigger = document.querySelector<HTMLElement>('[aria-label="Outline color Red Outline"]');
+    if (!panel || !option || !dot || !menu || !trigger) throw new Error("Missing outline color picker");
+    const panelRight = panel.getBoundingClientRect().right;
+    const optionRect = option.getBoundingClientRect();
+    const dotRect = dot.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const triggerRect = trigger.getBoundingClientRect();
+    return {
+      optionWidth: Math.round(optionRect.width),
+      optionHeight: Math.round(optionRect.height),
+      dotWidth: Math.round(dotRect.width),
+      dotHeight: Math.round(dotRect.height),
+      optionBackground: getComputedStyle(option).backgroundColor,
+      triggerRightInset: Math.round(panelRight - triggerRect.right),
+      menuRightInset: Math.round(panelRight - menuRect.right),
+    };
+  });
+  expect(paletteGeometry).toEqual({
+    optionWidth: 18,
+    optionHeight: 18,
+    dotWidth: 14,
+    dotHeight: 14,
+    optionBackground: "rgba(0, 0, 0, 0)",
+    triggerRightInset: 8,
+    menuRightInset: 8,
+  });
   await page.getByRole("button", { name: "Set outline color purple" }).click();
 
   await expect
@@ -293,7 +490,7 @@ test("bookmark sidebar creates a current-page bookmark with a page marker", asyn
   await expectNavHeadingCountInset(page, "Bookmarks", 20);
   await expect(page.getByRole("button", { name: "Add bookmark" })).toHaveCount(0);
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await expect(page.getByRole("textbox", { name: "Bookmark title" })).toHaveCount(0);
 
   await expect(bookmarksPanel.locator(".nav-heading")).toContainText("1 bookmark");
   await expectNavHeadingCountInset(page, "Bookmarks", 20);
@@ -314,7 +511,6 @@ test("bookmark title uses the first words from text at an outline destination", 
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
 
   await expect(page.getByRole("button", { name: "TIER NAME ROLE", exact: true })).toBeVisible();
 });
@@ -342,7 +538,6 @@ test("bookmark title uses the first words from the text line at the anchor", asy
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
 
   await expect(page.getByRole("button", { name: "Starting with Chrome 66", exact: true })).toBeVisible();
 });
@@ -367,7 +562,6 @@ test("bookmark title uses the visible page-top heading when multiple outline ite
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
 
   await expect(page.getByRole("button", { name: "Background Compilation", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "JIT Compilation Tiers", exact: true })).toHaveCount(0);
@@ -378,8 +572,7 @@ test("bookmark row can be renamed inline", async ({ page }) => {
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Renamed bookmark");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "Renamed bookmark");
 
   await expect(page.getByRole("button", { name: "Renamed bookmark", exact: true })).toBeVisible();
   await expect(page.getByText("Unsaved changes")).toBeVisible();
@@ -390,12 +583,11 @@ test("existing bookmark can be edited for title and color", async ({ page }) => 
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Original bookmark");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "Original bookmark");
 
   await expect(page.getByRole("button", { name: "Edit bookmark Original bookmark" })).toHaveCount(0);
   await expect(page.locator(".bookmark-color-chip")).toHaveCount(0);
-  await page.getByRole("button", { name: "Original bookmark", exact: true }).click();
+  await page.getByRole("button", { name: "Original bookmark", exact: true }).dblclick();
   await page.getByRole("button", { name: "Bookmark color Original bookmark" }).click();
   await page.getByRole("button", { name: "Set bookmark color purple" }).click();
   await page.getByRole("textbox", { name: "Bookmark title" }).fill("Edited existing bookmark");
@@ -426,13 +618,12 @@ test("existing bookmark can be edited for title and color", async ({ page }) => 
   await expect(page.getByRole("button", { name: "Edit bookmark Edited existing bookmark" })).toHaveCount(0);
 });
 
-test("bookmark title editor closes when another bookmark is clicked", async ({ page }) => {
+test("bookmark title click dims the row without opening the editor", async ({ page }) => {
   await loadFixture(page);
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("First bookmark");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "First bookmark");
   const clickPoint = await page.evaluate(() => {
     const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='1']");
     if (!pageElement) throw new Error("Missing page 1 layout");
@@ -443,10 +634,19 @@ test("bookmark title editor closes when another bookmark is clicked", async ({ p
     };
   });
   await page.mouse.click(clickPoint.x, clickPoint.y);
+  await expect(page.getByRole("textbox", { name: "Bookmark title" })).toHaveCount(0);
+  await page.locator(".bookmark-title-button").last().click();
+  await expect(page.getByRole("textbox", { name: "Bookmark title" })).toHaveCount(0);
+  await expect(page.locator(".bookmark-item.bookmark-active")).toHaveCount(1);
+  await expect(page.locator(".bookmark-item.bookmark-active")).toHaveCSS("background-color", "rgb(237, 244, 255)");
+
+  await page.locator(".bookmark-title-button").last().dblclick();
   await expect(page.getByRole("textbox", { name: "Bookmark title" })).toBeVisible();
 
-  await page.getByRole("button", { name: "First bookmark", exact: true }).click();
+  await page.getByRole("button", { name: "First bookmark", exact: true }).dblclick();
 
+  await expect(page.getByRole("textbox", { name: "Bookmark title" })).toHaveValue("First bookmark");
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
   await expect(page.getByRole("textbox", { name: "Bookmark title" })).toHaveCount(0);
 });
 
@@ -466,16 +666,13 @@ test("bookmark rows are sorted by page anchor when created", async ({ page }) =>
 
   await scrollPageOneTo(0.62);
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Lower anchor");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "Lower anchor");
   await scrollPageOneTo(0.18);
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Upper anchor");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "Upper anchor");
   await scrollPageOneTo(0.4);
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Middle anchor");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "Middle anchor");
 
   await expect.poll(bookmarkRowTitles).toEqual(["Upper anchor", "Middle anchor", "Lower anchor"]);
 
@@ -494,18 +691,18 @@ test("bookmark rows are sorted across pages when created", async ({ page }) => {
     if (!container || !pageElement) throw new Error("Missing page 2 layout");
     container.scrollTop = pageElement.offsetTop + pageElement.offsetHeight * 0.2;
   });
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().currentPageNumber)).toBe(2);
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Page 2 anchor");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "Page 2 anchor");
   await page.evaluate(() => {
     const container = document.querySelector<HTMLElement>(".pdf-container");
     const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='1']");
     if (!container || !pageElement) throw new Error("Missing page 1 layout");
     container.scrollTop = pageElement.offsetTop + pageElement.offsetHeight * 0.2;
   });
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().currentPageNumber)).toBe(1);
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Page 1 anchor");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "Page 1 anchor");
 
   await expect
     .poll(async () => (await page.locator(".bookmark-item").allTextContents()).map((text) => text.trim()))
@@ -517,7 +714,6 @@ test("bookmark row can be deleted", async ({ page }) => {
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
 
   await expect(page.getByRole("button", { name: /Delete bookmark How Modern Browsers Work/ })).toHaveText("⊖");
   const deleteGeometry = await page.evaluate(() => {
@@ -546,8 +742,7 @@ test("bookmark persists after save and reopen", async ({ page }) => {
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Persistent bookmark");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "Persistent bookmark");
 
   await saveAndReopen(page, "/tmp/pdfspike-playwright-bookmark.pdf");
   await page.getByRole("tab", { name: "Bookmarks" }).click();
@@ -561,7 +756,6 @@ test("deleted bookmark stays deleted after save and reopen", async ({ page }) =>
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
   await saveAndReopen(page, "/tmp/pdfspike-playwright-bookmark-delete.pdf");
   await page.getByRole("tab", { name: "Bookmarks" }).click();
 
@@ -580,7 +774,6 @@ test("bookmark row navigates after save and reopen", async ({ page }) => {
   await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
   await saveAndReopen(page, "/tmp/pdfspike-playwright-bookmark-navigation.pdf");
   await page.getByRole("tab", { name: "Bookmarks" }).click();
 
@@ -605,8 +798,7 @@ test("bookmark row restores the saved page location after reopen", async ({ page
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Mid-page bookmark");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "Mid-page bookmark");
   await saveAndReopen(page, "/tmp/pdfspike-playwright-bookmark-location.pdf");
   await page.evaluate(() => {
     const container = document.querySelector<HTMLElement>(".pdf-container");
@@ -654,8 +846,7 @@ test("bookmark page markers sit on the saved page-rail anchors", async ({ page }
   });
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("First rail anchor");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "First rail anchor");
 
   await page.evaluate((scrollTop) => {
     const container = document.querySelector<HTMLElement>(".pdf-container");
@@ -663,8 +854,7 @@ test("bookmark page markers sit on the saved page-rail anchors", async ({ page }
     container.scrollTop = scrollTop;
   }, positions.secondTop);
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Second rail anchor");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "Second rail anchor");
 
   const markerLayout = await page.evaluate(() => {
     const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
@@ -775,7 +965,6 @@ test("clicking the page rail titles the bookmark from the clicked anchor text", 
   await page.mouse.click(clickPoint.x, clickPoint.y);
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
   await expect(page.getByRole("button", { name: "On the renderer's main", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "4. Painting, Compositing, and", exact: true })).toHaveCount(0);
 });
@@ -865,8 +1054,7 @@ test("bookmark rows and rail markers highlight each other on hover", async ({ pa
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("Linked rail marker");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "Linked rail marker");
 
   await page.getByRole("button", { name: "Linked rail marker", exact: true }).hover();
   await expect(page.locator(".bookmark-page-marker.bookmark-hovered")).toHaveCount(1);
@@ -899,8 +1087,7 @@ test("saved PDF contains a My Bookmarks outline group", async ({ page }) => {
   });
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("qpdf bookmark");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "qpdf bookmark");
   const bookmarkBeforeSave = (await page.evaluate(() =>
     window.__pdfSpike!.bookmarkSummary().find((entry: BookmarkEntry) => entry.title === "qpdf bookmark"),
   )) as BookmarkEntry | undefined;
@@ -941,9 +1128,14 @@ test("bookmark color can be edited and persists through native outline color", a
   await addCurrentPageBookmark(page);
   await expect(page.locator(".bookmark-color-chip")).toHaveCount(0);
   await page.getByRole("button", { name: /Bookmark color/ }).click();
+  await expect(page.getByRole("button", { name: "Set bookmark color default" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Set bookmark color pink" })).toBeVisible();
+  await expect(page.locator(".bookmark-color-menu .outline-color-option span").first()).toHaveCSS(
+    "background-color",
+    "rgb(236, 72, 153)",
+  );
   await page.getByRole("button", { name: "Set bookmark color blue" }).click();
-  await page.getByRole("textbox", { name: "Bookmark title" }).fill("blue bookmark");
-  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
+  await editLatestBookmarkTitle(page, "blue bookmark");
   await page.mouse.move(0, 0);
 
   await expect(page.getByRole("button", { name: "blue bookmark", exact: true })).toBeVisible();
