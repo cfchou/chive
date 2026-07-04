@@ -73,6 +73,34 @@ Remaining validation:
 
 - one manual external-reader pass in Preview/PDF Expert/Acrobat for `/XYZ` positioning differences
 
+### Colored outline/bookmarks
+
+Status: derisked
+
+Goal: prove that outline and bookmark colors can be stored as portable PDF-native metadata.
+
+Covered:
+
+- existing PDF outline `/C` colors are read from PDF.js outline data and displayed in the sidebar
+- imported document outline entries can be recolored when the native object mapping capability gate passes
+- unsupported outline structures keep read-only color display instead of allowing risky rewrites
+- app-created bookmark colors are written into the generated PDF outline under `My Bookmarks`
+- bookmark colors appear in sidebar rows and page-rail markers
+- fixed palette color changes mark the PDF dirty and persist after save/reopen
+- selecting Default removes `/C` instead of writing explicit black
+- no XMP, sidecar, or app-local fallback is required for color persistence
+- targeted browser regression coverage for color read/write behavior
+
+Remaining validation:
+
+- native WKWebView smoke/regression run for the finalized color implementation
+- one manual external-reader pass in Preview/PDF Expert/Acrobat for outline color display differences
+
+Reference:
+
+- `docs/adr/0011-use-native-pdf-outline-colors.md`
+- branch: `pdf-color-outline-bookmark-spike`
+
 ### Vim-like PDF text cursor / visual mode
 
 Status: explored, deferred
@@ -331,25 +359,3 @@ Success criteria:
 - thumbnails load lazily
 - navigation remains responsive
 - annotation/sidebar data can load progressively
-
-### 7. Colored outline/bookmarks
-
-Goal: decide whether colored outline is app-local metadata or portable PDF metadata.
-
-Questions:
-
-- Can PDF.js read outline item color if present?
-- Can PDF.js write outline item color back into PDF?
-- Do external readers preserve/display outline colors?
-- If not portable, is app-local outline coloring enough?
-
-Likely direction:
-
-- Treat outline colors as app metadata first.
-- Do not make portable colored PDF outline P0 unless PDF.js write support is proven.
-
-Success criteria:
-
-- outline items can display color in app
-- color state can be persisted app-locally
-- portability decision is documented
