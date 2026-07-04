@@ -6,6 +6,7 @@ export type PdfSpikeApi = {
   annotationSidebarSummary: () => AnnotationEntry[];
   annotationSummary: () => Promise<PageAnnotationSummary[]>;
   bookmarkSummary: () => BookmarkEntry[];
+  createBookmarkForCurrentPage: () => Promise<void>;
   createPageFreeText: (text?: string, pageNumber?: number) => Promise<boolean>;
   createSelectionHighlightInToolMode: () => Promise<boolean>;
   deleteSelected: () => boolean;
@@ -34,6 +35,7 @@ export type BookmarkEntry = {
   pageHeight: number;
   targetY: number;
   destinationY: number;
+  color?: string | null;
 };
 
 export type AnnotationEntry = {

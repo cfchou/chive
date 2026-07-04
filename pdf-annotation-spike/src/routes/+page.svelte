@@ -22,12 +22,16 @@
   type HighlightColorName = "yellow" | "green" | "blue" | "pink";
   type FreeTextColorName = "black" | "green" | "blue" | "pink";
   type InkColorName = "black" | "red" | "yellow" | "blue" | "pink";
+  type OutlinePaletteColorName = "default" | "red" | "orange" | "yellow" | "green" | "blue" | "purple";
   type SelectedAnnotationKind = "highlight" | "freetext" | "ink" | null;
   type PdfDestination = string | unknown[] | null;
   type PdfOutlineRaw = {
     title?: string;
     dest?: PdfDestination;
     url?: string | null;
+    color?: Uint8ClampedArray | number[];
+    bold?: boolean;
+    italic?: boolean;
     items?: PdfOutlineRaw[];
   };
   type PdfAnnotationRaw = Record<string, unknown> & {
@@ -43,6 +47,8 @@
     url: string | null;
     pageNumber: number | null;
     targetY: number | null;
+    color: string | null;
+    colorDirty: boolean;
     destinationStatus: string | null;
     items: OutlineEntry[];
   };
@@ -54,6 +60,7 @@
     pageHeight: number;
     targetY: number;
     destinationY: number;
+    color: string | null;
   };
   type AnnotationEntry = {
     id: string;
@@ -118,6 +125,7 @@
     activateFirstOutlineItem: () => Promise<boolean>;
     activateFirstAnnotationItem: () => Promise<boolean>;
     activateAnnotationBySourceId: (sourceId: string) => Promise<boolean>;
+    createBookmarkForCurrentPage: () => Promise<void>;
     createPageFreeText: (text?: string, pageNumber?: number) => Promise<boolean>;
     createSelectionHighlightInToolMode: () => Promise<boolean>;
     editorSummary: () => Record<string, unknown>[];
@@ -158,10 +166,12 @@
   let annotationEditorUIManager: AnnotationEditorUIManager | null = null;
   let outlineEntries = $state<OutlineEntry[]>([]);
   let outlineStatus = $state("Open a PDF to inspect its outline.");
+  let outlineColorMenuId = $state<string | null>(null);
   let navigationTab = $state<NavigationTab>("outline");
   let bookmarkEntries = $state<BookmarkEntry[]>([]);
   let bookmarkStatus = $state("Open a PDF to inspect bookmarks.");
   let editingBookmarkId = $state<string | null>(null);
+  let bookmarkColorMenuId = $state<string | null>(null);
   let bookmarkRailHoverCue = $state<{
     pageNumber: number;
     focusLeft: number;
@@ -219,6 +229,16 @@
     blue: "#2f6ecb",
     pink: "#b82f76",
   };
+  const outlinePalette: { name: OutlinePaletteColorName; label: string; color: string | null }[] = [
+    { name: "default", label: "default", color: null },
+    { name: "red", label: "red", color: "#f04444" },
+    { name: "orange", label: "orange", color: "#f97316" },
+    { name: "yellow", label: "yellow", color: "#eab308" },
+    { name: "green", label: "green", color: "#22c55e" },
+    { name: "blue", label: "blue", color: "#3b82f6" },
+    { name: "purple", label: "purple", color: "#a855f7" },
+  ];
+  const defaultBookmarkColor = "#f04444";
   const inkThicknesses = [1, 3, 8, 14] as const;
 
   const editorModes = {
@@ -271,6 +291,7 @@
       activateFirstOutlineItem,
       activateFirstAnnotationItem,
       activateAnnotationBySourceId,
+      createBookmarkForCurrentPage,
       createPageFreeText,
       createSelectionHighlightInToolMode,
       editorSummary: getEditorSummary,
@@ -473,10 +494,7 @@
           left.label.localeCompare(right.label),
       );
       annotationEntries = merged;
-      annotationStatus =
-        merged.length === 0
-          ? "No editable annotations found."
-          : `${merged.length} annotation${merged.length === 1 ? "" : "s"}.`;
+      annotationStatus = annotationCountLabel(merged.length);
     } catch (error) {
       annotationStatus = `Annotation scan failed: ${formatError(error)}`;
     }
@@ -1160,7 +1178,7 @@
       const rawOutline = await documentWithOutline.getOutline();
       if (!rawOutline || rawOutline.length === 0) {
         outlineStatus = "This PDF has no outline.";
-        bookmarkStatus = "No bookmarks yet.";
+        bookmarkStatus = bookmarkCountLabel(0);
         return;
       }
       const bookmarkRoot = rawOutline.find((item) => item.title?.trim() === bookmarkRootTitle);
@@ -1175,10 +1193,7 @@
           normalizedBookmarks.filter((entry): entry is BookmarkEntry => Boolean(entry)),
         );
       }
-      bookmarkStatus =
-        bookmarkEntries.length === 0
-          ? "No bookmarks yet."
-          : `${bookmarkEntries.length} bookmark${bookmarkEntries.length === 1 ? "" : "s"}.`;
+      bookmarkStatus = bookmarkCountLabel(bookmarkEntries.length);
       if (documentOutline.length === 0) {
         outlineStatus = "This PDF has no outline.";
         return;
@@ -1190,8 +1205,8 @@
       const unavailableCount = countUnavailableOutlineEntries(outlineEntries);
       outlineStatus =
         unavailableCount > 0
-          ? `${count} outline ${count === 1 ? "item" : "items"}; ${unavailableCount} not navigable.`
-          : `${count} outline ${count === 1 ? "item" : "items"}.`;
+          ? `${count} outline ${count === 1 ? "item" : "items"}; ${unavailableCount} not navigable`
+          : `${count} outline ${count === 1 ? "item" : "items"}`;
     } catch (error) {
       outlineStatus = `Outline failed: ${formatError(error)}`;
     }
@@ -1221,6 +1236,7 @@
       pageHeight: pageTarget.pageHeight,
       targetY,
       destinationY: bookmarkDestinationY(pageNumber, targetY, pageTarget.pageHeight),
+      color: normalizeOutlineColor(item.color),
     };
   }
 
@@ -1243,11 +1259,48 @@
       url: item.url ?? null,
       pageNumber,
       targetY: typeof explicitDestination?.[3] === "number" ? explicitDestination[3] : null,
+      color: normalizeOutlineColor(item.color),
+      colorDirty: false,
       destinationStatus: outlineDestinationStatus(dest, item.url ?? null, pageNumber),
       items: await Promise.all(
         children.map((child, index) => normalizeOutlineEntry(document, child, `${id}.${index + 1}`)),
       ),
     };
+  }
+
+  function updateOutlineColor(id: string, color: string | null) {
+    const updateEntries = (entries: OutlineEntry[]): OutlineEntry[] =>
+      entries.map((entry) =>
+        entry.id === id
+          ? { ...entry, color, colorDirty: true }
+          : { ...entry, items: updateEntries(entry.items) },
+      );
+    outlineEntries = updateEntries(outlineEntries);
+    outlineColorMenuId = null;
+    isDirty = true;
+  }
+
+  function outlineColorStyle(color: string | null) {
+    if (!color) return "--outline-color: transparent; --outline-bg-color: transparent; --outline-hover-bg-color: #edf4ff";
+    return `--outline-color: ${color}; --outline-bg-color: ${hexToRgba(color, 0.16)}; --outline-hover-bg-color: ${hexToRgba(color, 0.24)}`;
+  }
+
+  function normalizeOutlineColor(color: Uint8ClampedArray | number[] | undefined) {
+    const components = numbersFromUnknown(color);
+    if (!components || components.length < 3) return null;
+    const rgb = components.slice(0, 3).map((component) => Math.max(0, Math.min(255, Math.round(component))));
+    if (rgb.every((component) => component === 0)) return null;
+    return `#${rgb.map((component) => component.toString(16).padStart(2, "0")).join("")}`;
+  }
+
+  function hexToRgba(color: string, alpha: number) {
+    const match = /^#([0-9a-f]{6})$/i.exec(color);
+    if (!match) return "transparent";
+    const hex = match[1];
+    const red = Number.parseInt(hex.slice(0, 2), 16);
+    const green = Number.parseInt(hex.slice(2, 4), 16);
+    const blue = Number.parseInt(hex.slice(4, 6), 16);
+    return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
   }
 
   async function resolveOutlinePageNumber(
@@ -1418,9 +1471,10 @@
       pageHeight: pageTarget.pageHeight,
       targetY: pageTarget.targetY,
       destinationY: bookmarkDestinationY(pageNumber, pageTarget.targetY, pageTarget.pageHeight),
+      color: defaultBookmarkColor,
     };
     bookmarkEntries = sortBookmarkEntries([...bookmarkEntries, entry]);
-    bookmarkStatus = `${bookmarkEntries.length} bookmark${bookmarkEntries.length === 1 ? "" : "s"}.`;
+    bookmarkStatus = bookmarkCountLabel(bookmarkEntries.length);
     navigationTab = "bookmarks";
     editingBookmarkId = entry.id;
     isDirty = true;
@@ -1431,6 +1485,18 @@
     bookmarkEntries = bookmarkEntries.map((entry) =>
       entry.id === id ? { ...entry, title: title.trim() || `Page ${entry.pageNumber}` } : entry,
     );
+    isDirty = true;
+  }
+
+  function startEditingBookmark(id: string) {
+    editingBookmarkId = id;
+    bookmarkColorMenuId = null;
+    hoveredBookmarkId = null;
+  }
+
+  function updateBookmarkColor(id: string, color: string | null) {
+    bookmarkEntries = bookmarkEntries.map((entry) => (entry.id === id ? { ...entry, color } : entry));
+    bookmarkColorMenuId = null;
     isDirty = true;
   }
 
@@ -1447,10 +1513,14 @@
   function handleBookmarkTitleKey(event: KeyboardEvent) {
     if (event.key === "Enter") {
       editingBookmarkId = null;
+      bookmarkColorMenuId = null;
+      hoveredBookmarkId = null;
       event.preventDefault();
     }
     if (event.key === "Escape") {
       editingBookmarkId = null;
+      bookmarkColorMenuId = null;
+      hoveredBookmarkId = null;
       event.preventDefault();
     }
   }
@@ -1458,12 +1528,12 @@
   function deleteBookmark(id: string) {
     const removed = bookmarkEntries.find((entry) => entry.id === id);
     bookmarkEntries = bookmarkEntries.filter((entry) => entry.id !== id);
-    bookmarkStatus =
-      bookmarkEntries.length === 0
-        ? "No bookmarks yet."
-        : `${bookmarkEntries.length} bookmark${bookmarkEntries.length === 1 ? "" : "s"}.`;
+    bookmarkStatus = bookmarkCountLabel(bookmarkEntries.length);
     if (editingBookmarkId === id) {
       editingBookmarkId = null;
+    }
+    if (bookmarkColorMenuId === id) {
+      bookmarkColorMenuId = null;
     }
     isDirty = true;
     status = removed ? `Deleted bookmark ${removed.title}.` : "Deleted bookmark.";
@@ -1618,6 +1688,12 @@
     status = `Navigated to ${entry.title}.`;
   }
 
+  async function editBookmarkAndGoToEntry(entry: BookmarkEntry) {
+    startEditingBookmark(entry.id);
+    await scrollToBookmarkTarget(entry);
+    status = `Navigated to ${entry.title}.`;
+  }
+
   async function scrollToBookmarkTarget(entry: BookmarkEntry) {
     if (scrollBookmarkTargetIntoView(entry)) return;
     await scrollToPage(entry.pageNumber);
@@ -1636,13 +1712,18 @@
   function bookmarkMarkerStyle(entry: BookmarkEntry) {
     bookmarkRailLayoutVersion;
     const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.pageNumber}"]`);
+    const colorStyle = `--bookmark-color: ${entry.color ?? defaultBookmarkColor}`;
     if (!pageElement || entry.pageHeight <= 0) {
-      return "left: 12px; top: 18px";
+      return `left: 12px; top: 18px; ${colorStyle}`;
     }
     const offsetIntoPage = ((entry.pageHeight - entry.targetY) / entry.pageHeight) * pageElement.offsetHeight;
     const left = pageElement.offsetLeft;
     const top = pageElement.offsetTop + offsetIntoPage;
-    return `left: ${left}px; top: ${top}px`;
+    return `left: ${left}px; top: ${top}px; ${colorStyle}`;
+  }
+
+  function bookmarkColorStyle(entry: BookmarkEntry) {
+    return `--bookmark-color: ${entry.color ?? defaultBookmarkColor}`;
   }
 
   function refreshBookmarkRailLayout() {
@@ -1708,6 +1789,14 @@
 
   function itemCountLabel(count: number) {
     return `${count} item${count === 1 ? "" : "s"}`;
+  }
+
+  function bookmarkCountLabel(count: number) {
+    return `${count} bookmark${count === 1 ? "" : "s"}`;
+  }
+
+  function annotationCountLabel(count: number) {
+    return `${count} annotation${count === 1 ? "" : "s"}`;
   }
 
   async function activateAnnotationEntry(entry: AnnotationEntry) {
@@ -3158,7 +3247,79 @@
   async function savePdfDocumentBytes() {
     if (!pdfDocument) throw new Error("No PDF loaded");
     const saved = new Uint8Array(await pdfDocument.saveDocument());
-    return appendBookmarkOutline(saved, bookmarkEntries);
+    const withoutBookmarks = removeBookmarkOutline(saved);
+    const withOutlineColors = applyOutlineColorPatches(withoutBookmarks, outlineEntries);
+    return appendBookmarkOutline(withOutlineColors, bookmarkEntries);
+  }
+
+  function applyOutlineColorPatches(bytes: Uint8Array, entries: OutlineEntry[]) {
+    const dirtyEntries = flattenOutlineEntries(entries).filter((entry) => entry.colorDirty);
+    if (dirtyEntries.length === 0) return bytes;
+
+    const text = new TextDecoder("latin1").decode(bytes);
+    const startxrefMatch = [...text.matchAll(/startxref\s+(\d+)\s+%%EOF/g)].at(-1);
+    const trailerMatch = [...text.matchAll(/trailer\s*<<(.*?)>>\s*startxref/gs)].at(-1);
+    if (!startxrefMatch || !trailerMatch) {
+      throw new Error("Could not find PDF trailer for outline color update");
+    }
+
+    const trailer = trailerMatch[1];
+    const size = Number(trailer.match(/\/Size\s+(\d+)/)?.[1]);
+    const rootObject = Number(trailer.match(/\/Root\s+(\d+)\s+\d+\s+R/)?.[1]);
+    const previousXref = Number(startxrefMatch[1]);
+    if (!size || !rootObject || Number.isNaN(previousXref)) {
+      throw new Error("Could not read PDF trailer references for outline color update");
+    }
+
+    const catalog = readObjectBody(text, rootObject);
+    const outlinesObject = Number(catalog.match(/\/Outlines\s+(\d+)\s+\d+\s+R/)?.[1]);
+    if (!outlinesObject) {
+      throw new Error("PDF has no outline tree for outline color update");
+    }
+
+    const outlineObjects = outlineItemObjectNumbers(text, outlinesObject);
+    const flatEntries = flattenOutlineEntries(entries);
+    if (outlineObjects.length !== flatEntries.length) {
+      throw new Error("Could not match PDF outline objects for outline color update");
+    }
+
+    const objectWrites = flatEntries.flatMap((entry, index) => {
+      if (!entry.colorDirty) return [];
+      const objectNumber = outlineObjects[index];
+      const body = readObjectBody(text, objectNumber);
+      return [
+        {
+          objectNumber,
+          body: entry.color
+            ? rewritePdfDictionary(body, { C: formatPdfColor(entry.color) })
+            : removePdfDictionaryKeys(body, ["C"]),
+        },
+      ];
+    });
+
+    return appendIncrementalPdfUpdate(bytes, objectWrites, size, rootObject, previousXref);
+  }
+
+  function outlineItemObjectNumbers(pdfText: string, outlinesObject: number) {
+    const root = readObjectBody(pdfText, outlinesObject);
+    const firstObject = Number(root.match(/\/First\s+(\d+)\s+\d+\s+R/)?.[1]);
+    if (!firstObject) return [];
+    const objectNumbers: number[] = [];
+    const seen = new Set<number>();
+    const visit = (objectNumber: number) => {
+      let current = objectNumber;
+      while (current) {
+        if (seen.has(current)) throw new Error("PDF outline tree contains a cycle");
+        seen.add(current);
+        objectNumbers.push(current);
+        const body = readObjectBody(pdfText, current);
+        const firstChild = Number(body.match(/\/First\s+(\d+)\s+\d+\s+R/)?.[1]);
+        if (firstChild) visit(firstChild);
+        current = Number(body.match(/\/Next\s+(\d+)\s+\d+\s+R/)?.[1]);
+      }
+    };
+    visit(firstObject);
+    return objectNumbers;
   }
 
   function appendBookmarkOutline(bytes: Uint8Array, bookmarks: BookmarkEntry[]) {
@@ -3215,6 +3376,7 @@
           "<<",
           `/Title ${pdfString(bookmark.title)}`,
           `/Dest ${destObject} 0 R`,
+          bookmark.color ? `/C ${formatPdfColor(bookmark.color)}` : "",
           `/Parent ${bookmarkRootObject} 0 R`,
           previousObject ? `/Prev ${previousObject} 0 R` : "",
           nextObject ? `/Next ${nextObject} 0 R` : "",
@@ -3399,6 +3561,16 @@
 
   function formatPdfNumber(value: number) {
     return Number.isInteger(value) ? String(value) : value.toFixed(3);
+  }
+
+  function formatPdfColor(color: string) {
+    const match = /^#([0-9a-f]{6})$/i.exec(color);
+    if (!match) return "[0 0 0]";
+    const hex = match[1];
+    const components = [hex.slice(0, 2), hex.slice(2, 4), hex.slice(4, 6)].map((part) =>
+      (Number.parseInt(part, 16) / 255).toFixed(3),
+    );
+    return `[${components.join(" ")}]`;
   }
 
   async function debugLoadPath(path: string) {
@@ -3797,9 +3969,7 @@
       <div class="nav-content" role="tabpanel" aria-label="Bookmarks">
         <div class="nav-heading">
           <span class="label">Bookmarks</span>
-          <button class="icon-action" onclick={() => void createBookmarkForCurrentPage()} disabled={!pdfDocument} aria-label="Add bookmark">
-            +
-          </button>
+          <span>{bookmarkStatus}</span>
         </div>
         {#if bookmarkEntries.length > 0}
           <ul class="bookmark-list">
@@ -3815,7 +3985,17 @@
                       onmouseenter={() => (hoveredBookmarkId = entry.id)}
                       onmouseleave={() => (hoveredBookmarkId = null)}
                     >
-                      <span class="bookmark-icon" aria-hidden="true"></span>
+                      <button
+                        type="button"
+                        class="bookmark-color-button"
+                        style={bookmarkColorStyle(entry)}
+                        aria-label={`Bookmark color ${entry.title}`}
+                        title={`Bookmark color ${entry.title}`}
+                        onpointerdown={(event) => event.preventDefault()}
+                        onclick={() => (bookmarkColorMenuId = bookmarkColorMenuId === entry.id ? null : entry.id)}
+                      >
+                        <span class="bookmark-icon" aria-hidden="true"></span>
+                      </button>
                       <input
                         aria-label="Bookmark title"
                         value={entry.title}
@@ -3825,17 +4005,52 @@
                       />
                     </div>
                   {:else}
-                    <button
+                    <div
                       class="bookmark-item"
                       class:bookmark-hovered={hoveredBookmarkId === entry.id}
-                      onclick={() => void goToBookmarkEntry(entry)}
+                      role="group"
+                      aria-label={`Bookmark ${entry.title}`}
                       onmouseenter={() => (hoveredBookmarkId = entry.id)}
                       onmouseleave={() => (hoveredBookmarkId = null)}
                       title={`${entry.title} on page ${entry.pageNumber}`}
                     >
-                      <span class="bookmark-icon" aria-hidden="true"></span>
-                      <span>{entry.title}</span>
-                    </button>
+                      <button
+                        type="button"
+                        class="bookmark-color-button"
+                        style={bookmarkColorStyle(entry)}
+                        aria-label={`Bookmark color ${entry.title}`}
+                        title={`Bookmark color ${entry.title}`}
+                        onclick={() => (bookmarkColorMenuId = bookmarkColorMenuId === entry.id ? null : entry.id)}
+                      >
+                        <span class="bookmark-icon" aria-hidden="true"></span>
+                      </button>
+                      <button
+                        type="button"
+                        class="bookmark-title-button"
+                        onclick={() => void editBookmarkAndGoToEntry(entry)}
+                        aria-label={entry.title}
+                        title={`Edit bookmark ${entry.title}`}
+                      >
+                        {entry.title}
+                      </button>
+                    </div>
+                  {/if}
+                  {#if bookmarkColorMenuId === entry.id}
+                    <div class="outline-color-menu bookmark-color-menu" role="menu" aria-label="Bookmark colors">
+                      {#each outlinePalette as option (option.name)}
+                        <button
+                          type="button"
+                          class="outline-color-option"
+                          style={`--outline-color: ${option.color ?? "transparent"}`}
+                          aria-label={`Set bookmark color ${option.label}`}
+                          title={`Set bookmark color ${option.label}`}
+                          onpointerdown={(event) => event.preventDefault()}
+                          onclick={() => updateBookmarkColor(entry.id, option.color)}
+                        >
+                          <span aria-hidden="true"></span>
+                        </button>
+                      {/each}
+                    </div>
                   {/if}
                   <button
                     class="bookmark-delete"
@@ -3843,7 +4058,7 @@
                     aria-label={`Delete bookmark ${entry.title}`}
                     title={`Delete bookmark ${entry.title}`}
                   >
-                    x
+                    ⊖
                   </button>
                 </div>
               </li>
@@ -3954,21 +4169,49 @@
 
 {#snippet outlineItems(entries: OutlineEntry[], depth = 0)}
   {#each entries as entry (entry.id)}
-    <li>
-      <button
-        class="outline-item"
-        style={`padding-left: ${12 + depth * 16}px`}
-        onclick={() => void goToOutlineEntry(entry)}
-        disabled={!isOutlineEntryNavigable(entry)}
-        title={entry.destinationStatus ? `${entry.title} - ${entry.destinationStatus}` : entry.title}
-      >
-        <span>{entry.title}</span>
-        {#if entry.pageNumber}
-          <span class="page-number">Page {entry.pageNumber}</span>
-        {:else if entry.destinationStatus}
-          <span class="page-number">{entry.destinationStatus}</span>
+    <li class="outline-row">
+      <div class="outline-row-main">
+        <button
+          class="outline-item"
+          style={`${outlineColorStyle(entry.color)}; padding-left: ${12 + depth * 16}px`}
+          onclick={() => void goToOutlineEntry(entry)}
+          disabled={!isOutlineEntryNavigable(entry)}
+          title={entry.destinationStatus ? `${entry.title} - ${entry.destinationStatus}` : entry.title}
+        >
+          <span class="outline-title">{entry.title}</span>
+          {#if entry.pageNumber}
+            <span class="page-number">{entry.pageNumber}</span>
+          {:else if entry.destinationStatus}
+            <span class="page-number">{entry.destinationStatus}</span>
+          {/if}
+        </button>
+        <button
+          type="button"
+          class="outline-color-button"
+          style={`--outline-color: ${entry.color ?? "transparent"}`}
+          aria-label={`Outline color ${entry.title}`}
+          title={`Outline color ${entry.title}`}
+          onclick={() => (outlineColorMenuId = outlineColorMenuId === entry.id ? null : entry.id)}
+        >
+          <span aria-hidden="true"></span>
+        </button>
+        {#if outlineColorMenuId === entry.id}
+          <div class="outline-color-menu outline-color-menu-outline" role="menu" aria-label="Outline colors">
+            {#each outlinePalette as option (option.name)}
+              <button
+                type="button"
+                class="outline-color-option"
+                style={`--outline-color: ${option.color ?? "transparent"}`}
+                aria-label={`Set outline color ${option.label}`}
+                title={`Set outline color ${option.label}`}
+                onclick={() => updateOutlineColor(entry.id, option.color)}
+              >
+                <span aria-hidden="true"></span>
+              </button>
+            {/each}
+          </div>
         {/if}
-      </button>
+      </div>
       {#if entry.items.length > 0}
         <ul>
           {@render outlineItems(entry.items, depth + 1)}
@@ -4177,7 +4420,7 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 12px;
-    padding: 12px 12px 8px;
+    padding: 12px 20px 8px 12px;
     color: #5b6470;
     font-size: 12px;
   }
@@ -4186,18 +4429,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .icon-action {
-    display: grid;
-    width: 24px;
-    min-height: 24px;
-    place-items: center;
-    border: 1px solid #cfd6df;
-    border-radius: 4px;
-    padding: 0;
-    font-size: 16px;
-    line-height: 1;
   }
 
   .empty-state {
@@ -4220,6 +4451,14 @@
   .annotation-list {
     display: flex;
     flex-direction: column;
+  }
+
+  .outline-row {
+    position: relative;
+  }
+
+  .outline-row-main {
+    position: relative;
   }
 
   .annotation-page-group + .annotation-page-group {
@@ -4261,16 +4500,25 @@
     grid-template-columns: 16px minmax(0, 1fr);
   }
 
+  .bookmark-item-editing {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+
   .bookmark-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 32px;
+    position: relative;
+    grid-template-columns: minmax(0, 1fr) 48px;
     align-items: stretch;
   }
 
   .bookmark-delete {
-    min-height: 34px;
+    justify-self: center;
+    align-self: center;
+    width: 24px;
+    height: 24px;
+    min-height: 0;
     border: 0;
-    border-radius: 0;
+    border-radius: 50%;
     padding: 0;
     color: #8a929c;
     background: transparent;
@@ -4283,10 +4531,47 @@
 
   .outline-item {
     grid-template-columns: minmax(0, 1fr) auto;
+    background: var(--outline-bg-color, transparent);
   }
 
-  .outline-item span:first-child,
-  .bookmark-item span:last-child,
+  .outline-color-button {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: grid;
+    box-sizing: border-box;
+    width: 16px;
+    height: 16px;
+    min-height: 0;
+    aspect-ratio: 1;
+    place-items: center;
+    appearance: none;
+    border: 1px solid rgba(17, 24, 39, 0.26);
+    border-radius: 50%;
+    padding: 0;
+    background: var(--outline-color, #ffffff);
+    opacity: 0;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.82);
+    line-height: 0;
+  }
+
+  .outline-row-main:hover > .outline-color-button,
+  .outline-row-main:focus-within > .outline-color-button,
+  .outline-color-button:focus-visible {
+    opacity: 1;
+  }
+
+  .outline-color-button span {
+    display: none;
+  }
+
+  .outline-color-menu-outline {
+    top: 30px;
+    right: 6px;
+  }
+
+  .outline-title,
+  .bookmark-title-button,
   .annotation-detail {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -4297,18 +4582,46 @@
   .bookmark-item:hover:not(:disabled),
   .bookmark-item.bookmark-hovered,
   .annotation-item:hover:not(:disabled) {
-    background: #edf4ff;
+    background: var(--outline-hover-bg-color, #edf4ff);
   }
 
   .bookmark-icon,
   .bookmark-page-marker {
-    background: #f04444;
+    background: var(--bookmark-color, #f04444);
     clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%);
   }
 
   .bookmark-icon {
     width: 10px;
     height: 16px;
+  }
+
+  .bookmark-color-button {
+    display: grid;
+    width: 16px;
+    height: 22px;
+    min-height: 0;
+    place-items: center;
+    appearance: none;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    background: transparent;
+  }
+
+  .bookmark-title-button {
+    min-width: 0;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    overflow: hidden;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .bookmark-item input {
@@ -4319,6 +4632,49 @@
     padding: 3px 5px;
     color: #1e2329;
     font: inherit;
+  }
+
+  .outline-color-menu {
+    position: absolute;
+    top: 24px;
+    right: 0;
+    z-index: 40;
+    display: grid;
+    grid-template-columns: repeat(4, 24px);
+    gap: 4px;
+    border: 1px solid #c8d0da;
+    padding: 6px;
+    background: #ffffff;
+    box-shadow: 0 6px 18px rgba(17, 24, 39, 0.18);
+  }
+
+  .outline-row-main .outline-color-menu-outline {
+    top: 30px;
+    right: 6px;
+  }
+
+  .bookmark-color-menu {
+    top: 28px;
+    left: 6px;
+    right: auto;
+  }
+
+  .outline-color-option {
+    display: grid;
+    width: 24px;
+    height: 24px;
+    place-items: center;
+    border: 1px solid #c8d0da;
+    border-radius: 50%;
+    padding: 0;
+    background: #ffffff;
+  }
+
+  .outline-color-option span {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--outline-color, transparent);
   }
 
   .annotation-item {

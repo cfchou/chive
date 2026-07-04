@@ -21,6 +21,7 @@ type AnnotationEntry = {
 type OutlineEntry = {
   title: string;
   pageNumber: number | null;
+  color?: string | null;
   destinationStatus: string | null;
 };
 
@@ -28,6 +29,7 @@ const app = browser as unknown as WdioBrowser;
 const samplePdfPath = path.resolve(process.cwd(), "static/sample.pdf");
 const noOutlinePdfPath = path.resolve(process.cwd(), "static/no-outline.pdf");
 const brokenOutlinePdfPath = path.resolve(process.cwd(), "static/broken-outline.pdf");
+const coloredOutlinePdfPath = path.resolve(process.cwd(), "static/colored-outline.pdf");
 const bookmarkPdfPath = "/tmp/pdfspike-native-bookmark.pdf";
 
 async function waitForPdfSpike() {
@@ -247,6 +249,24 @@ describe("native WKWebView PDF smoke", () => {
       expect(state.entries).toHaveLength(0);
       expect(state.emptyStateText === "This PDF has no outline." || state.emptyStateText === null).toBe(true);
     }
+
+    await app.execute(async (filePath) => {
+      await window.__pdfSpike!.loadPath(filePath);
+    }, coloredOutlinePdfPath);
+
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const redEntry = (window.__pdfSpike!.outlineSummary() as OutlineEntry[]).find(
+            (entry) => entry.title === "Red Outline",
+          );
+          return redEntry?.color === "#f04444";
+        }),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native colored outline PDF did not expose outline /C color",
+      },
+    );
   });
 
   it("creates, reloads, and navigates PDF-native bookmarks in native WKWebView", async () => {
