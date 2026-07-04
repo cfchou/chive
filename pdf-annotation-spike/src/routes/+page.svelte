@@ -18,6 +18,8 @@
 
   type PdfDocument = Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>;
   type EditorTool = "none" | "highlight" | "text" | "ink";
+  type FocusScope = "app" | "pdf";
+  type PdfMode = "normal" | "visualText" | "visualBlock";
   type NavigationTab = "outline" | "bookmarks" | "annotations";
   type HighlightColorName = "yellow" | "green" | "blue" | "pink";
   type FreeTextColorName = "black" | "green" | "blue" | "pink";
@@ -74,6 +76,40 @@
     entries: AnnotationEntry[];
   };
   type FocusBox = {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
+  type PdfCursor = {
+    pageNumber: number;
+    nodeIndex: number;
+    nodeOffset: number;
+    textOffset: number;
+    text: string;
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    visualLeft: number;
+    visualRight: number;
+    height: number;
+    caretHeight: number;
+    direction: "ltr" | "rtl";
+  };
+  type PdfWordPosition = PdfCursor & {
+    node: Text;
+  };
+  type PdfWordRect = RectLike & {
+    width: number;
+    height: number;
+  };
+  type PdfWordMatch = {
+    index: number;
+    text: string;
+    rect: PdfWordRect | null;
+  };
+  type PdfSelectionRect = {
     left: number;
     top: number;
     width: number;
@@ -178,6 +214,12 @@
   let annotationFocusBox = $state<FocusBox | null>(null);
   let currentPath = $state("");
   let status = $state("Open a PDF, add highlight/text/ink annotations, then save.");
+  let focusScope = $state<FocusScope>("app");
+  let pdfMode = $state<PdfMode>("normal");
+  let pdfCursor = $state<PdfCursor | null>(null);
+  let pdfVisualAnchor: PdfCursor | null = null;
+  let pdfVisualSelectionRects = $state<PdfSelectionRect[]>([]);
+  let pdfVisualSelectionText = $state("");
   let activeTool = $state<EditorTool>("none");
   let defaultHighlightColor = $state<HighlightColorName>("yellow");
   let defaultFreeTextColor = $state<FreeTextColorName>("black");
@@ -199,6 +241,7 @@
   const annotationDetailCache = new Map<string, string>();
   const pendingDeletedPersistedAnnotationKeys = new Set<string>();
   const persistedAnnotationKeyByEditorId = new Map<string, string>();
+  let pdfTextMeasureCanvas: HTMLCanvasElement | null = null;
 
   const highlightColors: Record<HighlightColorName, string> = {
     yellow: "#fff35c",
@@ -256,6 +299,7 @@
       );
     };
     document.addEventListener("selectionchange", rememberSelection);
+    document.addEventListener("keydown", handlePdfCursorKey);
     document.addEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
     containerEl?.addEventListener("pointerdown", handlePdfPointerDown, { capture: true });
     const handleRailClick = (event: MouseEvent) => void handlePdfContainerClick(event);
@@ -299,10 +343,509 @@
       containerEl?.removeEventListener("click", handleRailClick);
       containerEl?.removeEventListener("pointerdown", handlePdfPointerDown, { capture: true });
       document.removeEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
+      document.removeEventListener("keydown", handlePdfCursorKey);
       document.removeEventListener("selectionchange", rememberSelection);
       delete debugWindow.__pdfSpike;
     };
   });
+
+  function handlePdfCursorKey(event: KeyboardEvent) {
+    if (event.repeat || isEditableKeyboardTarget(event.target)) {
+      return;
+    }
+    if (event.key === "p" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (focusPdfCursor()) {
+        event.preventDefault();
+      }
+      return;
+    }
+    if (focusScope !== "pdf") {
+      return;
+    }
+    if (event.key === "Escape") {
+      if (pdfMode !== "normal") {
+        pdfMode = "normal";
+        clearPdfVisualSelection();
+      } else {
+        focusScope = "app";
+        pdfCursor = null;
+        clearPdfVisualSelection();
+      }
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "v" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (enterPdfVisualTextMode()) {
+        event.preventDefault();
+      }
+      return;
+    }
+    if (event.key === "Enter" && pdfMode === "visualText") {
+      event.preventDefault();
+      void createHighlightFromPdfVisualSelection();
+      return;
+    }
+    if (event.key === "w" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (movePdfCursorToNextWord()) {
+        event.preventDefault();
+      }
+      return;
+    }
+    const key = event.key.toLowerCase();
+    const code = event.code.toLowerCase();
+    if (event.ctrlKey && !event.metaKey && !event.altKey) {
+      const scrollAmount =
+        key === "d" || code === "keyd"
+          ? 0.5
+          : key === "u" || code === "keyu"
+            ? -0.5
+            : key === "f" || code === "keyf"
+              ? 1
+              : key === "b" || code === "keyb"
+                ? -1
+                : 0;
+      if (scrollAmount !== 0 && scrollPdfByPages(scrollAmount)) {
+        event.preventDefault();
+      }
+    }
+  }
+
+  function focusPdfCursor() {
+    if (!pdfViewer || !viewerEl) {
+      status = "Open a PDF before focusing PDF text.";
+      return false;
+    }
+    const words = renderedPdfWords(pdfViewer.currentPageNumber || 1);
+    if (words.length === 0) {
+      focusScope = "pdf";
+      pdfMode = "normal";
+      pdfCursor = null;
+      status = "No selectable text on this page.";
+      return true;
+    }
+    focusScope = "pdf";
+    pdfMode = "normal";
+    clearPdfVisualSelection();
+    setPdfCursor(words[0]);
+    status = "PDF normal mode.";
+    return true;
+  }
+
+  function enterPdfVisualTextMode() {
+    if (!pdfCursor && !focusPdfCursor()) {
+      return false;
+    }
+    if (!pdfCursor) {
+      status = "No selectable text on this page.";
+      return true;
+    }
+    focusScope = "pdf";
+    pdfMode = "visualText";
+    pdfVisualAnchor = { ...pdfCursor };
+    pdfVisualSelectionRects = [];
+    pdfVisualSelectionText = "";
+    document.getSelection()?.removeAllRanges();
+    status = "PDF visual mode.";
+    return true;
+  }
+
+  function movePdfCursorToNextWord() {
+    if (!pdfCursor) {
+      return focusPdfCursor();
+    }
+    const words = renderedPdfWords(pdfCursor.pageNumber);
+    const currentIndex = words.findIndex(
+      (word) => word.nodeIndex === pdfCursor?.nodeIndex && word.nodeOffset === pdfCursor.nodeOffset,
+    );
+    const nextWord = currentIndex >= 0 ? words[currentIndex + 1] : words.find((word) => word.top > pdfCursor!.top);
+    if (!nextWord) {
+      return false;
+    }
+    setPdfCursor(nextWord);
+    if (pdfMode === "visualText") {
+      updatePdfVisualSelection();
+      status = "PDF visual mode.";
+    } else {
+      status = "PDF normal mode.";
+    }
+    return true;
+  }
+
+  function scrollPdfByPages(pageFraction: number) {
+    if (!containerEl) return false;
+    containerEl.scrollTop = Math.max(0, containerEl.scrollTop + containerEl.clientHeight * pageFraction);
+    recenterPdfCursorToVisibleText();
+    status = pdfMode === "visualText" ? "PDF visual mode." : "PDF normal mode.";
+    return true;
+  }
+
+  function recenterPdfCursorToVisibleText() {
+    if (!pdfViewer || !containerEl || !viewerEl) return false;
+    const viewportCenter = containerEl.clientHeight / 2;
+    const candidates: { word: PdfWordPosition; viewportTop: number }[] = [];
+    for (const pageElement of viewerEl.querySelectorAll<HTMLElement>(".page[data-page-number]")) {
+      const pageNumber = Number(pageElement.dataset.pageNumber);
+      if (!Number.isInteger(pageNumber)) continue;
+      for (const word of renderedPdfWords(pageNumber)) {
+        const viewportTop = word.top - containerEl.scrollTop;
+        if (viewportTop >= 0 && viewportTop <= containerEl.clientHeight) {
+          candidates.push({ word, viewportTop });
+        }
+      }
+    }
+    const nearest = candidates.sort(
+      (left, right) => Math.abs(left.viewportTop - viewportCenter) - Math.abs(right.viewportTop - viewportCenter),
+    )[0];
+    if (!nearest) return false;
+    setPdfCursor(nearest.word);
+    if (pdfMode === "visualText") {
+      updatePdfVisualSelection();
+    }
+    return true;
+  }
+
+  function setPdfCursor(position: PdfWordPosition) {
+    pdfCursor = {
+      pageNumber: position.pageNumber,
+      nodeIndex: position.nodeIndex,
+      nodeOffset: position.nodeOffset,
+      textOffset: position.textOffset,
+      text: position.text,
+      left: position.left,
+      top: position.top,
+      right: position.right,
+      bottom: position.bottom,
+      visualLeft: position.visualLeft,
+      visualRight: position.visualRight,
+      height: position.height,
+      caretHeight: position.caretHeight,
+      direction: position.direction,
+    };
+  }
+
+  function pdfCursorStyle(cursor: PdfCursor) {
+    const left = cursor.left;
+    const height = Math.max(18, cursor.caretHeight);
+    const top = cursor.top + cursor.height / 2 - height / 2;
+    return `left: ${left}px; top: ${top}px; height: ${height}px`;
+  }
+
+  function pdfVisualSelectionStyle(rect: PdfSelectionRect) {
+    return `left: ${rect.left}px; top: ${rect.top}px; width: ${rect.width}px; height: ${rect.height}px`;
+  }
+
+  function pdfCursorViewportTop() {
+    if (!pdfCursor || !containerEl) return null;
+    return pdfCursor.top - containerEl.scrollTop;
+  }
+
+  function updatePdfVisualSelection() {
+    if (!pdfVisualAnchor || !pdfCursor) return false;
+    const words = selectedPdfVisualWords();
+    if (words.length === 0) return false;
+    pdfVisualSelectionRects = mergedPdfVisualSelectionRects(words);
+    pdfVisualSelectionText = words.map((word) => word.text).join(" ");
+    rememberedSelectionText = pdfVisualSelectionText;
+    document.getSelection()?.removeAllRanges();
+    return true;
+  }
+
+  async function createHighlightFromPdfVisualSelection() {
+    setNativeSelectionFromPdfVisualSelection();
+    const created = await createHighlightFromSelection({
+      allowModeSwitchAutoCreate: false,
+      createdStatus: "Created text highlight from PDF visual mode. Save to persist it into the PDF.",
+      methodOfCreation: "pdf_visual_mode",
+      resetModeToNone: true,
+    });
+    if (created) {
+      focusScope = "pdf";
+      pdfMode = "normal";
+      clearPdfVisualSelection();
+    }
+    return created;
+  }
+
+  function clearPdfVisualSelection() {
+    pdfVisualAnchor = null;
+    pdfVisualSelectionRects = [];
+    pdfVisualSelectionText = "";
+    document.getSelection()?.removeAllRanges();
+  }
+
+  function selectedPdfVisualWords() {
+    if (!pdfVisualAnchor || !pdfCursor || pdfVisualAnchor.pageNumber !== pdfCursor.pageNumber) return [];
+    const words = renderedPdfWords(pdfCursor.pageNumber);
+    const anchorIndex = words.findIndex(
+      (word) => word.nodeIndex === pdfVisualAnchor?.nodeIndex && word.nodeOffset === pdfVisualAnchor.nodeOffset,
+    );
+    const cursorIndex = words.findIndex(
+      (word) => word.nodeIndex === pdfCursor?.nodeIndex && word.nodeOffset === pdfCursor.nodeOffset,
+    );
+    if (anchorIndex < 0 || cursorIndex < 0) return [];
+    const start = Math.min(anchorIndex, cursorIndex);
+    const end = Math.max(anchorIndex, cursorIndex);
+    return words.slice(start, end + 1);
+  }
+
+  function mergedPdfVisualSelectionRects(words: PdfWordPosition[]) {
+    const lineRects: { top: number; bottom: number; left: number; right: number }[] = [];
+    for (const word of words) {
+      const line = lineRects.find((candidate) => wordLineOverlapRatio(candidate, word) >= 0.55);
+      if (line) {
+        line.top = Math.min(line.top, word.top);
+        line.bottom = Math.max(line.bottom, word.bottom);
+        line.left = Math.min(line.left, word.visualLeft);
+        line.right = Math.max(line.right, word.visualRight);
+      } else {
+        lineRects.push({
+          top: word.top,
+          bottom: word.bottom,
+          left: word.visualLeft,
+          right: word.visualRight,
+        });
+      }
+    }
+    return lineRects.map((rect) => ({
+      left: rect.left,
+      top: rect.top,
+      width: rect.right - rect.left,
+      height: Math.max(12, rect.bottom - rect.top),
+    }));
+  }
+
+  function setNativeSelectionFromPdfVisualSelection() {
+    if (!pdfVisualAnchor || !pdfCursor) return false;
+    const anchorNode = pdfTextNodeAt(pdfVisualAnchor.pageNumber, pdfVisualAnchor.nodeIndex);
+    const cursorNode = pdfTextNodeAt(pdfCursor.pageNumber, pdfCursor.nodeIndex);
+    if (!anchorNode || !cursorNode) return false;
+    const range = document.createRange();
+    const anchorOffset = Math.min(pdfVisualAnchor.nodeOffset, anchorNode.textContent?.length ?? 0);
+    const cursorEnd = Math.min(pdfCursor.nodeOffset + pdfCursor.text.length, cursorNode.textContent?.length ?? 0);
+    if (pdfVisualAnchor.textOffset <= pdfCursor.textOffset) {
+      range.setStart(anchorNode, anchorOffset);
+      range.setEnd(cursorNode, cursorEnd);
+    } else {
+      range.setStart(cursorNode, cursorEnd);
+      range.setEnd(anchorNode, anchorOffset);
+    }
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    return true;
+  }
+
+  function pdfTextNodeAt(pageNumber: number, targetIndex: number) {
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const textLayer = pageElement?.querySelector<HTMLElement>(".textLayer");
+    if (!textLayer) return null;
+    const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT);
+    let textNode: Text | null;
+    let index = 0;
+    while ((textNode = walker.nextNode() as Text | null)) {
+      if (index === targetIndex) return textNode;
+      index += 1;
+    }
+    return null;
+  }
+
+  function renderedPdfWords(pageNumber: number) {
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const textLayer = pageElement?.querySelector<HTMLElement>(".textLayer");
+    if (!pageElement || !textLayer || !containerEl) return [];
+    const containerRect = containerEl.getBoundingClientRect();
+    const words: PdfWordPosition[] = [];
+    const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT);
+    let textNode: Text | null;
+    let nodeIndex = 0;
+    let textOffset = 0;
+    while ((textNode = walker.nextNode() as Text | null)) {
+      const text = textNode.textContent ?? "";
+      const parent = textNode.parentElement;
+      const direction = parent && getComputedStyle(parent).direction === "rtl" ? "rtl" : "ltr";
+      const matches: PdfWordMatch[] = [];
+      for (const match of text.matchAll(/\S+/g)) {
+        if (match.index === undefined) continue;
+        matches.push({
+          index: match.index,
+          text: match[0],
+          rect: measuredRangeRect(textNode, match.index, match[0].length),
+        });
+      }
+      const useMeasuredRects = shouldUseMeasuredTextRects(textNode, matches, direction);
+      for (const match of matches) {
+        const rect = useMeasuredRects
+          ? measuredTextWordRect(textNode, match.index, match.text, direction) ?? match.rect
+          : match.rect;
+        if (!rect) continue;
+        const visualLeft = rect.left - containerRect.left + containerEl.scrollLeft;
+        const visualRight = rect.right - containerRect.left + containerEl.scrollLeft;
+        const left = direction === "rtl" ? visualRight : visualLeft;
+        const right = direction === "rtl" ? visualLeft : visualRight;
+        const top = rect.top - containerRect.top + containerEl.scrollTop;
+        const bottom = rect.bottom - containerRect.top + containerEl.scrollTop;
+        const caretHeight = pdfTextCaretHeight(textNode, rect.height);
+        words.push({
+          pageNumber,
+          node: textNode,
+          nodeIndex,
+          nodeOffset: match.index,
+          textOffset: textOffset + match.index,
+          text: match.text,
+          left,
+          top,
+          right,
+          bottom,
+          visualLeft,
+          visualRight,
+          height: rect.height,
+          caretHeight,
+          direction,
+        });
+      }
+      textOffset += text.length;
+      nodeIndex += 1;
+    }
+    return orderPdfWordsByVisualPosition(words);
+  }
+
+  function measuredRangeRect(textNode: Text, index: number, length: number): PdfWordRect | null {
+    const range = document.createRange();
+    range.setStart(textNode, index);
+    range.setEnd(textNode, index + length);
+    const rect = firstUsableRect(range);
+    range.detach();
+    return rect ? rectLikeFromDomRect(rect) : null;
+  }
+
+  function firstUsableRect(range: Range) {
+    return [...range.getClientRects()].find((rect) => rect.width > 0 && rect.height > 0) ?? null;
+  }
+
+  function rectLikeFromDomRect(rect: DOMRectReadOnly): PdfWordRect {
+    return {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  function shouldUseMeasuredTextRects(
+    textNode: Text,
+    matches: PdfWordMatch[],
+    direction: "ltr" | "rtl",
+  ) {
+    if (matches.length < 2) return false;
+    const parentRect = textNode.parentElement?.getBoundingClientRect();
+    if (!parentRect || parentRect.width <= 0 || parentRect.height <= 0) return false;
+    const rects = matches.map((match) => match.rect);
+    if (rects.some((rect) => !rect)) return true;
+    const usableRects = rects.filter((rect): rect is PdfWordRect => Boolean(rect));
+    const starts = usableRects.map((rect) => (direction === "rtl" ? rect.right : rect.left));
+    const startSpread = Math.max(...starts) - Math.min(...starts);
+    const hasFullSpanWord = usableRects.some((rect) => rect.width >= parentRect.width * 0.85);
+    return startSpread < 1 || hasFullSpanWord;
+  }
+
+  function measuredTextWordRect(
+    textNode: Text,
+    index: number,
+    text: string,
+    direction: "ltr" | "rtl",
+  ): PdfWordRect | null {
+    const parent = textNode.parentElement;
+    if (!parent) return null;
+    const parentRect = parent.getBoundingClientRect();
+    if (parentRect.width <= 0 || parentRect.height <= 0) return null;
+    const fullText = textNode.textContent ?? "";
+    const context = textMeasureContext();
+    if (!context) return null;
+    const style = getComputedStyle(parent);
+    context.font = canvasFontForElement(style);
+    const letterSpacing = cssPixelValue(style.letterSpacing);
+    const fullWidth = measureCanvasText(context, fullText, letterSpacing);
+    if (fullWidth <= 0) return null;
+    const startRatio = measureCanvasText(context, fullText.slice(0, index), letterSpacing) / fullWidth;
+    const endRatio = measureCanvasText(context, fullText.slice(0, index + text.length), letterSpacing) / fullWidth;
+    const visualLeft =
+      direction === "rtl"
+        ? parentRect.right - parentRect.width * endRatio
+        : parentRect.left + parentRect.width * startRatio;
+    const visualRight =
+      direction === "rtl"
+        ? parentRect.right - parentRect.width * startRatio
+        : parentRect.left + parentRect.width * endRatio;
+    return {
+      left: Math.min(visualLeft, visualRight),
+      top: parentRect.top,
+      right: Math.max(visualLeft, visualRight),
+      bottom: parentRect.bottom,
+      width: Math.abs(visualRight - visualLeft),
+      height: parentRect.height,
+    };
+  }
+
+  function textMeasureContext() {
+    pdfTextMeasureCanvas ??= document.createElement("canvas");
+    return pdfTextMeasureCanvas.getContext("2d");
+  }
+
+  function canvasFontForElement(style: CSSStyleDeclaration) {
+    return (
+      style.font ||
+      `${style.fontStyle} ${style.fontVariant} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
+    );
+  }
+
+  function measureCanvasText(context: CanvasRenderingContext2D, text: string, letterSpacing: number) {
+    return context.measureText(text).width + Math.max(0, text.length - 1) * letterSpacing;
+  }
+
+  function cssPixelValue(value: string) {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function pdfTextCaretHeight(textNode: Text, fallbackHeight: number) {
+    const fontHeight = textNode.parentElement
+      ? cssPixelValue(getComputedStyle(textNode.parentElement).getPropertyValue("--font-height"))
+      : 0;
+    return Math.max(fallbackHeight, fontHeight);
+  }
+
+  function orderPdfWordsByVisualPosition(words: PdfWordPosition[]) {
+    const lines: { top: number; bottom: number; words: PdfWordPosition[] }[] = [];
+    for (const word of [...words].sort((left, right) => left.top - right.top || left.visualLeft - right.visualLeft)) {
+      const line = lines.find((candidate) => wordLineOverlapRatio(candidate, word) >= 0.55);
+      if (line) {
+        line.words.push(word);
+        line.top = Math.min(line.top, word.top);
+        line.bottom = Math.max(line.bottom, word.bottom);
+      } else {
+        lines.push({ top: word.top, bottom: word.bottom, words: [word] });
+      }
+    }
+    return lines
+      .sort((left, right) => left.top - right.top || left.words[0].visualLeft - right.words[0].visualLeft)
+      .flatMap((line) => {
+        const rtlWords = line.words.filter((word) => word.direction === "rtl").length;
+        const isRtlLine = rtlWords > line.words.length / 2;
+        return line.words.sort((left, right) =>
+          isRtlLine
+            ? right.visualRight - left.visualRight || left.top - right.top
+            : left.visualLeft - right.visualLeft || left.top - right.top,
+        );
+      });
+  }
+
+  function wordLineOverlapRatio(line: { top: number; bottom: number }, word: PdfWordPosition) {
+    const overlap = Math.max(0, Math.min(line.bottom, word.bottom) - Math.max(line.top, word.top));
+    const wordHeight = Math.max(1, word.bottom - word.top);
+    return overlap / wordHeight;
+  }
 
   function handleAnnotationDeleteKey(event: KeyboardEvent) {
     if (event.repeat || (event.key !== "Delete" && event.key !== "Backspace")) {
@@ -1737,6 +2280,9 @@
   }
 
   async function activatePdfAnnotationEntry(entry: AnnotationEntry) {
+    if (entry.kind === "ink" && focusPersistedAnnotationBounds(entry)) {
+      return true;
+    }
     annotationEditorUIManager?.unselectAll();
     selectedAnnotationKind = null;
     selectedAnnotationColor = null;
@@ -1775,8 +2321,34 @@
       }
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
+    if (entry.kind === "ink" && focusPersistedAnnotationBounds(entry)) {
+      return true;
+    }
     status = `Could not find ${entry.label.toLowerCase()} on page ${entry.page}.`;
     return false;
+  }
+
+  function focusPersistedAnnotationBounds(entry: AnnotationEntry) {
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
+    if (!pageElement || !entry.bounds) return false;
+    if (activeTool !== "none") {
+      setTool("none");
+    }
+    const left = pageElement.offsetLeft + entry.bounds.left * pageElement.offsetWidth - 3;
+    const top = pageElement.offsetTop + entry.bounds.top * pageElement.offsetHeight - 3;
+    const width = Math.max(6, (entry.bounds.right - entry.bounds.left) * pageElement.offsetWidth + 6);
+    const height = Math.max(6, (entry.bounds.bottom - entry.bounds.top) * pageElement.offsetHeight + 6);
+    containerEl.scrollLeft = Math.max(0, left + width / 2 - containerEl.clientWidth / 2);
+    containerEl.scrollTop = Math.max(0, top + height / 2 - containerEl.clientHeight / 2);
+    annotationFocusBox = { left, top, width, height };
+    selectedAnnotationEntryId = entry.id;
+    selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
+    selectedAnnotationKind = null;
+    selectedAnnotationColor = null;
+    hasSelectedHighlight = false;
+    selectedHighlightColor = null;
+    status = `Located ${entry.label.toLowerCase()} on page ${entry.page}.`;
+    return true;
   }
 
   function locatePdfAnnotationEntry(entry: AnnotationEntry) {
@@ -1820,12 +2392,19 @@
     selectedPersistedAnnotationKey = persistedKey;
     persistedAnnotationKeyByEditorId.set(editor.id, persistedKey);
     await focusEditorById(editor.id);
+    if (entry.kind === "highlight") {
+      selectedAnnotationKind = "highlight";
+      selectedAnnotationColor = editor.color ?? null;
+      hasSelectedHighlight = true;
+      selectedHighlightColor = highlightColorNameForValue(editor.color ?? null);
+      selectedAnnotationEntryId = entry.id;
+      status = "Selected highlight. Change color or delete it, then save.";
+      return true;
+    }
     selectEditorIgnoringPdfjsSignalBug(manager, editor);
     syncSelectedEditorState(persistedKey);
     selectedAnnotationEntryId = entry.id;
-    if (entry.kind === "highlight") {
-      status = "Selected highlight. Change color or delete it, then save.";
-    } else if (entry.kind === "freetext") {
+    if (entry.kind === "freetext") {
       status = "Selected free text. Press Enter to edit text, change color, or delete it.";
     } else {
       status = "Selected ink. Change color or delete it, then save.";
@@ -1898,7 +2477,11 @@
       manager.setSelected(editor);
     } catch (error) {
       const message = formatError(error);
-      if (!message.includes("AbortSignal") || !message.includes("addEventListener")) {
+      if (
+        !message.includes("AbortSignal") &&
+        !message.includes("addEventListener") &&
+        !message.includes("signal")
+      ) {
         throw error;
       }
     }
@@ -2505,10 +3088,12 @@
   }
 
   async function createHighlightFromSelection({
+    allowModeSwitchAutoCreate = true,
     createdStatus,
     methodOfCreation,
     resetModeToNone,
   }: {
+    allowModeSwitchAutoCreate?: boolean;
     createdStatus: string;
     methodOfCreation: string;
     resetModeToNone: boolean;
@@ -2552,7 +3137,7 @@
     if (switchedIntoHighlightMode) {
       setTool("highlight");
       await new Promise((resolve) => setTimeout(resolve, 150));
-      if (countHighlightEditorsInManager() > before) {
+      if (allowModeSwitchAutoCreate && countHighlightEditorsInManager() > before) {
         return finishCreatedHighlight();
       }
     }
@@ -2896,6 +3481,34 @@
     const firstSelectedEditor = manager?.firstSelectedEditor;
     const selectedEditor = editorBelongsToCurrentManager(firstSelectedEditor) ? firstSelectedEditor : null;
     if (!manager || !selectedEditor) {
+      const persistedSelection = selectedPersistedAnnotationKey
+        ? persistedAnnotationKeyParts(selectedPersistedAnnotationKey)
+        : null;
+      const expectedEditor =
+        persistedSelection && selectedAnnotationKind
+          ? findEditorByPersistedSourceId(persistedSelection.sourceId, selectedAnnotationKind, manager)
+          : null;
+      if (expectedEditor?.remove && selectedPersistedAnnotationKey) {
+        const wasHighlight = selectedAnnotationKind === "highlight";
+        const wasFreeText = selectedAnnotationKind === "freetext";
+        pendingDeletedPersistedAnnotationKeys.add(selectedPersistedAnnotationKey);
+        expectedEditor.remove();
+        selectedAnnotationKind = null;
+        selectedAnnotationColor = null;
+        hasSelectedHighlight = false;
+        selectedHighlightColor = null;
+        selectedAnnotationEntryId = null;
+        selectedPersistedAnnotationKey = null;
+        isDirty = true;
+        void refreshAnnotationSidebar();
+        queueEditorStateRefresh(100, 250, 500);
+        status = wasHighlight
+          ? "Deleted selected highlight. Save to persist it into the PDF."
+          : wasFreeText
+            ? "Deleted selected free text. Save to persist it into the PDF."
+            : "Deleted selected annotation. Save to persist it into the PDF.";
+        return true;
+      }
       status = "Select an annotation first, then delete it.";
       return false;
     }
@@ -3004,6 +3617,14 @@
       pages: pdfDocument?.numPages ?? 0,
       currentPageNumber: pdfViewer?.currentPageNumber ?? null,
       status,
+      focusScope,
+      pdfMode,
+      pdfCursor,
+      pdfVisualSelectionText,
+      pdfVisualSelectionRects,
+      pdfScrollTop: containerEl?.scrollTop ?? 0,
+      pdfViewportHeight: containerEl?.clientHeight ?? 0,
+      pdfCursorViewportTop: pdfCursorViewportTop(),
       outlineStatus,
       activeTool,
       defaultHighlightColor,
@@ -3020,11 +3641,12 @@
       selectedEditorType: selectedEditor?.editorType ?? null,
       selectedEditorColor: selectedEditor?.color ?? null,
       annotationFocusBox,
-      selectedText: document.getSelection()?.toString() ?? "",
+      selectedText: pdfVisualSelectionText || document.getSelection()?.toString() || "",
       canvases: document.querySelectorAll(".page canvas").length,
       textLayerSpans: document.querySelectorAll(".textLayer span").length,
       annotationEditorLayers: document.querySelectorAll(".annotationEditorLayer").length,
       highlightEditors: document.querySelectorAll(".highlightEditor").length,
+      liveHighlightEditors: countHighlightEditorsInManager(),
       freeTextEditors: document.querySelectorAll(".freeTextEditor").length,
       inkEditors: document.querySelectorAll(".inkEditor").length,
       annotationStorageSize: storage?.size ?? 0,
@@ -3912,6 +4534,14 @@
           aria-hidden="true"
         ></div>
       {/if}
+      {#if focusScope === "pdf" && pdfMode === "visualText"}
+        {#each pdfVisualSelectionRects as rect}
+          <div class="pdf-visual-selection" style={pdfVisualSelectionStyle(rect)} aria-hidden="true"></div>
+        {/each}
+      {/if}
+      {#if focusScope === "pdf" && pdfCursor}
+        <div class="pdf-text-caret" style={pdfCursorStyle(pdfCursor)} aria-hidden="true"></div>
+      {/if}
       {#each bookmarkEntries as entry (entry.id)}
         <button
           type="button"
@@ -4385,6 +5015,25 @@
     position: absolute;
     z-index: 20;
     border: 1px dashed #2387d8;
+    pointer-events: none;
+  }
+
+  .pdf-text-caret {
+    position: absolute;
+    z-index: 22;
+    width: 3px;
+    min-height: 18px;
+    border-radius: 2px;
+    background: #1f6feb;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+    pointer-events: none;
+  }
+
+  .pdf-visual-selection {
+    position: absolute;
+    z-index: 20;
+    border-radius: 2px;
+    background: rgba(31, 111, 235, 0.3);
     pointer-events: none;
   }
 

@@ -73,6 +73,29 @@ Remaining validation:
 
 - one manual external-reader pass in Preview/PDF Expert/Acrobat for `/XYZ` positioning differences
 
+### Vim-like PDF text cursor / visual mode
+
+Status: explored, deferred
+
+Goal: determine whether keyboard-only PDF text selection is feasible.
+
+Explored:
+
+- `p` enters PDF normal mode and draws a custom caret.
+- `w` moves by rendered word order on the current rendered page.
+- `v` enters visual mode and draws a custom selection overlay.
+- `Enter` can create a PDF highlight from visual mode.
+- scanned/image-only PDFs degrade to a no-selectable-text state.
+- browser and native smoke tests covered the controlled fixture behavior.
+
+Outcome:
+
+The prototype works for some normal text PDFs, but the core caret alignment requirement is too fragile for a product foundation. PDF.js text-layer geometry, browser `Range` geometry, PDF.js text item geometry, and visible canvas pixels can disagree. The spike is no longer a next candidate.
+
+Reference:
+
+- `docs/adr/0010-defer-vim-like-pdf-text-cursor.md`
+
 ## Next Candidates
 
 ### 1. Reader shell with two dockable sidebars
@@ -175,36 +198,7 @@ Success criteria:
 - command registry supports remapping later
 - keybinding conflicts are explicit
 
-### 3. Vim-like PDF text cursor / visual mode
-
-Goal: determine whether keyboard-only PDF text selection is feasible.
-
-Problem:
-
-PDF.js text is rendered as absolutely positioned text layer spans, not as a normal text editor buffer. A Vim-like cursor is not built in.
-
-Options:
-
-- Logical text cursor: build a text model from PDF.js `getTextContent()`, draw custom caret/selection overlays.
-- DOM range cursor: create browser `Range` selections over text layer spans.
-- Label/region mode: select words or regions using keyboard labels instead of a true text cursor.
-
-Risks:
-
-- text spans can be fragmented or reordered
-- pages can be virtualized/unrendered
-- multi-page selection is hard
-- DOM selection may conflict with PDF.js highlight creation
-- scanned PDFs have no text unless OCR exists
-
-Success criteria:
-
-- keyboard can move cursor by character/word/line on rendered page
-- visual selection can create a PDF highlight
-- selected text can be passed to AI context
-- behavior degrades clearly on scanned PDFs
-
-### 4. AI selection-to-chat
+### 3. AI selection-to-chat
 
 Goal: prove selected PDF content can be sent to an AI chat window as explicit context.
 
@@ -247,7 +241,7 @@ Success criteria:
 - user can see what PDF content is about to be uploaded
 - no vector DB or document-wide indexing required
 
-### 5. AI document RAG and artifact storage
+### 4. AI document RAG and artifact storage
 
 Goal: prove whole-document AI questions and persistent AI artifacts can work without weakening PDF portability.
 
@@ -295,7 +289,7 @@ Success criteria:
 - AI artifacts can be deleted for one document
 - storage model does not require importing PDFs into a central library
 
-### 7. AI table/context extraction
+### 5. AI table/context extraction
 
 Goal: determine how much table-like PDF content can be extracted before using OCR or vision models.
 
@@ -312,7 +306,7 @@ Success criteria:
 - image-only tables fall back to region image context
 - limitations are explicit in UI and docs
 
-### 8. Large PDF performance
+### 6. Large PDF performance
 
 Goal: prove app remains usable on large documents.
 
@@ -337,7 +331,7 @@ Success criteria:
 - navigation remains responsive
 - annotation/sidebar data can load progressively
 
-### 9. Colored outline/bookmarks
+### 7. Colored outline/bookmarks
 
 Goal: decide whether colored outline is app-local metadata or portable PDF metadata.
 
