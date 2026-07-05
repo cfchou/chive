@@ -1526,7 +1526,7 @@ test("direct re-click of selected editable annotation does not flash locate box"
   await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().annotationFocusBox)).toBeNull();
 });
 
-test("direct clicks on highlighter-intent ink annotations stay locate-only", async ({ page }) => {
+test("direct clicks on highlighter-intent ink annotations edit through the highlight path", async ({ page }) => {
   await loadFixture(page);
 
   const inkHighlights = await page.evaluate(async () => {
@@ -1545,6 +1545,22 @@ test("direct clicks on highlighter-intent ink annotations stay locate-only", asy
       );
   });
   expect(inkHighlights.length).toBeGreaterThanOrEqual(2);
+  const plainInks = await page.evaluate(async () => {
+    return (await window.__pdfSpike!.annotationSummary())
+      .flatMap((summary: { page?: unknown; annotations?: { id?: unknown; it?: unknown; subtype?: unknown }[] }) =>
+        (summary.annotations ?? []).map((annotation) => ({
+          id: String(annotation.id ?? ""),
+          intent: annotation.it,
+          page: Number(summary.page),
+          subtype: annotation.subtype,
+        })),
+      )
+      .filter(
+        (annotation: { id: string; intent: unknown; page: number; subtype: unknown }) =>
+          annotation.subtype === "Ink" && annotation.intent !== "InkHighlight" && annotation.id,
+      );
+  });
+  expect(plainInks.length).toBeGreaterThanOrEqual(1);
 
   const clickInkHighlightOnPage = async (entry: (typeof inkHighlights)[number]) => {
     const point = await page.evaluate(async ({ pageNumber, sourceId }) => {
@@ -1561,10 +1577,45 @@ test("direct clicks on highlighter-intent ink annotations stay locate-only", asy
         throw new Error(`Missing ink annotation element ${sourceId}`);
       }
       let rect = element.getBoundingClientRect();
+      for (let attempt = 0; (rect.width <= 0 || rect.height <= 0) && attempt < 10; attempt += 1) {
+        await sleep(150);
+        rect = element.getBoundingClientRect();
+      }
+      const entry = (window.__pdfSpike!.annotationSidebarSummary() as {
+        bounds?: { left: number; right: number; top: number; bottom: number } | null;
+        page: number;
+        sourceId: string;
+      }[]).find((candidate) => candidate.page === pageNumber && candidate.sourceId === sourceId);
+      const pointFromBounds = () => {
+        const pageRect = pageElement.getBoundingClientRect();
+        return entry?.bounds && Number.isFinite(entry.bounds.left)
+          ? {
+              x: pageRect.left + ((entry.bounds.left + entry.bounds.right) / 2) * pageRect.width,
+              y: pageRect.top + ((entry.bounds.top + entry.bounds.bottom) / 2) * pageRect.height,
+            }
+          : null;
+      };
+      let boundsPoint = pointFromBounds();
+      if ((rect.width <= 0 || rect.height <= 0) && boundsPoint) {
+        const containerRect = container.getBoundingClientRect();
+        container.scrollTop += boundsPoint.y - (containerRect.top + containerRect.height / 2);
+        await sleep(250);
+        boundsPoint = pointFromBounds();
+        if (!boundsPoint) throw new Error(`Missing bounds point for ${sourceId}`);
+        return {
+          hit: document.elementFromPoint(boundsPoint.x, boundsPoint.y)?.getAttribute("class") ?? "",
+          usedBoundsFallback: true,
+          ...boundsPoint,
+        };
+      }
       const containerRect = container.getBoundingClientRect();
       container.scrollTop += rect.top + rect.height / 2 - (containerRect.top + containerRect.height / 2);
       await sleep(250);
       rect = element.getBoundingClientRect();
+      for (let attempt = 0; (rect.width <= 0 || rect.height <= 0) && attempt < 10; attempt += 1) {
+        await sleep(150);
+        rect = element.getBoundingClientRect();
+      }
       const fractions = [0.5, 0.25, 0.75, 0.1, 0.9];
       const hitName = (hit: Element | null) => hit?.getAttribute("class") ?? "";
       for (const fx of fractions) {
@@ -1574,7 +1625,7 @@ test("direct clicks on highlighter-intent ink annotations stay locate-only", asy
           const hit = document.elementFromPoint(x, y);
           const target = hit?.closest(`#${CSS.escape(element.id)}, .inkAnnotation, .highlightEditor`);
           if (target) {
-            return { hit: target.id || hitName(target), x, y };
+            return { hit: target.id || hitName(target), usedBoundsFallback: false, x, y };
           }
         }
       }
@@ -1582,17 +1633,23 @@ test("direct clicks on highlighter-intent ink annotations stay locate-only", asy
       const y = rect.top + rect.height / 2;
       const hit = document.elementFromPoint(x, y);
       const target = hit?.closest(`#${CSS.escape(element.id)}, .inkAnnotation, .highlightEditor`);
-      return { hit: target ? target.id || hitName(target) : hitName(hit), x, y };
+      return { hit: target ? target.id || hitName(target) : hitName(hit), usedBoundsFallback: false, x, y };
     }, { pageNumber: entry.page, sourceId: entry.id });
 
     if (
+      !point.usedBoundsFallback &&
       !point.hit.includes(`pdfjs_internal_id_${entry.id}`) &&
       !point.hit.includes("inkAnnotation") &&
       !point.hit.includes("highlightEditor")
     ) {
       throw new Error(`Direct click point missed ${entry.id}; hit=${point.hit} point=${JSON.stringify(point)}`);
     }
-    await page.mouse.click(point.x, point.y);
+    const clickX = Number(point.x);
+    const clickY = Number(point.y);
+    if (!Number.isFinite(clickX) || !Number.isFinite(clickY)) {
+      throw new Error(`Invalid click point ${JSON.stringify(point)}`);
+    }
+    await page.mouse.click(clickX, clickY);
     await page.waitForTimeout(900);
     return page.evaluate((sourceId) => {
       const stats = window.__pdfSpike!.stats();
@@ -1611,26 +1668,64 @@ test("direct clicks on highlighter-intent ink annotations stay locate-only", asy
       const top = Math.min(...shapeRects.map((rect) => rect.top)) - containerRect.top + container.scrollTop - 3;
       const bottom = Math.max(...shapeRects.map((rect) => rect.bottom)) - containerRect.top + container.scrollTop + 3;
       return { ...stats, visualShapeBox: { top, height: bottom - top } };
-    }, entry.id);
+    }, entry.id).then((stats) => ({ ...stats, clickPoint: point }));
   };
 
   const first = inkHighlights[0];
   const second = inkHighlights[1];
+  const selectedPlainInkStats = await clickInkHighlightOnPage(plainInks[0]);
+  expect(selectedPlainInkStats.selectedAnnotationKind, JSON.stringify(selectedPlainInkStats)).toBe("ink");
+
   const firstStats = await clickInkHighlightOnPage(first);
-  expect(firstStats.status, JSON.stringify(firstStats)).toBe(`Located ink on page ${first.page}.`);
-  expect(firstStats.activeTool, JSON.stringify(firstStats)).toBe("none");
-  expect(firstStats.selectedAnnotationKind, JSON.stringify(firstStats)).toBeNull();
-  expect(firstStats.visibleEditorToolbars, JSON.stringify(firstStats)).toBe(0);
-  expect(Math.abs(firstStats.annotationFocusBox.top - firstStats.visualShapeBox.top)).toBeLessThan(1);
-  expect(Math.abs(firstStats.annotationFocusBox.height - firstStats.visualShapeBox.height)).toBeLessThan(1);
+  expect(firstStats.status, JSON.stringify(firstStats)).toBe("Selected highlight. Change color or delete it, then save.");
+  expect(firstStats.activeTool, JSON.stringify(firstStats)).toBe("highlight");
+  expect(firstStats.selectedAnnotationKind, JSON.stringify(firstStats)).toBe("highlight");
+  expect(firstStats.selectedPersistedAnnotationKey, JSON.stringify(firstStats)).toBe(`${first.page}:${first.id}`);
+  expect(firstStats.visibleEditorToolbars, JSON.stringify(firstStats)).toBe(1);
+
+  await page.evaluate(() => {
+    window.__pdfSpike!.recolorSelectedHighlight("green");
+  });
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-ink-highlight-edit.pdf");
+  await expect
+    .poll(() =>
+      page.evaluate(async ({ pageNumber, sourceId }) => {
+        const summary = await window.__pdfSpike!.annotationSummary();
+        return summary
+          .find((entry: { page: number }) => entry.page === pageNumber)
+          ?.annotations.find((annotation: { id?: string }) => annotation.id === sourceId);
+      }, { pageNumber: first.page, sourceId: first.id }),
+    )
+    .toMatchObject({
+      color: [124, 242, 170],
+      it: "InkHighlight",
+      subtype: "Ink",
+    });
+
+  const reselectedFirstStats = await clickInkHighlightOnPage(first);
+  expect(reselectedFirstStats.selectedAnnotationKind, JSON.stringify(reselectedFirstStats)).toBe("highlight");
+  const deleted = await page.evaluate(() => window.__pdfSpike!.deleteSelected());
+  expect(deleted).toBe(true);
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-ink-highlight-edit.pdf");
+  await expect
+    .poll(() =>
+      page.evaluate(async ({ pageNumber, sourceId }) => {
+        const summary = await window.__pdfSpike!.annotationSummary();
+        return Boolean(
+          summary
+            .find((entry: { page: number }) => entry.page === pageNumber)
+            ?.annotations.some((annotation: { id?: string }) => annotation.id === sourceId),
+        );
+      }, { pageNumber: first.page, sourceId: first.id }),
+    )
+    .toBe(false);
 
   const secondStats = await clickInkHighlightOnPage(second);
-  expect(secondStats.status, JSON.stringify(secondStats)).toBe(`Located ink on page ${second.page}.`);
-  expect(secondStats.activeTool, JSON.stringify(secondStats)).toBe("none");
-  expect(secondStats.selectedAnnotationKind, JSON.stringify(secondStats)).toBeNull();
-  expect(secondStats.visibleEditorToolbars, JSON.stringify(secondStats)).toBe(0);
-  expect(Math.abs(secondStats.annotationFocusBox.top - secondStats.visualShapeBox.top)).toBeLessThan(1);
-  expect(Math.abs(secondStats.annotationFocusBox.height - secondStats.visualShapeBox.height)).toBeLessThan(1);
+  expect(secondStats.status, JSON.stringify(secondStats)).toBe("Selected highlight. Change color or delete it, then save.");
+  expect(secondStats.activeTool, JSON.stringify(secondStats)).toBe("highlight");
+  expect(secondStats.selectedAnnotationKind, JSON.stringify(secondStats)).toBe("highlight");
+  expect(secondStats.selectedPersistedAnnotationKey, JSON.stringify(secondStats)).toBe(`${second.page}:${second.id}`);
+  expect(secondStats.visibleEditorToolbars, JSON.stringify(secondStats)).toBe(1);
 });
 
 test("annotation sidebar stays synced across load, click, delete, edit, and create", async ({ page }) => {

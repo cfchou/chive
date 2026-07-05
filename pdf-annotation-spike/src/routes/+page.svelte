@@ -2088,9 +2088,6 @@
     selectedHighlightColor = null;
     selectedAnnotationEntryId = entry.id;
     selectedPersistedAnnotationKey = null;
-    if (isInkHighlightEntry(entry)) {
-      return locatePdfAnnotationBounds(entry) || locatePdfAnnotationEntry(entry);
-    }
     for (let attempt = 0; attempt < 12; attempt += 1) {
       if (entry.kind === "ink" && activeTool !== "none") {
         const exactElement = document.getElementById(pdfAnnotationElementId(entry.sourceId));
@@ -2106,13 +2103,14 @@
         if (await activatePersistedEditorEntry(entry)) {
           return true;
         }
+        const editorKind = editorKindForAnnotationEntry(entry);
         const rect = element.getBoundingClientRect();
         const x = Math.round(rect.left + Math.min(Math.max(rect.width / 2, 4), Math.max(rect.width - 4, 4)));
         const y = Math.round(rect.top + Math.min(Math.max(rect.height / 2, 4), Math.max(rect.height - 4, 4)));
         const activated =
-          entry.kind === "highlight"
+          editorKind === "highlight"
             ? await activateHighlightEditorAtPoint(x, y)
-            : entry.kind === "freetext"
+            : editorKind === "freetext"
               ? await activateFreeTextEditorAtPoint(x, y)
               : await activateInkEditorAtPoint(x, y);
         if (!activated && entry.kind === "ink") {
@@ -2223,16 +2221,17 @@
 
   async function activatePersistedEditorEntry(entry: AnnotationEntry) {
     const manager = annotationEditorUIManager;
-    const tool = editorToolForAnnotationKind(entry.kind);
+    const editorKind = editorKindForAnnotationEntry(entry);
+    const tool = editorToolForAnnotationKind(editorKind);
     if (!manager || !tool || !managerHasValidSignal(manager)) return false;
     if (activeTool !== tool) {
       setTool(tool);
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
-    let editor = findEditorByPersistedSourceId(entry.sourceId, entry.kind, manager);
+    let editor = findEditorByPersistedSourceId(entry.sourceId, editorKind, manager);
     for (let attempt = 0; !editor && attempt < 12; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
-      editor = findEditorByPersistedSourceId(entry.sourceId, entry.kind, manager);
+      editor = findEditorByPersistedSourceId(entry.sourceId, editorKind, manager);
     }
     if (
       !editor ||
@@ -2250,14 +2249,18 @@
     selectEditorIgnoringPdfjsSignalBug(manager, editor);
     syncSelectedEditorState(persistedKey);
     selectedAnnotationEntryId = entry.id;
-    if (entry.kind === "highlight") {
+    if (editorKind === "highlight") {
       status = "Selected highlight. Change color or delete it, then save.";
-    } else if (entry.kind === "freetext") {
+    } else if (editorKind === "freetext") {
       status = "Selected free text. Press Enter to edit text, change color, or delete it.";
     } else {
       status = "Selected ink. Change color or delete it, then save.";
     }
     return true;
+  }
+
+  function editorKindForAnnotationEntry(entry: AnnotationEntry): Exclude<SelectedAnnotationKind, null> {
+    return isInkHighlightEntry(entry) ? "highlight" : entry.kind;
   }
 
   function editorToolForAnnotationKind(kind: Exclude<SelectedAnnotationKind, null>): EditorTool | null {
@@ -2556,7 +2559,7 @@
       setTool("highlight");
     }
     for (let attempt = 0; attempt < 12; attempt += 1) {
-      const editorElement = document.elementFromPoint(clientX, clientY)?.closest(".highlightEditor");
+      const editorElement = editorElementAtPoint(".highlightEditor", clientX, clientY);
       if (editorElement instanceof HTMLElement) {
         editorElement.dispatchEvent(
           new PointerEvent("pointerdown", {
@@ -2885,6 +2888,47 @@
     return findEditorElementIdAtPoint(".inkEditor", clientX, clientY);
   }
 
+  function inkHighlightEntryAtPoint(clientX: number, clientY: number) {
+    const matches = annotationEntries
+      .filter((entry) => isInkHighlightEntry(entry) && entry.bounds)
+      .map((entry) => {
+        const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
+        if (!pageElement || !entry.bounds) return null;
+        const rect = pageElement.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        const left = rect.left + entry.bounds.left * rect.width;
+        const right = rect.left + entry.bounds.right * rect.width;
+        const top = rect.top + entry.bounds.top * rect.height;
+        const bottom = rect.top + entry.bounds.bottom * rect.height;
+        return {
+          entry,
+          area: Math.max(0, right - left) * Math.max(0, bottom - top),
+          contains: clientX >= left && clientX <= right && clientY >= top && clientY <= bottom,
+        };
+      })
+      .filter((match): match is { entry: AnnotationEntry; area: number; contains: boolean } => Boolean(match?.contains))
+      .sort((left, right) => left.area - right.area);
+    return matches[0]?.entry ?? null;
+  }
+
+  function activateInkHighlightEntryAtPoint(entry: AnnotationEntry, clientX: number, clientY: number) {
+    selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
+    void activateHighlightEditorAtPoint(clientX, clientY).then((activated) => {
+      if (!activated) {
+        locatePdfAnnotationBounds(entry);
+        return;
+      }
+      if (activeTool !== "highlight") {
+        setTool("highlight");
+      }
+      selectedAnnotationKind = "highlight";
+      hasSelectedHighlight = true;
+      selectedAnnotationEntryId = entry.id;
+      selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
+      status = "Selected highlight. Change color or delete it, then save.";
+    });
+  }
+
   function handleHighlightTextLayerPointerDown(event: PointerEvent) {
     const target = event.target;
     if (!(target instanceof Element) || activeTool !== "highlight") {
@@ -2916,6 +2960,7 @@
     const savedFreeTextAnnotation = target.closest(".freeTextAnnotation");
     const savedInkAnnotation = target.closest(".inkAnnotation");
     const directDisabledEditorId = target.closest<HTMLElement>(".highlightEditor.disabled")?.id ?? null;
+    const directHighlightEditorId = target.closest<HTMLElement>(".highlightEditor:not(.disabled)")?.id ?? null;
     const directFreeTextEditorId = target.closest<HTMLElement>(".freeTextEditor")?.id ?? null;
     const directInkEditorId = target.closest<HTMLElement>(".inkEditor")?.id ?? null;
     const editableEditor = target.closest<HTMLElement>(".highlightEditor:not(.disabled), .freeTextEditor, .inkEditor");
@@ -2923,10 +2968,44 @@
       queueEditorStateRefresh(0, 100, 250);
       return;
     }
-    if (editableEditor) {
+    if (directHighlightEditorId) {
+      const directInkHighlightEntry = isAnnotationCreationMode()
+        ? null
+        : inkHighlightEntryAtPoint(event.clientX, event.clientY);
+      if (directInkHighlightEntry) {
+        void activateExistingHighlightEditor(directHighlightEditorId, { focusEditor: false }).then((activated) => {
+          if (!activated) return;
+          selectedAnnotationKind = "highlight";
+          hasSelectedHighlight = true;
+          selectedAnnotationEntryId = directInkHighlightEntry.id;
+          selectedPersistedAnnotationKey = persistedAnnotationKey(
+            directInkHighlightEntry.page,
+            directInkHighlightEntry.sourceId,
+          );
+          status = "Selected highlight. Change color or delete it, then save.";
+        });
+        queueEditorStateRefresh(0, 100, 250);
+        return;
+      }
+    }
+    if (editableEditor && !directInkEditorId) {
       if (directFreeTextEditorId) {
         void activateExistingFreeTextEditor(directFreeTextEditorId, { focusEditor: false });
-      } else if (directInkEditorId) {
+      }
+      queueEditorStateRefresh(0, 100, 250);
+      return;
+    }
+    const inkHighlightEntry = isAnnotationCreationMode()
+      ? null
+      : inkHighlightEntryAtPoint(event.clientX, event.clientY);
+    if (inkHighlightEntry) {
+      event.preventDefault();
+      event.stopPropagation();
+      activateInkHighlightEntryAtPoint(inkHighlightEntry, event.clientX, event.clientY);
+      return;
+    }
+    if (editableEditor) {
+      if (directInkEditorId) {
         void activateExistingInkEditor(directInkEditorId, { focusEditor: false });
       }
       queueEditorStateRefresh(0, 100, 250);
@@ -2971,11 +3050,6 @@
     event.preventDefault();
     event.stopPropagation();
     if (disabledEditorId) {
-      const entry = persistedAnnotationEntryForEditorId(disabledEditorId);
-      if (entry && isInkHighlightEntry(entry)) {
-        void locatePdfAnnotationBounds(entry);
-        return;
-      }
       void activateExistingHighlightEditor(disabledEditorId, { focusEditor: false });
       return;
     }
@@ -2995,8 +3069,7 @@
     if (savedInkAnnotation) {
       const entry = persistedAnnotationEntryForElement(savedInkAnnotation);
       if (entry && isInkHighlightEntry(entry)) {
-        selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
-        void locatePdfAnnotationBounds(entry);
+        activateInkHighlightEntryAtPoint(entry, event.clientX, event.clientY);
         return;
       }
       rememberPersistedAnnotationElement(savedInkAnnotation);

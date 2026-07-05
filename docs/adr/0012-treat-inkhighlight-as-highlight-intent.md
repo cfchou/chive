@@ -6,7 +6,7 @@ Date: 2026-07-05
 
 ## Context
 
-The annotation sidebar lists persisted PDF annotations from the opened PDF.
+The Annotation Sidebar lists persisted PDF annotations from the opened PDF.
 
 For normal highlight and free-text Annotation Sidebar Entries, clicking an Annotation Sidebar Entry can locate the annotation and expose the small PDF.js editor toolbar for actions such as recolor or delete.
 
@@ -65,6 +65,7 @@ So `/Subtype /Ink` does not always mean "normal pen scribble." It can also mean 
 - Appearance stream: the `/AP` entry. It can define exactly how the annotation should render.
 - PDF.js editor toolbar: the floating UI PDF.js shows when an annotation editor is selected.
 - Locate-only annotation: an annotation the app can scroll to and outline, but cannot activate as the expected PDF.js editor type.
+- Ink-highlight editing: editing `/IT /InkHighlight` through PDF.js' highlight editor path, not through the normal ink editor path.
 
 ## Evidence from the Bundled Sample PDF
 
@@ -100,11 +101,11 @@ The `/Rect` y range is roughly `50.4..70.4`, but the ink path centerline is roug
 
 PDF.js renders a DOM annotation section from the broader annotation rectangle. Inside that section, it also renders SVG shape geometry for the ink path. The section is useful for hit testing and fallback location. The SVG shape is a better source for a tight visual locate box.
 
-Decision for locate-only highlighter-intent ink:
+Decision for highlighter-intent ink geometry:
 
 - Prefer rendered SVG shape bounds from PDF.js when the annotation element is present.
 - Fall back to the annotation entry bounds derived from `/Rect` when rendered shape bounds are unavailable.
-- Do not infer editability from either box. Editability remains governed by the `/IT /InkHighlight` policy above.
+- Do not infer normal ink editability from either box. Editability remains governed by the `/IT /InkHighlight` policy above.
 
 ## PDF Spec Nuance
 
@@ -157,24 +158,28 @@ At the PDF.js editor level, they were not all `AnnotationEditorType.INK`:
 
 If the app blindly tries to activate every `/Subtype /Ink` entry as an ink editor, some entries will fail. That failure is deterministic for this sample and this PDF.js version, not random timing.
 
+However, PDF.js can expose these annotations through its highlight editor path. That path supports the operations users expect for highlighter-style marks: select, recolor, delete, save, and reopen.
+
 ## Decision
 
 Treat `/Subtype /Ink` plus `/IT /InkHighlight` as highlighter-intent ink.
 
-Do not promise the normal ink editor toolbar for these annotations.
+Do not promise the normal ink editor toolbar for these annotations. Use the PDF.js highlight editor path instead.
 
 The app should:
 
 1. Still list the annotation in the sidebar.
-2. Still scroll to and outline the annotation when the Annotation Sidebar Entry is clicked.
+2. Scroll to and select the annotation when the Annotation Sidebar Entry or page annotation is clicked.
 3. Avoid presenting it as a normal editable ink pen stroke.
-4. Use a locate-only fallback when PDF.js does not expose a compatible editor.
-5. Prefer clearer naming in future UI, such as "Ink highlight" or "Highlight ink", if the distinction becomes user-facing.
+4. Activate the compatible PDF.js highlight editor when available.
+5. Allow recolor, delete, save, and reopen through that highlight editor path.
+6. Use a locate-only fallback only when PDF.js does not expose a compatible editor.
+7. Prefer clearer naming in future UI, such as "Ink highlight" or "Highlight ink", if the distinction becomes user-facing.
 
 For implementation policy:
 
 - `/Subtype /Ink` without `/IT /InkHighlight`: try normal ink editor activation.
-- `/Subtype /Ink` with `/IT /InkHighlight`: treat as highlighter-intent; locate it reliably, and only expose editing if the app deliberately supports the matching PDF.js highlight editor path.
+- `/Subtype /Ink` with `/IT /InkHighlight`: treat as highlighter-intent; activate it through the matching PDF.js highlight editor path; fall back to locate-only if that path is unavailable.
 
 ## Why
 
@@ -187,31 +192,32 @@ PDF.js has a second interpretation layer. It converts persisted PDF annotations 
 Using the same distinction in the app prevents a misleading UI:
 
 - users can still find the annotation
+- highlighter-intent ink can be edited with highlighter controls
 - tests can assert deterministic behavior
 - the sidebar does not imply that every `/Ink` object is a pen-stroke editor
-- future support for highlighter-intent ink can be added deliberately
+- fallback locate behavior remains available if PDF.js cannot expose a compatible editor
 
 ## Consequences
 
 Good:
 
 - persisted ink Annotation Sidebar Entry behavior is explainable from PDF object data
-- sidebar navigation can be reliable even when editing is unavailable
+- sidebar navigation and direct page clicks can be reliable even when PDF.js has to switch editor type
 - tests can separate normal ink from highlighter-intent ink
-- future maintainers have a clear reason for locate-only fallback
+- highlighter-intent ink supports recolor/delete/save through the highlight editor path
+- future maintainers have a clear reason for the locate-only fallback
 
 Bad:
 
-- some entries still look like ink but do not expose the ink editor toolbar
+- some entries still look like ink but expose highlight editor behavior
 - UI terminology may need refinement
-- supporting full edit/delete/recolor for `/IT /InkHighlight` may require a separate highlight-editor path
+- direct clicks must handle cases where PDF.js hides the original annotation section while another editor is selected
 
 ## Out of Scope
 
 This ADR does not decide:
 
 - whether highlighter-intent ink should be renamed in the sidebar
-- whether the app should support editing `/IT /InkHighlight` through the PDF.js highlight editor
 - whether `/IT /InkHighlight` should be converted into normal `/Highlight` annotations
 - whether other PDF viewers treat these annotations the same way
 - whether appearance streams should be parsed to infer marker-like visual style
@@ -226,6 +232,8 @@ Useful checks:
 - Confirm page 3 object `573 0 R` has no `/IT` and behaves as normal ink.
 - Confirm page 3 object `574 0 R` has `/IT /InkHighlight`.
 - Confirm current PDF.js maps `data.it === "InkHighlight"` to `AnnotationEditorType.HIGHLIGHT`.
+- Confirm direct-clicking `/IT /InkHighlight` selects a highlight editor, not an ink editor.
+- Confirm recolor/delete/save/reopen works for `/IT /InkHighlight`.
 - Keep browser and native regression coverage for Annotation Sidebar Entry clicking because PDF.js editor activation can differ between Chromium and WKWebView.
 
 Required checks for related implementation changes:

@@ -152,9 +152,10 @@ describe("native WKWebView PDF smoke", () => {
         entry.sourceId,
       );
       expect(activated).toBe(true);
-      await app.waitUntil(
-        async () =>
-          app.execute(
+      try {
+        await app.waitUntil(
+          async () =>
+            app.execute(
             ({ pageNumber, sourceId, expectedTop }) => {
               const stats = window.__pdfSpike!.stats();
               const box = stats.annotationFocusBox as { top: number; height: number } | null;
@@ -164,9 +165,10 @@ describe("native WKWebView PDF smoke", () => {
                 if (!editor || !container) return null;
                 const editorRect = editor.getBoundingClientRect();
                 const containerRect = container.getBoundingClientRect();
+                const style = getComputedStyle(editor);
                 return {
                   top: editorRect.top - containerRect.top + container.scrollTop,
-                  borderStyle: getComputedStyle(editor).borderTopStyle,
+                  borderStyle: style.borderTopStyle === "none" ? style.outlineStyle : style.borderTopStyle,
                 };
               };
               if (stats.status === `Located ink on page ${pageNumber}.`) {
@@ -179,8 +181,17 @@ describe("native WKWebView PDF smoke", () => {
                 );
               }
               const editorBox = selectedEditorBox();
+              if (
+                stats.selectedAnnotationKind === "highlight" &&
+                !box &&
+                Boolean(editorBox) &&
+                editorBox?.borderStyle === "dashed" &&
+                Math.abs((editorBox?.top ?? 0) - expectedTop) < 30
+              ) {
+                return true;
+              }
               return (
-                stats.selectedAnnotationKind === "ink" &&
+                (stats.selectedAnnotationKind === "ink" || stats.selectedAnnotationKind === "highlight") &&
                 stats.selectedPersistedAnnotationKey === `${pageNumber}:${sourceId}` &&
                 !box &&
                 Boolean(editorBox) &&
@@ -188,12 +199,29 @@ describe("native WKWebView PDF smoke", () => {
               );
             },
             { pageNumber: entry.page, sourceId: entry.sourceId, expectedTop: entry.expected.top },
-          ),
-        {
-          timeout: 10_000,
-          timeoutMsg: `native ink row did not focus: ${entry.sourceId}`,
-        },
-      );
+            ),
+          {
+            timeout: 10_000,
+            timeoutMsg: `native ink row did not focus: ${entry.sourceId}`,
+          },
+        );
+      } catch (error) {
+        const stats = await app.execute(() => {
+          const selectedEditor = document.querySelector<HTMLElement>(".annotationEditorLayer .selectedEditor");
+          const rect = selectedEditor?.getBoundingClientRect();
+          return {
+            stats: window.__pdfSpike!.stats(),
+            selectedEditor: selectedEditor
+              ? {
+                  id: selectedEditor.id,
+                  className: selectedEditor.className,
+                  rect: rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null,
+                }
+              : null,
+          };
+        });
+        throw new Error(`native ink row did not focus: ${entry.sourceId}; details=${JSON.stringify(stats)}; ${error}`);
+      }
       return app.execute(() => {
         const stats = window.__pdfSpike!.stats();
         const box = stats.annotationFocusBox as { top: number; height: number } | null;
@@ -203,10 +231,11 @@ describe("native WKWebView PDF smoke", () => {
           if (!editor || !container) return null;
           const editorRect = editor.getBoundingClientRect();
           const containerRect = container.getBoundingClientRect();
+          const style = getComputedStyle(editor);
           return {
             top: editorRect.top - containerRect.top + container.scrollTop,
             bottom: editorRect.bottom - containerRect.top + container.scrollTop,
-            borderStyle: getComputedStyle(editor).borderTopStyle,
+            borderStyle: style.borderTopStyle === "none" ? style.outlineStyle : style.borderTopStyle,
           };
         };
         const editorBox = selectedEditorBox();
@@ -262,10 +291,12 @@ describe("native WKWebView PDF smoke", () => {
       expect(Math.abs(pairResult.firstInk.top - pairResult.firstExpected.top)).toBeLessThan(30);
       expect(Math.abs(pairResult.secondInk.top - pairResult.secondExpected.top)).toBeLessThan(30);
       if (pairResult.firstIntent === "InkHighlight") {
-        expect(pairResult.firstInk.activeTool).toBe("none");
-        expect(pairResult.firstInk.status).toContain("Located ink");
-        expect(pairResult.firstInk.selectedAnnotationKind).toBeNull();
-        expect(pairResult.firstInk.visibleEditorToolbars).toBe(0);
+        expect(pairResult.firstInk.activeTool).toBe("highlight");
+        expect(pairResult.firstInk.status).toContain("Selected highlight");
+        expect(pairResult.firstInk.selectedAnnotationKind).toBe("highlight");
+        expect(pairResult.firstInk.visibleEditorToolbars).toBe(1);
+        expect(pairResult.firstInk.selectedEditorBorderStyle).toBe("dashed");
+        expect(pairResult.firstInk.selectedPersistedAnnotationKey).toBe(pairResult.firstExpectedPersistedAnnotationKey);
       } else if (pairResult.firstInk.selectedAnnotationKind === "ink") {
         expect(pairResult.firstInk.activeTool).toBe("ink");
         expect(pairResult.firstInk.hasAnnotationFocusBox).toBe(false);
@@ -276,10 +307,12 @@ describe("native WKWebView PDF smoke", () => {
         expect(pairResult.firstInk.selectedAnnotationKind).toBeNull();
       }
       if (pairResult.secondIntent === "InkHighlight") {
-        expect(pairResult.secondInk.activeTool).toBe("none");
-        expect(pairResult.secondInk.status).toContain("Located ink");
-        expect(pairResult.secondInk.selectedAnnotationKind).toBeNull();
-        expect(pairResult.secondInk.visibleEditorToolbars).toBe(0);
+        expect(pairResult.secondInk.activeTool).toBe("highlight");
+        expect(pairResult.secondInk.status).toContain("Selected highlight");
+        expect(pairResult.secondInk.selectedAnnotationKind).toBe("highlight");
+        expect(pairResult.secondInk.visibleEditorToolbars).toBe(1);
+        expect(pairResult.secondInk.selectedEditorBorderStyle).toBe("dashed");
+        expect(pairResult.secondInk.selectedPersistedAnnotationKey).toBe(pairResult.secondExpectedPersistedAnnotationKey);
       } else if (pairResult.secondInk.selectedAnnotationKind === "ink") {
         expect(pairResult.secondInk.activeTool).toBe("ink");
         expect(pairResult.secondInk.hasAnnotationFocusBox).toBe(false);
