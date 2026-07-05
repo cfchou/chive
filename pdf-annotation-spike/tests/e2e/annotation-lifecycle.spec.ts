@@ -579,6 +579,159 @@ test("creates, moves, recolors, and deletes ink annotation", async ({ page }) =>
   expect(annotations.filter((entry) => entry.subtype === "Ink")).toHaveLength(baseline);
 });
 
+test("active annotation tool creates over empty existing ink editor bounds", async ({ page }) => {
+  await createInkStroke(page);
+  await activateFirstAnnotationByKind(page, "ink");
+
+  await page.getByRole("button", { name: "Free text", exact: true }).click();
+  const inkBoxPoint = await page.evaluate(() => {
+    const editor = document.querySelector<HTMLElement>(".annotationEditorLayer .inkEditor");
+    if (!editor) throw new Error("Missing ink editor");
+    const editorRect = editor.getBoundingClientRect();
+    for (const fx of [0.1, 0.5, 0.9]) {
+      for (const fy of [0.1, 0.2, 0.8, 0.9]) {
+        const x = Math.round(editorRect.left + editorRect.width * fx);
+        const y = Math.round(editorRect.top + editorRect.height * fy);
+        if (!document.elementFromPoint(x, y)?.closest(".inkEditor, .inkAnnotation")) {
+          return { x, y };
+        }
+      }
+    }
+    throw new Error("Could not find empty ink editor bounds point");
+  });
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        ({ x, y }) => ({
+          activeTool: window.__pdfSpike!.stats().activeTool,
+          hitExistingInk: Boolean(document.elementFromPoint(x, y)?.closest(".inkEditor, .inkAnnotation")),
+        }),
+        inkBoxPoint,
+      ),
+    )
+    .toEqual({ activeTool: "text", hitExistingInk: false });
+
+  await page.mouse.click(inkBoxPoint.x, inkBoxPoint.y);
+  await page.keyboard.type("Ink box should not block");
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        activeTool: window.__pdfSpike!.stats().activeTool,
+        selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+        freeText: document.querySelector<HTMLElement>(".freeTextEditor .internal")?.innerText.trim() ?? "",
+      })),
+    )
+    .toMatchObject({
+      activeTool: "text",
+      selectedAnnotationKind: "freetext",
+      freeText: expect.stringContaining("box should not block"),
+    });
+});
+
+test("active annotation tool still edits visible free text and ink annotations", async ({ page }) => {
+  await createFreeText(page, "Clickable visible text");
+  await page.getByRole("button", { name: "Free text", exact: true }).click();
+  const freeTextPoint = await page.evaluate(() => {
+    const editor = document.querySelector<HTMLElement>(".page[data-page-number='1'] .freeTextEditor .internal");
+    if (!editor) throw new Error("Missing free text editor content");
+    const rect = editor.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.mouse.click(freeTextPoint.x, freeTextPoint.y);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("freetext");
+
+  await createInkStroke(page);
+  await page.getByRole("button", { name: "Free text", exact: true }).click();
+  const inkPoint = await page.evaluate(() => {
+    const polyline = document.querySelector<SVGGeometryElement>(".page[data-page-number='1'] .inkEditor .ink-hit-area polyline");
+    if (!polyline) throw new Error("Missing ink hit area");
+    const rect = polyline.getBoundingClientRect();
+    const x = Math.round(rect.left + rect.width / 2);
+    const y = Math.round(rect.top + rect.height / 2);
+    const hit = document.elementFromPoint(x, y);
+    if (!hit?.closest(".inkEditor")) {
+      throw new Error(`Expected visible ink point to hit ink editor, hit=${hit?.nodeName ?? "null"}`);
+    }
+    return { x, y };
+  });
+  await page.mouse.click(inkPoint.x, inkPoint.y);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("ink");
+});
+
+test("selection mode direct-click edits existing free text and ink annotations", async ({ page }) => {
+  await createFreeText(page, "Direct click text");
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+  const freeTextPoint = await page.evaluate(() => {
+    const editor = document.querySelector<HTMLElement>(".page[data-page-number='1'] .freeTextEditor");
+    if (!editor) throw new Error("Missing free text editor");
+    const rect = editor.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.mouse.click(freeTextPoint.x, freeTextPoint.y);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("freetext");
+
+  await createInkStroke(page);
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+  const inkPoint = await page.evaluate(() => {
+    const editor = document.querySelector<HTMLElement>(".page[data-page-number='1'] .inkEditor");
+    if (!editor) throw new Error("Missing ink editor");
+    const rect = editor.getBoundingClientRect();
+    for (const fx of [0.5, 0.25, 0.75, 0.1, 0.9]) {
+      for (const fy of [0.5, 0.25, 0.75, 0.1, 0.9]) {
+        const x = Math.round(rect.left + rect.width * fx);
+        const y = Math.round(rect.top + rect.height * fy);
+        if (document.elementFromPoint(x, y)?.closest(".inkEditor")) {
+          return { x, y };
+        }
+      }
+    }
+    throw new Error("Could not find clickable ink point");
+  });
+  await page.mouse.click(inkPoint.x, inkPoint.y);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("ink");
+});
+
+test("selection mode direct-click edits persisted free text annotation", async ({ page }) => {
+  await createFreeText(page, "Persisted direct click text");
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-persisted-free-text-direct-click.pdf");
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+
+  const freeTextPoint = await page.evaluate(() => {
+    const annotations = [...document.querySelectorAll<HTMLElement>(".page[data-page-number='1'] .freeTextAnnotation")];
+    const annotation = annotations.at(-1);
+    if (!annotation) throw new Error("Missing persisted free text annotation");
+    const rect = annotation.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.mouse.click(freeTextPoint.x, freeTextPoint.y);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("freetext");
+});
+
+test("selection mode direct-click edits persisted ink annotation", async ({ page }) => {
+  await createInkStroke(page);
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-persisted-ink-direct-click.pdf");
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+
+  const inkPoint = await page.evaluate(() => {
+    const inkMarks = [
+      ...document.querySelectorAll<SVGGeometryElement>(
+        ".page[data-page-number='1'] .inkAnnotation svg :is(path, polyline, polygon, line)",
+      ),
+    ];
+    const mark =
+      inkMarks
+        .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+        .find(({ rect }) => rect.width > 0 && rect.height > 0 && rect.top < 500)?.element ?? inkMarks.at(-1);
+    if (!mark) throw new Error("Missing persisted ink annotation");
+    const rect = mark.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.mouse.click(inkPoint.x, inkPoint.y);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("ink");
+});
+
 test("creates marker ink with preset color, thickness, and opacity", async ({ page }) => {
   const baseline = (await pageAnnotations(page)).filter((entry) => entry.subtype === "Ink").length;
 

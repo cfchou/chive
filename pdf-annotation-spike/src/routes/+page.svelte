@@ -2537,11 +2537,12 @@
         defaultInkThickness,
       );
     }
+    syncInkEditorHitAreas();
     status =
       tool === "none"
         ? "Selection mode."
         : tool === "highlight"
-          ? "Highlight mode. Drag across text to create a highlight, or click an existing highlight to edit it."
+          ? "Highlight mode. Drag across text to create a highlight."
           : `${toolLabel(tool)} mode. Create an annotation, then save.`;
   }
 
@@ -2606,6 +2607,16 @@
   ) {
     if (!editor || !editorBelongsToCurrentManager(editor)) return false;
     return !persistedKeyHint || persistedAnnotationKeyForEditor(editor) === persistedKeyHint;
+  }
+
+  function editorElementAtPoint(selector: string, clientX: number, clientY: number) {
+    const directElement = document.elementFromPoint(clientX, clientY)?.closest(selector);
+    if (directElement instanceof HTMLElement) {
+      return directElement;
+    }
+    const editorId = findEditorElementIdAtPoint(selector, clientX, clientY);
+    const editorElement = editorId ? document.getElementById(editorId) : null;
+    return editorElement instanceof HTMLElement ? editorElement : null;
   }
 
   function findHighlightEditorById(editorId: string) {
@@ -2701,7 +2712,7 @@
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
     for (let attempt = 0; attempt < 12; attempt += 1) {
-      const editorElement = document.elementFromPoint(clientX, clientY)?.closest(".freeTextEditor");
+      const editorElement = editorElementAtPoint(".freeTextEditor", clientX, clientY);
       if (editorElement instanceof HTMLElement) {
         editorElement.dispatchEvent(
           new PointerEvent("pointerdown", {
@@ -2792,7 +2803,7 @@
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
     for (let attempt = 0; attempt < 12; attempt += 1) {
-      const editorElement = document.elementFromPoint(clientX, clientY)?.closest(".inkEditor");
+      const editorElement = editorElementAtPoint(".inkEditor", clientX, clientY);
       if (editorElement instanceof HTMLElement) {
         editorElement.dispatchEvent(
           new PointerEvent("pointerdown", {
@@ -2904,16 +2915,40 @@
     const savedAnnotation = target.closest(".highlightAnnotation");
     const savedFreeTextAnnotation = target.closest(".freeTextAnnotation");
     const savedInkAnnotation = target.closest(".inkAnnotation");
-    const disabledEditorId = findDisabledHighlightEditorIdAtPoint(event.clientX, event.clientY);
-    const freeTextEditorId =
-      target.closest<HTMLElement>(".freeTextEditor")?.id ?? findFreeTextEditorIdAtPoint(event.clientX, event.clientY);
-    const inkEditorId =
-      target.closest<HTMLElement>(".inkEditor")?.id ?? findInkEditorIdAtPoint(event.clientX, event.clientY);
+    const directDisabledEditorId = target.closest<HTMLElement>(".highlightEditor.disabled")?.id ?? null;
+    const directFreeTextEditorId = target.closest<HTMLElement>(".freeTextEditor")?.id ?? null;
+    const directInkEditorId = target.closest<HTMLElement>(".inkEditor")?.id ?? null;
     const editableEditor = target.closest<HTMLElement>(".highlightEditor:not(.disabled), .freeTextEditor, .inkEditor");
-    if (target.closest(".editToolbar") || editableEditor) {
+    if (target.closest(".editToolbar")) {
       queueEditorStateRefresh(0, 100, 250);
       return;
     }
+    if (editableEditor) {
+      if (directFreeTextEditorId) {
+        void activateExistingFreeTextEditor(directFreeTextEditorId, { focusEditor: false });
+      } else if (directInkEditorId) {
+        void activateExistingInkEditor(directInkEditorId, { focusEditor: false });
+      }
+      queueEditorStateRefresh(0, 100, 250);
+      return;
+    }
+    if (
+      isAnnotationCreationMode() &&
+      !directDisabledEditorId &&
+      !savedAnnotation &&
+      !savedFreeTextAnnotation &&
+      !savedInkAnnotation &&
+      !directFreeTextEditorId &&
+      !directInkEditorId
+    ) {
+      if (annotationFocusBox || selectedAnnotationEntryId || selectedPersistedAnnotationKey || selectedAnnotationKind) {
+        clearAnnotationFocusSelection(true);
+      }
+      return;
+    }
+    const disabledEditorId = directDisabledEditorId ?? findDisabledHighlightEditorIdAtPoint(event.clientX, event.clientY);
+    const freeTextEditorId = directFreeTextEditorId ?? findFreeTextEditorIdAtPoint(event.clientX, event.clientY);
+    const inkEditorId = directInkEditorId ?? findInkEditorIdAtPoint(event.clientX, event.clientY);
     const clickedAnnotationOrEditor = Boolean(
       disabledEditorId ||
         savedAnnotation ||
@@ -2922,14 +2957,6 @@
         freeTextEditorId ||
         inkEditorId,
     );
-    if (activeTool !== "none" && !clickedAnnotationOrEditor) {
-      if (annotationFocusBox || selectedAnnotationEntryId || selectedPersistedAnnotationKey || selectedAnnotationKind) {
-        clearAnnotationFocusSelection(true);
-        event.preventDefault();
-        event.stopPropagation();
-      }
-      return;
-    }
     if (
       !disabledEditorId &&
       !savedAnnotation &&
@@ -3165,7 +3192,81 @@
       void createSelectionHighlightInToolMode();
       return;
     }
+    clearAnnotationFocusSelection(true);
     setTool(tool);
+  }
+
+  function isAnnotationCreationMode() {
+    return activeTool !== "none" && !selectedAnnotationKind;
+  }
+
+  function syncInkEditorHitAreas() {
+    document.querySelectorAll(".ink-hit-area").forEach((element) => element.remove());
+    if (!annotationEditorUIManager || !pdfDocument) return;
+    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+        if (isInkEditor(editor) && !editor.deleted) {
+          addInkEditorHitArea(editor);
+        }
+      }
+    }
+  }
+
+  function addInkEditorHitArea(editor: AnnotationEditor) {
+    const editorElement = document.getElementById(editor.id);
+    if (!(editorElement instanceof HTMLElement)) return;
+    const serialized = editor.serialize?.(false);
+    const rect = numbersFromUnknown(serialized?.rect);
+    const paths = serialized?.paths && typeof serialized.paths === "object" ? serialized.paths : null;
+    const rawPoints = paths && "points" in paths ? paths.points : null;
+    const pointLists = Array.isArray(rawPoints)
+      ? rawPoints.map((pointList) => numbersFromNumericRecord(pointList)).filter((points) => points.length >= 4)
+      : [];
+    if (rect.length < 4 || pointLists.length === 0) return;
+    const left = Math.min(rect[0], rect[2]);
+    const right = Math.max(rect[0], rect[2]);
+    const bottom = Math.min(rect[1], rect[3]);
+    const top = Math.max(rect[1], rect[3]);
+    const width = right - left;
+    const height = top - bottom;
+    const editorRect = editorElement.getBoundingClientRect();
+    if (width <= 0 || height <= 0 || editorRect.width <= 0 || editorRect.height <= 0) return;
+
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.classList.add("ink-hit-area");
+    svg.setAttribute("viewBox", `0 0 ${editorRect.width} ${editorRect.height}`);
+    svg.setAttribute("aria-hidden", "true");
+    const thickness = Number(serialized?.thickness ?? 0);
+    const strokeWidth = Math.max(12, thickness * Math.max(editorRect.width / width, editorRect.height / height) + 10);
+    for (const points of pointLists) {
+      const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+      const mappedPoints: string[] = [];
+      for (let index = 0; index + 1 < points.length; index += 2) {
+        const x = ((points[index] - left) / width) * editorRect.width;
+        const y = ((top - points[index + 1]) / height) * editorRect.height;
+        mappedPoints.push(`${x},${y}`);
+      }
+      polyline.setAttribute("points", mappedPoints.join(" "));
+      polyline.setAttribute("fill", "none");
+      polyline.setAttribute("stroke", "transparent");
+      polyline.setAttribute("stroke-width", String(strokeWidth));
+      polyline.setAttribute("stroke-linecap", "round");
+      polyline.setAttribute("stroke-linejoin", "round");
+      polyline.setAttribute("pointer-events", "stroke");
+      svg.append(polyline);
+    }
+    editorElement.prepend(svg);
+  }
+
+  function numbersFromNumericRecord(value: unknown): number[] {
+    if (Array.isArray(value) || ArrayBuffer.isView(value) || typeof value === "number") {
+      return numbersFromUnknown(value);
+    }
+    if (!value || typeof value !== "object") return [];
+    return Object.entries(value)
+      .filter(([key, item]) => /^\d+$/.test(key) && typeof item === "number" && Number.isFinite(item))
+      .sort(([left], [right]) => Number(left) - Number(right))
+      .map(([, item]) => item as number);
   }
 
   async function createSelectionHighlightInToolMode() {
@@ -3177,6 +3278,7 @@
   }
 
   function syncSelectedEditorState(persistedKeyHint: string | null = null) {
+    syncInkEditorHitAreas();
     const firstSelectedEditor = annotationEditorUIManager?.firstSelectedEditor;
     const editor = editorBelongsToCurrentManager(firstSelectedEditor) ? firstSelectedEditor : null;
     if (activeTool === "none") {
@@ -4616,6 +4718,7 @@
     </div>
     <div
       class="pdf-container"
+      class:annotation-tool-active={isAnnotationCreationMode()}
       bind:this={containerEl}
       role="region"
       aria-label="PDF pages"
@@ -5381,6 +5484,38 @@
     z-index: 20;
     border: 1px dashed #2387d8;
     pointer-events: none;
+  }
+
+  .pdf-container.annotation-tool-active :global(.annotationLayer :is(.highlightAnnotation, .freeTextAnnotation, .inkAnnotation)),
+  .pdf-container.annotation-tool-active :global(.annotationEditorLayer :is(.highlightEditor, .freeTextEditor, .inkEditor)) {
+    pointer-events: none !important;
+  }
+
+  .pdf-container.annotation-tool-active :global(.annotationEditorLayer .freeTextEditor .internal),
+  .pdf-container.annotation-tool-active :global(.annotationEditorLayer .inkEditor .ink-hit-area polyline),
+  .pdf-container.annotation-tool-active :global(.annotationLayer .inkAnnotation svg :is(path, polyline, polygon, line)) {
+    pointer-events: stroke !important;
+  }
+
+  .pdf-container.annotation-tool-active :global(.annotationEditorLayer .freeTextEditor .internal) {
+    pointer-events: auto !important;
+  }
+
+  :global(.annotationEditorLayer .inkEditor .ink-hit-area) {
+    position: absolute;
+    inset: 0;
+    overflow: visible;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  :global(.annotationEditorLayer .inkEditor .ink-hit-area polyline) {
+    cursor: move;
+    pointer-events: stroke;
+  }
+
+  .pdf-container.annotation-tool-active :global(.annotationEditorLayer .editToolbar) {
+    pointer-events: auto !important;
   }
 
   :global(.annotationEditorLayer :is(.freeTextEditor, .inkEditor, .stampEditor, .signatureEditor).selectedEditor) {

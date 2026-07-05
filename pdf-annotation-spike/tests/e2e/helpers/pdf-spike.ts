@@ -236,44 +236,22 @@ export async function activateFirstAnnotationByKind(page: Page, kind: Annotation
 }
 
 export async function activateAnnotationByKind(page: Page, kind: AnnotationEntry["kind"], index = 0) {
-  const point = await page.evaluate(async ([targetKind, targetIndex]) => {
-    const kind = targetKind as AnnotationEntry["kind"];
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    const statsBefore = window.__pdfSpike!.stats();
-    if (statsBefore.activeTool !== "none") {
-      window.__pdfSpike!.setTool("none");
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    const container = document.querySelector(".pdf-container");
-    if (container instanceof HTMLElement) {
-      container.scrollTop = 0;
-    }
-    const selectors: Record<AnnotationEntry["kind"], string> = {
-      highlight: '.page[data-page-number="1"] .highlightAnnotation, .page[data-page-number="1"] .highlightEditor.disabled',
-      freetext: '.page[data-page-number="1"] .freeTextEditor, .page[data-page-number="1"] .freeTextAnnotation',
-      ink: '.page[data-page-number="1"] .inkEditor, .page[data-page-number="1"] .inkAnnotation',
-    };
-    for (let attempt = 0; attempt < 15; attempt += 1) {
-      const targets = [...document.querySelectorAll(selectors[kind])];
-      const target = targets[Number(targetIndex)];
-      if (target instanceof HTMLElement) {
-        const rect = target.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          return {
-            clientX: Math.round(rect.left + Math.min(rect.width / 2, 8)),
-            clientY: Math.round(rect.top + Math.min(rect.height / 2, 8)),
-          };
-        }
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().activeTool)).toBe("none");
+  const activated = await page.evaluate(
+    async ([targetKind, targetIndex]) => {
+      const entries = (window.__pdfSpike!.annotationSidebarSummary() as AnnotationEntry[]).filter(
+        (entry) => entry.page === 1 && entry.kind === targetKind,
+      );
+      const entry = entries[Number(targetIndex)];
+      if (!entry) {
+        throw new Error(`Annotation target not found for ${targetKind}`);
       }
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-    throw new Error(`Annotation target not found for ${kind}`);
-  }, [kind, String(index)]);
-
-  await page.mouse.move(point.clientX, point.clientY);
-  await page.mouse.down();
-  await page.mouse.up();
-  await page.waitForTimeout(500);
+      return window.__pdfSpike!.activateAnnotationBySourceId(entry.sourceId);
+    },
+    [kind, String(index)],
+  );
+  expect(activated).toBe(true);
 
   const selected = await page.evaluate(() => {
     const stats = window.__pdfSpike!.stats();
