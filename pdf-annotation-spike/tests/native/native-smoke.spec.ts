@@ -106,22 +106,29 @@ describe("native WKWebView PDF smoke", () => {
     await waitForPdfSpike();
     await app.setWindowSize(1640, 1010);
 
-    const result = await app.execute(async (filePath) => {
-      const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-      const entries = () => window.__pdfSpike!.annotationSidebarSummary() as AnnotationEntry[];
-      const clickAnnotationsTab = () => {
-        [...document.querySelectorAll<HTMLButtonElement>(".nav-tabs button")]
-          .find((button) => button.textContent?.trim() === "Annotations")
-          ?.click();
-      };
-      const waitForInkRows = async (pageNumber: number, minCount: number) => {
-        for (let attempt = 0; attempt < 40; attempt += 1) {
-          const inks = entries().filter((entry) => entry.page === pageNumber && entry.kind === "ink");
-          if (inks.length >= minCount) return inks;
-          await sleep(200);
-        }
-        return entries().filter((entry) => entry.page === pageNumber && entry.kind === "ink");
-      };
+    await app.execute(async (filePath) => {
+      await window.__pdfSpike!.loadPath(filePath);
+      [...document.querySelectorAll<HTMLButtonElement>(".nav-tabs button")]
+        .find((button) => button.textContent?.trim() === "Annotations")
+        ?.click();
+    }, samplePdfPath);
+
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const entries = window.__pdfSpike!.annotationSidebarSummary() as AnnotationEntry[];
+          return (
+            entries.filter((entry) => entry.page === 2 && entry.kind === "ink").length >= 3 &&
+            entries.filter((entry) => entry.page === 3 && entry.kind === "ink").length >= 2
+          );
+        }),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native sample PDF did not expose enough persisted ink rows",
+      },
+    );
+
+    const inks = await app.execute(() => {
       const pageBounds = (entry: AnnotationEntry) => {
         const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
         if (!pageElement || !entry.bounds) throw new Error(`Missing page bounds for ${entry.sourceId}`);
@@ -130,41 +137,75 @@ describe("native WKWebView PDF smoke", () => {
           bottom: pageElement.offsetTop + entry.bounds.bottom * pageElement.offsetHeight,
         };
       };
-      const clickEntry = async (entry: AnnotationEntry) => {
-        const activated = await window.__pdfSpike!.activateAnnotationBySourceId(entry.sourceId);
-        if (!activated) throw new Error(`Annotation activation failed for ${entry.sourceId}`);
-        await sleep(1200);
+      return (window.__pdfSpike!.annotationSidebarSummary() as AnnotationEntry[])
+        .filter((entry) => entry.kind === "ink" && (entry.page === 2 || entry.page === 3))
+        .map((entry) => ({
+          ...entry,
+          expected: pageBounds(entry),
+        }));
+    });
+
+    const activateInk = async (entry: (typeof inks)[number]) => {
+      const activated = await app.execute(
+        async (sourceId) => window.__pdfSpike!.activateAnnotationBySourceId(sourceId),
+        entry.sourceId,
+      );
+      expect(activated).toBe(true);
+      await app.waitUntil(
+        async () =>
+          app.execute(
+            ({ pageNumber, sourceId }) => {
+              const stats = window.__pdfSpike!.stats();
+              const box = stats.annotationFocusBox as { top: number; height: number } | null;
+              return Boolean(
+                box &&
+                  stats.activeTool === "none" &&
+                  stats.selectedPersistedAnnotationKey === `${pageNumber}:${sourceId}`,
+              );
+            },
+            { pageNumber: entry.page, sourceId: entry.sourceId },
+          ),
+        {
+          timeout: 10_000,
+          timeoutMsg: `native ink row did not focus: ${entry.sourceId}`,
+        },
+      );
+      return app.execute(() => {
         const stats = window.__pdfSpike!.stats();
         const box = stats.annotationFocusBox as { top: number; height: number } | null;
-        if (!box) throw new Error(`Missing focus box for ${entry.sourceId}; stats=${JSON.stringify(stats)}`);
+        if (!box) throw new Error(`Missing focus box; stats=${JSON.stringify(stats)}`);
         return {
           top: box.top,
           bottom: box.top + box.height,
           activeTool: stats.activeTool,
           selectedPersistedAnnotationKey: stats.selectedPersistedAnnotationKey,
-          expectedPersistedAnnotationKey: `${entry.page}:${entry.sourceId}`,
         };
-      };
-      const runPair = async (pageNumber: number, firstIndex: number, secondIndex: number) => {
-        await window.__pdfSpike!.loadPath(filePath);
-        await sleep(500);
-        clickAnnotationsTab();
-        const inks = await waitForInkRows(pageNumber, Math.max(firstIndex, secondIndex) + 1);
-        if (inks.length <= Math.max(firstIndex, secondIndex)) {
-          throw new Error(`Expected enough page ${pageNumber} ink rows; entries=${JSON.stringify(inks)}`);
-        }
-        return {
-          pageNumber,
-          pair: [firstIndex + 1, secondIndex + 1],
-          firstInk: await clickEntry(inks[firstIndex]),
-          secondInk: await clickEntry(inks[secondIndex]),
-          firstExpected: pageBounds(inks[firstIndex]),
-          secondExpected: pageBounds(inks[secondIndex]),
-        };
-      };
+      });
+    };
 
-      return [await runPair(2, 0, 1), await runPair(2, 1, 2), await runPair(3, 0, 1)];
-    }, samplePdfPath);
+    const inkAt = (pageNumber: number, index: number) => {
+      const entry = inks.filter((candidate) => candidate.page === pageNumber)[index];
+      if (!entry) throw new Error(`Missing page ${pageNumber} ink row ${index + 1}; entries=${JSON.stringify(inks)}`);
+      return entry;
+    };
+
+    const pairs = [
+      [inkAt(2, 0), inkAt(2, 1)],
+      [inkAt(2, 1), inkAt(2, 2)],
+      [inkAt(3, 0), inkAt(3, 1)],
+    ] as const;
+
+    const result = [];
+    for (const [first, second] of pairs) {
+      result.push({
+        firstInk: await activateInk(first),
+        secondInk: await activateInk(second),
+        firstExpected: first.expected,
+        secondExpected: second.expected,
+        firstExpectedPersistedAnnotationKey: `${first.page}:${first.sourceId}`,
+        secondExpectedPersistedAnnotationKey: `${second.page}:${second.sourceId}`,
+      });
+    }
 
     for (const pairResult of result) {
       expect(Math.abs(pairResult.firstInk.top - pairResult.firstExpected.top)).toBeLessThan(30);
@@ -172,10 +213,10 @@ describe("native WKWebView PDF smoke", () => {
       expect(pairResult.firstInk.activeTool).toBe("none");
       expect(pairResult.secondInk.activeTool).toBe("none");
       expect(pairResult.firstInk.selectedPersistedAnnotationKey).toBe(
-        pairResult.firstInk.expectedPersistedAnnotationKey,
+        pairResult.firstExpectedPersistedAnnotationKey,
       );
       expect(pairResult.secondInk.selectedPersistedAnnotationKey).toBe(
-        pairResult.secondInk.expectedPersistedAnnotationKey,
+        pairResult.secondExpectedPersistedAnnotationKey,
       );
     }
   });
@@ -385,7 +426,7 @@ describe("native WKWebView PDF smoke", () => {
     );
 
     const state = await app.execute(() => {
-      const bookmarkButton = [...document.querySelectorAll<HTMLButtonElement>(".bookmark-item")].find((button) =>
+      const bookmarkButton = [...document.querySelectorAll<HTMLButtonElement>(".bookmark-title-button")].find((button) =>
         button.textContent?.includes("Native bookmark"),
       );
       bookmarkButton?.click();

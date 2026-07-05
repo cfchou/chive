@@ -98,12 +98,12 @@ test("keeps multiple live highlights independently selectable and colored", asyn
       }
       throw new Error(`Selectable text chunk not found at index ${index}`);
     };
-    const clickHighlightSelection = (pointerId: number) => {
+    const clickHighlight = (pointerId: number) => {
       const button = [...document.querySelectorAll("button")].find(
-        (node) => node.textContent?.trim() === "Highlight Selection",
+        (node) => node.textContent?.trim() === "Highlight",
       );
       if (!(button instanceof HTMLElement)) {
-        throw new Error("Highlight Selection button not found");
+        throw new Error("Highlight button not found");
       }
       button.dispatchEvent(
         new PointerEvent("pointerdown", {
@@ -133,14 +133,14 @@ test("keeps multiple live highlights independently selectable and colored", asyn
 
     await selectTextChunk(0);
     document.querySelector<HTMLElement>("[aria-label=\"Set highlight color to green\"]")?.click();
-    clickHighlightSelection(21);
+    clickHighlight(21);
     await sleep(400);
     window.__pdfSpike!.setTool("none");
     await sleep(200);
 
     await selectTextChunk(1);
     document.querySelector<HTMLElement>("[aria-label=\"Set highlight color to blue\"]")?.click();
-    clickHighlightSelection(22);
+    clickHighlight(22);
     await sleep(400);
     window.__pdfSpike!.setTool("none");
   });
@@ -156,6 +156,189 @@ test("keeps multiple live highlights independently selectable and colored", asyn
 
   await activateNthLiveHighlight(page, 0);
   await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().activeTool)).toBe("highlight");
+});
+
+test("highlighting selected text after ink mode creates only a highlight", async ({ page }) => {
+  const before = await page.evaluate(() => window.__pdfSpike!.annotationSidebarSummary());
+  const beforeHighlights = before.filter((entry: { kind: string }) => entry.kind === "highlight").length;
+  const beforeInk = before.filter((entry: { kind: string }) => entry.kind === "ink").length;
+  await page.evaluate(() => {
+    window.__pdfSpike!.setTool("ink");
+    window.__pdfSpike!.selectFirstText();
+  });
+
+  await page.getByRole("button", { name: "Highlight", exact: true }).click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        ({ previousHighlights, previousInk }) => {
+          const entries = window.__pdfSpike!.annotationSidebarSummary();
+          return {
+            activeTool: window.__pdfSpike!.stats().activeTool,
+            newHighlights:
+              entries.filter((entry: { kind: string }) => entry.kind === "highlight").length - previousHighlights,
+            newInk: entries.filter((entry: { kind: string }) => entry.kind === "ink").length - previousInk,
+          };
+        },
+        { previousHighlights: beforeHighlights, previousInk: beforeInk },
+      ),
+    )
+    .toEqual({ activeTool: "highlight", newHighlights: 1, newInk: 0 });
+});
+
+test("toolbar highlight creates an annotation from mouse-selected text", async ({ page }) => {
+  const before = await page.evaluate(() => window.__pdfSpike!.annotationSidebarSummary());
+  const beforePageOneHighlights = before.filter(
+    (entry: { kind: string; page: number }) => entry.kind === "highlight" && entry.page === 1,
+  ).length;
+  const titleBox = await page.evaluate(() => {
+    const titleSpan = [...document.querySelectorAll<HTMLElement>(".textLayer span")].find(
+      (span) =>
+        span.textContent?.includes("How Modern Browsers Work") &&
+        span.getBoundingClientRect().width > 0,
+    );
+    if (!titleSpan) throw new Error("Could not find selectable title text");
+    const rect = titleSpan.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  });
+
+  await page.mouse.move(titleBox.left + 1, titleBox.top + titleBox.height * 0.55);
+  await page.mouse.down();
+  await page.mouse.move(titleBox.left + titleBox.width, titleBox.top + titleBox.height * 0.55, { steps: 80 });
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe("How Modern Browsers Work");
+  await expect(page.getByRole("button", { name: "Highlight", exact: true })).toHaveCount(1);
+
+  await page.locator(".segmented").getByRole("button", { name: "Highlight", exact: true }).click();
+
+  await expect
+    .poll(() =>
+      page.evaluate((previousPageOneHighlights) => {
+        const entries = window.__pdfSpike!.annotationSidebarSummary();
+        return {
+          activeTool: window.__pdfSpike!.stats().activeTool,
+          newPageOneHighlights:
+            entries.filter((entry: { kind: string; page: number }) => entry.kind === "highlight" && entry.page === 1)
+              .length - previousPageOneHighlights,
+          selectedText: window.getSelection()?.toString() ?? "",
+        };
+      }, beforePageOneHighlights),
+    )
+    .toEqual({ activeTool: "highlight", newPageOneHighlights: 1, selectedText: "" });
+});
+
+test("selected text is only consumed by the highlight tool", async ({ page }) => {
+  const before = await page.evaluate(() => window.__pdfSpike!.annotationSidebarSummary());
+  const beforeHighlights = before.filter((entry: { kind: string }) => entry.kind === "highlight").length;
+  const beforeFreeText = before.filter((entry: { kind: string }) => entry.kind === "freetext").length;
+  const beforeInk = before.filter((entry: { kind: string }) => entry.kind === "ink").length;
+
+  await page.evaluate(() => {
+    window.__pdfSpike!.selectFirstText();
+  });
+  await page.getByRole("button", { name: "Ink", exact: true }).click();
+  await page.waitForTimeout(250);
+
+  await page.evaluate(() => {
+    window.__pdfSpike!.setTool("none");
+    window.__pdfSpike!.selectFirstText();
+  });
+  await page.getByRole("button", { name: "Free text", exact: true }).click();
+  await page.waitForTimeout(250);
+
+  const after = await page.evaluate(() => window.__pdfSpike!.annotationSidebarSummary());
+  expect(after.filter((entry: { kind: string }) => entry.kind === "highlight")).toHaveLength(beforeHighlights);
+  expect(after.filter((entry: { kind: string }) => entry.kind === "freetext")).toHaveLength(beforeFreeText);
+  expect(after.filter((entry: { kind: string }) => entry.kind === "ink")).toHaveLength(beforeInk);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().activeTool)).toBe("text");
+});
+
+test("highlight mode does not create freehand highlights on blank page areas", async ({ page }) => {
+  await page.getByRole("button", { name: "Highlight", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().activeTool)).toBe("highlight");
+
+  const baseline = await page.evaluate(() => ({
+    unsavedHighlights: window
+      .__pdfSpike!.editorSummary()
+      .filter(
+        (editor: { editorType: string; annotationElementId: string | null }) =>
+          editor.editorType === "highlight" && !editor.annotationElementId,
+      ).length,
+    annotationStorageSize: window.__pdfSpike!.stats().annotationStorageSize,
+  }));
+  const blankPoint = await page.evaluate(() => {
+    const textLayer = document.querySelector<HTMLElement>(".page[data-page-number='1'] .textLayer");
+    if (!textLayer) throw new Error("Page 1 text layer missing");
+    const rect = textLayer.getBoundingClientRect();
+    for (let y = rect.top + 40; y < rect.bottom - 40; y += 24) {
+      for (let x = rect.left + 40; x < rect.right - 40; x += 24) {
+        if (document.elementFromPoint(x, y) === textLayer) {
+          return { x, y };
+        }
+      }
+    }
+    throw new Error("Could not find blank text-layer point");
+  });
+
+  await page.mouse.move(blankPoint.x, blankPoint.y);
+  await page.mouse.down();
+  await page.mouse.move(blankPoint.x + 140, blankPoint.y + 20, { steps: 20 });
+  await page.mouse.up();
+  await page.waitForTimeout(500);
+
+  const after = await page.evaluate(() => ({
+    unsavedHighlights: window
+      .__pdfSpike!.editorSummary()
+      .filter(
+        (editor: { editorType: string; annotationElementId: string | null }) =>
+          editor.editorType === "highlight" && !editor.annotationElementId,
+      ).length,
+    annotationStorageSize: window.__pdfSpike!.stats().annotationStorageSize,
+  }));
+  expect(after).toEqual(baseline);
+});
+
+test("highlight toggles off with one click after creating a text highlight", async ({ page }) => {
+  const highlightButton = page.locator(".segmented").getByRole("button", { name: "Highlight", exact: true });
+  const before = await page.evaluate(() => window.__pdfSpike!.annotationSidebarSummary());
+  const beforePageOneHighlights = before.filter(
+    (entry: { kind: string; page: number }) => entry.kind === "highlight" && entry.page === 1,
+  ).length;
+
+  await highlightButton.click();
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().activeTool)).toBe("highlight");
+
+  const titleBox = await page.evaluate(() => {
+    const titleSpan = [...document.querySelectorAll<HTMLElement>(".textLayer span")].find(
+      (span) =>
+        span.textContent?.includes("How Modern Browsers Work") &&
+        span.getBoundingClientRect().width > 0,
+    );
+    if (!titleSpan) throw new Error("Could not find selectable title text");
+    const rect = titleSpan.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  });
+
+  await page.mouse.move(titleBox.left + 1, titleBox.top + titleBox.height * 0.55);
+  await page.mouse.down();
+  await page.mouse.move(titleBox.left + titleBox.width, titleBox.top + titleBox.height * 0.55, { steps: 80 });
+  await page.mouse.up();
+
+  await expect
+    .poll(() =>
+      page.evaluate((previousPageOneHighlights) => {
+        const entries = window.__pdfSpike!.annotationSidebarSummary();
+        return entries.filter(
+          (entry: { kind: string; page: number }) => entry.kind === "highlight" && entry.page === 1,
+        ).length - previousPageOneHighlights;
+      }, beforePageOneHighlights),
+    )
+    .toBe(1);
+
+  await highlightButton.click();
+
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().activeTool)).toBe("none");
 });
 
 test("creates, recolors, and deletes through highlight tool mode", async ({ page }) => {
@@ -261,6 +444,82 @@ test("creates, edits, moves, saves, and deletes free text", async ({ page }) => 
 
   annotations = await pageAnnotations(page);
   expect(annotations.filter((entry) => entry.subtype === "FreeText")).toHaveLength(baseline);
+});
+
+test("free text editing uses Enter to finish and Shift+Enter for a new line", async ({ page }) => {
+  await createFreeText(page, "Keyboard free text");
+  await activateFirstAnnotationByKind(page, "freetext");
+  await page.evaluate(() => {
+    const editor = document.querySelector<HTMLElement>(".freeTextEditor");
+    if (!editor) throw new Error("Free text editor root missing");
+    editor.focus();
+  });
+
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const editor = document.querySelector<HTMLElement>(".freeTextEditor .internal");
+        return {
+          activeInsideEditor: Boolean(editor?.contains(document.activeElement)),
+          isEditable: editor?.isContentEditable ?? false,
+        };
+      }),
+    )
+    .toEqual({ activeInsideEditor: true, isEditable: true });
+
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+  await page.keyboard.type("Line one");
+  await page.keyboard.press("Shift+Enter");
+  await page.keyboard.type("Line two");
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.querySelector<HTMLElement>(".freeTextEditor .internal")?.innerText ?? ""),
+    )
+    .toContain("Line one\nLine two");
+
+  await page.keyboard.press("Enter");
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const editor = document.querySelector<HTMLElement>(".freeTextEditor .internal");
+        return {
+          activeInsideEditor: Boolean(editor?.contains(document.activeElement)),
+          isEditable: editor?.isContentEditable ?? false,
+          text: editor?.innerText ?? "",
+        };
+      }),
+    )
+    .toEqual({ activeInsideEditor: false, isEditable: false, text: "Line one\nLine two" });
+});
+
+test("preselected free-text color applies to newly created text", async ({ page }) => {
+  await page.getByRole("button", { name: "Set free-text color to green" }).click();
+  await page.getByRole("button", { name: "Free text", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().activeTool)).toBe("text");
+
+  const point = await page.evaluate(() => {
+    const layer = document.querySelector<HTMLElement>(".page[data-page-number='1'] .annotationEditorLayer");
+    if (!layer) throw new Error("Annotation editor layer missing");
+    const rect = layer.getBoundingClientRect();
+    return { x: Math.round(rect.left + 190), y: Math.round(rect.top + 260) };
+  });
+  await page.mouse.click(point.x, point.y);
+  await page.keyboard.type("Green text");
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const editor = document.querySelector<HTMLElement>(".freeTextEditor .internal");
+        if (!editor) return null;
+        return {
+          color: getComputedStyle(editor).color,
+          text: editor.innerText.trim(),
+        };
+      }),
+    )
+    .toEqual({ color: "rgb(79, 122, 41)", text: "Green text" });
 });
 
 test("creates, moves, recolors, and deletes ink annotation", async ({ page }) => {

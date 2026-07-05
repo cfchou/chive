@@ -146,7 +146,6 @@
     editSelectedFreeText: (text: string) => Promise<boolean>;
     deleteSelected: () => boolean;
     debugSavedBytes: (path: string) => number[];
-    highlightSelection: () => void;
     stats: () => Record<string, unknown>;
     setTool: (tool: EditorTool) => void;
   };
@@ -285,7 +284,11 @@
       );
     };
     document.addEventListener("selectionchange", rememberSelection);
+    document.addEventListener("pointerdown", handleDocumentPointerDown, { capture: true });
+    document.addEventListener("keydown", handleAnnotationEscapeKey, { capture: true });
     document.addEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
+    document.addEventListener("keydown", handleFreeTextEditorKeydown, { capture: true });
+    containerEl?.addEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
     containerEl?.addEventListener("pointerdown", handlePdfPointerDown, { capture: true });
     let activeOutlineFrame = 0;
     const handlePdfScroll = () => {
@@ -328,7 +331,6 @@
       editSelectedFreeText,
       deleteSelected: deleteSelectedAnnotation,
       debugSavedBytes,
-      highlightSelection: () => highlightSelection(),
       stats: getDebugStats,
       setTool,
     };
@@ -338,12 +340,67 @@
       containerEl?.removeEventListener("scroll", handlePdfScroll);
       containerEl?.removeEventListener("click", handleRailClick);
       containerEl?.removeEventListener("pointerdown", handlePdfPointerDown, { capture: true });
+      containerEl?.removeEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
       if (activeOutlineFrame) cancelAnimationFrame(activeOutlineFrame);
+      document.removeEventListener("keydown", handleFreeTextEditorKeydown, { capture: true });
       document.removeEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
+      document.removeEventListener("keydown", handleAnnotationEscapeKey, { capture: true });
+      document.removeEventListener("pointerdown", handleDocumentPointerDown, { capture: true });
       document.removeEventListener("selectionchange", rememberSelection);
       delete debugWindow.__pdfSpike;
     };
   });
+
+  function clearAnnotationFocusSelection(resetTool = false) {
+    if (resetTool && activeTool !== "none") {
+      setTool("none");
+    }
+    annotationFocusBox = null;
+    selectedAnnotationEntryId = null;
+    selectedPersistedAnnotationKey = null;
+    selectedAnnotationKind = null;
+    selectedAnnotationColor = null;
+    hasSelectedHighlight = false;
+    selectedHighlightColor = null;
+    unselectAllIgnoringPdfjsSignalBug();
+  }
+
+  function blurFocusedAnnotationRow() {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.classList.contains("annotation-item")) {
+      active.blur();
+    }
+  }
+
+  function handleAnnotationEscapeKey(event: KeyboardEvent) {
+    if (event.repeat || event.key !== "Escape" || isEditableKeyboardTarget(event.target)) {
+      return;
+    }
+    if (!annotationFocusBox && !selectedAnnotationEntryId && !selectedPersistedAnnotationKey && !selectedAnnotationKind) {
+      return;
+    }
+    clearAnnotationFocusSelection(true);
+    blurFocusedAnnotationRow();
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  function handleDocumentPointerDown(event: PointerEvent) {
+    const target = event.target;
+    if (
+      !(target instanceof Element) ||
+      (!annotationFocusBox && !selectedAnnotationEntryId && !selectedPersistedAnnotationKey && !selectedAnnotationKind)
+    ) {
+      return;
+    }
+    if (!target.closest(".viewer-shell")) {
+      return;
+    }
+    if (target.closest(".highlightAnnotation, .freeTextAnnotation, .inkAnnotation, .highlightEditor, .freeTextEditor, .inkEditor")) {
+      return;
+    }
+    clearAnnotationFocusSelection(true);
+  }
 
   function handleAnnotationDeleteKey(event: KeyboardEvent) {
     if (event.repeat || (event.key !== "Delete" && event.key !== "Backspace")) {
@@ -362,6 +419,38 @@
     if (!(target instanceof HTMLElement)) return false;
     if (target.isContentEditable) return true;
     return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+  }
+
+  function handleFreeTextEditorKeydown(event: KeyboardEvent) {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    const textElement = target.closest<HTMLElement>(
+      ".freeTextEditor .internal, .freeTextEditor [contenteditable='true']",
+    );
+    if (!textElement?.isContentEditable) {
+      return;
+    }
+    const editorElement = textElement.closest<HTMLElement>(".freeTextEditor");
+    if (!editorElement?.id) {
+      return;
+    }
+    const editor = findFreeTextEditorById(editorElement.id);
+    if (!editor) {
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    editor.commit?.();
+    isDirty = true;
+    syncSelectedEditorState();
+    void refreshAnnotationSidebar();
+    queueEditorStateRefresh(150, 500);
+    status = "Edited selected free text. Save to persist it into the PDF.";
   }
 
   async function openPdf() {
@@ -433,7 +522,7 @@
       eventBus,
       linkService,
       annotationEditorMode: editorModes.none,
-      enableHighlightFloatingButton: true,
+      enableHighlightFloatingButton: false,
       annotationEditorHighlightColors:
         "yellow=#fff35c,green=#7cf2aa,blue=#8ecbff,pink=#ffb6de",
     } as ConstructorParameters<typeof PDFViewer>[0] & { enableHighlightFloatingButton: boolean });
@@ -1500,14 +1589,14 @@
     return Boolean(entry.url || (entry.dest && entry.pageNumber));
   }
 
-  async function createBookmarkForCurrentPage() {
+  async function createBookmarkForCurrentPage(editAfterCreate = false) {
     if (!pdfDocument || !pdfViewer) {
       status = "Open a PDF before creating bookmarks.";
       return;
     }
     const pageNumber = pdfViewer.currentPageNumber || 1;
     const pageTarget = await bookmarkPageTarget(pageNumber);
-    await createBookmarkFromTarget(pageTarget);
+    await createBookmarkFromTarget(pageTarget, editAfterCreate);
   }
 
   async function handlePdfContainerClick(event: MouseEvent) {
@@ -1582,7 +1671,10 @@
     await createBookmarkFromTarget(pageTarget);
   }
 
-  async function createBookmarkFromTarget(pageTarget: Awaited<ReturnType<typeof bookmarkPageTarget>>) {
+  async function createBookmarkFromTarget(
+    pageTarget: Awaited<ReturnType<typeof bookmarkPageTarget>>,
+    editAfterCreate = false,
+  ) {
     if (!pageTarget) {
       status = "Could not resolve current page for bookmark.";
       return;
@@ -1602,7 +1694,9 @@
     bookmarkEntries = sortBookmarkEntries([...bookmarkEntries, entry]);
     bookmarkStatus = bookmarkCountLabel(bookmarkEntries.length);
     navigationTab = "bookmarks";
-    editingBookmarkId = null;
+    editingBookmarkId = editAfterCreate ? entry.id : null;
+    bookmarkColorMenuId = null;
+    hoveredBookmarkId = null;
     isDirty = true;
     status = `Added bookmark ${title}.`;
   }
@@ -1956,7 +2050,7 @@
   }
 
   async function activatePdfAnnotationEntry(entry: AnnotationEntry) {
-    annotationEditorUIManager?.unselectAll();
+    unselectAllIgnoringPdfjsSignalBug();
     selectedAnnotationKind = null;
     selectedAnnotationColor = null;
     hasSelectedHighlight = false;
@@ -1995,6 +2089,9 @@
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
     status = `Could not find ${entry.label.toLowerCase()} on page ${entry.page}.`;
+    if (entry.kind === "ink" && entry.bounds && locatePdfAnnotationBounds(entry)) {
+      return true;
+    }
     return false;
   }
 
@@ -2002,7 +2099,29 @@
     if (activeTool !== "none") {
       setTool("none");
     }
-    annotationEditorUIManager?.unselectAll();
+    unselectAllIgnoringPdfjsSignalBug();
+    selectedAnnotationEntryId = entry.id;
+    selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
+    selectedAnnotationKind = null;
+    selectedAnnotationColor = null;
+    hasSelectedHighlight = false;
+    selectedHighlightColor = null;
+    status = `Located ${entry.label.toLowerCase()} on page ${entry.page}.`;
+    return true;
+  }
+
+  function locatePdfAnnotationBounds(entry: AnnotationEntry) {
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
+    if (!pageElement || !containerEl || !entry.bounds) return false;
+    const left = pageElement.offsetLeft + entry.bounds.left * pageElement.offsetWidth - 3;
+    const top = pageElement.offsetTop + entry.bounds.top * pageElement.offsetHeight - 3;
+    const width = Math.max(6, (entry.bounds.right - entry.bounds.left) * pageElement.offsetWidth + 6);
+    const height = Math.max(6, (entry.bounds.bottom - entry.bounds.top) * pageElement.offsetHeight + 6);
+
+    containerEl.scrollLeft = Math.max(0, left + width / 2 - containerEl.clientWidth / 2);
+    containerEl.scrollTop = Math.max(0, top + height / 2 - containerEl.clientHeight / 2);
+    annotationFocusBox = { left, top, width, height };
+    unselectAllIgnoringPdfjsSignalBug();
     selectedAnnotationEntryId = entry.id;
     selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
     selectedAnnotationKind = null;
@@ -2115,6 +2234,18 @@
   function selectEditorIgnoringPdfjsSignalBug(manager: AnnotationEditorUIManager, editor: AnnotationEditor) {
     try {
       manager.setSelected(editor);
+    } catch (error) {
+      const message = formatError(error);
+      if (!message.includes("AbortSignal") || !message.includes("addEventListener")) {
+        throw error;
+      }
+    }
+  }
+
+  function unselectAllIgnoringPdfjsSignalBug(manager = annotationEditorUIManager) {
+    if (!manager) return;
+    try {
+      manager.unselectAll();
     } catch (error) {
       const message = formatError(error);
       if (!message.includes("AbortSignal") || !message.includes("addEventListener")) {
@@ -2301,7 +2432,7 @@
         highlightColors[defaultHighlightColor],
       );
     }
-    if (tool === "text" && annotationEditorUIManager && previousTool === "text") {
+    if (tool === "text" && annotationEditorUIManager) {
       annotationEditorUIManager.updateParams(
         pdfjsLib.AnnotationEditorParamsType.FREETEXT_COLOR,
         freeTextColors[defaultFreeTextColor],
@@ -2372,7 +2503,7 @@
           status = "Selected highlight. Change color or delete it, then save.";
           return true;
         }
-        annotationEditorUIManager.unselectAll();
+        unselectAllIgnoringPdfjsSignalBug();
       }
       await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 100));
     }
@@ -2521,7 +2652,7 @@
           status = "Selected free text. Press Enter to edit text, change color, or delete it.";
           return true;
         }
-        annotationEditorUIManager.unselectAll();
+        unselectAllIgnoringPdfjsSignalBug();
       }
       await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 100));
     }
@@ -2610,7 +2741,7 @@
           status = "Selected ink. Change color or delete it, then save.";
           return true;
         }
-        annotationEditorUIManager.unselectAll();
+        unselectAllIgnoringPdfjsSignalBug();
       }
       await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 100));
     }
@@ -2648,9 +2779,31 @@
     return findEditorElementIdAtPoint(".inkEditor", clientX, clientY);
   }
 
+  function handleHighlightTextLayerPointerDown(event: PointerEvent) {
+    const target = event.target;
+    if (!(target instanceof Element) || activeTool !== "highlight") {
+      return;
+    }
+    const textLayer = target.closest<HTMLElement>(".textLayer");
+    if (!textLayer || !textLayer.contains(target)) {
+      return;
+    }
+    const isFreeHighlightTarget =
+      target === textLayer ||
+      target.getAttribute("role") === "img" ||
+      target.classList.contains("endOfContent") ||
+      target.classList.contains("textLayerImages") ||
+      target.classList.contains("textLayerImagePlaceholder");
+    if (!isFreeHighlightTarget) {
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
   function handlePdfPointerDown(event: PointerEvent) {
     const target = event.target;
-    if (!(target instanceof Element) || activeTool !== "none") {
+    if (!(target instanceof Element)) {
       return;
     }
     const savedAnnotation = target.closest(".highlightAnnotation");
@@ -2661,6 +2814,22 @@
       target.closest<HTMLElement>(".freeTextEditor")?.id ?? findFreeTextEditorIdAtPoint(event.clientX, event.clientY);
     const inkEditorId =
       target.closest<HTMLElement>(".inkEditor")?.id ?? findInkEditorIdAtPoint(event.clientX, event.clientY);
+    const clickedAnnotationOrEditor = Boolean(
+      disabledEditorId ||
+        savedAnnotation ||
+        savedFreeTextAnnotation ||
+        savedInkAnnotation ||
+        freeTextEditorId ||
+        inkEditorId,
+    );
+    if (activeTool !== "none" && !clickedAnnotationOrEditor) {
+      if (annotationFocusBox || selectedAnnotationEntryId || selectedPersistedAnnotationKey || selectedAnnotationKind) {
+        clearAnnotationFocusSelection(true);
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
     if (
       !disabledEditorId &&
       !savedAnnotation &&
@@ -2669,6 +2838,7 @@
       !freeTextEditorId &&
       !inkEditorId
     ) {
+      clearAnnotationFocusSelection();
       return;
     }
     event.preventDefault();
@@ -2746,18 +2916,18 @@
         ? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange())
         : rememberedSelectionRanges.map((range) => range.cloneRange());
     if (!selectionText || ranges.length === 0) {
-      status = "Select text in the PDF first, then press Highlight Selection.";
+      status = "Select text in the PDF first, then press Highlight.";
       return false;
     }
-    const before = countHighlightEditorsInManager();
-    const previousHighlightEditorIds = new Set(highlightEditorIds());
+    let before = countHighlightEditorsInManager();
+    let previousHighlightEditorIds = new Set(highlightEditorIds());
     const switchedIntoHighlightMode = activeTool !== "highlight";
     const finishCreatedHighlight = () => {
       cacheNewHighlightDetails(previousHighlightEditorIds, selectionText);
       document.getSelection()?.removeAllRanges();
       if (resetModeToNone) {
         setTool("none");
-        annotationEditorUIManager?.unselectAll();
+        unselectAllIgnoringPdfjsSignalBug();
         syncSelectedEditorState();
       }
       rememberedSelectionText = "";
@@ -2771,11 +2941,13 @@
     if (switchedIntoHighlightMode) {
       setTool("highlight");
       await new Promise((resolve) => setTimeout(resolve, 150));
-      if (countHighlightEditorsInManager() > before) {
+      if (hasNewUnsavedHighlightEditor(previousHighlightEditorIds)) {
         return finishCreatedHighlight();
       }
+      before = countHighlightEditorsInManager();
+      previousHighlightEditorIds = new Set(highlightEditorIds());
     }
-    uiManager.unselectAll();
+    unselectAllIgnoringPdfjsSignalBug(uiManager);
     syncSelectedEditorState();
     uiManager.updateParams(
       pdfjsLib.AnnotationEditorParamsType.HIGHLIGHT_COLOR,
@@ -2826,21 +2998,63 @@
   }
 
   function cacheNewHighlightDetails(previousIds: Set<string>, detail: string) {
-    for (const id of highlightEditorIds()) {
-      if (!previousIds.has(id)) {
-        annotationDetailCache.set(`live:${id}`, detail.trim());
+    if (!annotationEditorUIManager || !pdfDocument) return;
+    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+        if (
+          isHighlightEditor(editor) &&
+          !editor.deleted &&
+          !previousIds.has(editor.id) &&
+          !persistedSourceIdForEditor(editor)
+        ) {
+          annotationDetailCache.set(`live:${editor.id}`, detail.trim());
+        }
       }
     }
   }
 
-  function highlightSelection(event?: PointerEvent) {
+  function hasNewUnsavedHighlightEditor(previousIds: Set<string>) {
+    if (!annotationEditorUIManager || !pdfDocument) return false;
+    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+        if (
+          isHighlightEditor(editor) &&
+          !editor.deleted &&
+          !previousIds.has(editor.id) &&
+          !persistedSourceIdForEditor(editor)
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function hasTextSelectionForHighlight() {
+    const selectionText = document.getSelection()?.toString().trim() ?? "";
+    return Boolean(selectionText || rememberedSelectionText);
+  }
+
+  function clearRememberedSelection() {
+    rememberedSelectionText = "";
+    rememberedSelectionRanges = [];
+  }
+
+  function toggleAnnotationTool(tool: Exclude<EditorTool, "none">, event?: PointerEvent) {
     event?.preventDefault();
     event?.stopPropagation();
-    void createHighlightFromSelection({
-      createdStatus: "Created text highlight. Save to persist it into the PDF.",
-      methodOfCreation: "main_toolbar",
-      resetModeToNone: true,
-    });
+    if (activeTool === tool) {
+      setTool("none");
+      clearRememberedSelection();
+      unselectAllIgnoringPdfjsSignalBug();
+      syncSelectedEditorState();
+      return;
+    }
+    if (tool === "highlight" && hasTextSelectionForHighlight()) {
+      void createSelectionHighlightInToolMode();
+      return;
+    }
+    setTool(tool);
   }
 
   async function createSelectionHighlightInToolMode() {
@@ -3868,7 +4082,7 @@
   }
 
   function teardownViewer() {
-    annotationEditorUIManager?.unselectAll();
+    unselectAllIgnoringPdfjsSignalBug();
     pdfViewer?.setDocument(null as never);
     (pdfDocument as { destroy?: () => void } | null)?.destroy?.();
     pdfViewer = null;
@@ -3940,17 +4154,11 @@
 
     <div class="group">
       <span class="label">Annotate</span>
-      <button
-        onpointerdown={highlightSelection}
-        disabled={!pdfDocument}
-      >
-        Highlight Selection
-      </button>
       <div class="segmented">
-        {#each (["none", "highlight", "text", "ink"] as EditorTool[]) as tool}
+        {#each (["highlight", "text", "ink"] as Exclude<EditorTool, "none">[]) as tool}
           <button
             class:active={activeTool === tool}
-            onclick={() => setTool(tool)}
+            onpointerdown={(event) => toggleAnnotationTool(tool, event)}
             disabled={!pdfDocument}
           >
             {toolLabel(tool)}
@@ -4130,7 +4338,19 @@
       <div class="nav-content" role="tabpanel" aria-label="Bookmarks">
         <div class="nav-heading">
           <span class="label">Bookmarks</span>
-          <span>{bookmarkStatus}</span>
+          <span class="nav-heading-actions">
+            <button
+              type="button"
+              class="nav-heading-icon"
+              aria-label="Add bookmark"
+              title="Add bookmark"
+              disabled={!pdfDocument}
+              onclick={() => void createBookmarkForCurrentPage(true)}
+            >
+              +
+            </button>
+            <span class="nav-heading-count">{bookmarkStatus}</span>
+          </span>
         </div>
         {#if bookmarkEntries.length > 0}
           <ul class="bookmark-list">
@@ -4422,10 +4642,6 @@
     background: #eef1f4;
   }
 
-  :global(body > div) {
-    height: 100%;
-  }
-
   :global(.popupAnnotation),
   :global(.popup) {
     display: none !important;
@@ -4433,6 +4649,20 @@
 
   :global(.annotationEditorLayer.inkEditing) {
     cursor: var(--pdf-spike-ink-cursor) !important;
+  }
+
+  :global(.textLayer.highlighting) {
+    caret-color: auto !important;
+    cursor: auto !important;
+    touch-action: auto !important;
+  }
+
+  :global(.textLayer.highlighting :is(span, br)) {
+    cursor: text !important;
+  }
+
+  :global(.textLayer.highlighting span[role="img"]) {
+    cursor: default !important;
   }
 
   .app {

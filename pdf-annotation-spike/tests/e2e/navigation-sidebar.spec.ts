@@ -488,9 +488,10 @@ test("bookmark sidebar creates a current-page bookmark with a page marker", asyn
   await expect(bookmarksPanel.locator(".nav-heading")).toContainText("Bookmarks");
   await expect(bookmarksPanel.locator(".nav-heading")).toContainText("0 bookmarks");
   await expectNavHeadingCountInset(page, "Bookmarks", 20);
-  await expect(page.getByRole("button", { name: "Add bookmark" })).toHaveCount(0);
-  await addCurrentPageBookmark(page);
-  await expect(page.getByRole("textbox", { name: "Bookmark title" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add bookmark" })).toBeVisible();
+  await page.getByRole("button", { name: "Add bookmark" }).click();
+  await expect(page.getByRole("textbox", { name: "Bookmark title" })).toBeVisible();
+  await page.getByRole("textbox", { name: "Bookmark title" }).press("Enter");
 
   await expect(bookmarksPanel.locator(".nav-heading")).toContainText("1 bookmark");
   await expectNavHeadingCountInset(page, "Bookmarks", 20);
@@ -1196,6 +1197,68 @@ test("annotation sidebar keeps useful highlight snippets after load and click", 
   await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().annotationFocusBox)).not.toBeNull();
 });
 
+test("annotation sidebar locate focus clears on blank PDF click and Escape", async ({ page }) => {
+  await loadFixture(page);
+
+  const activateAndExpectFocus = async () => {
+    const activated = await page.evaluate(() => window.__pdfSpike!.activateFirstAnnotationItem());
+    expect(activated).toBe(true);
+    await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().annotationFocusBox)).not.toBeNull();
+  };
+
+  await activateAndExpectFocus();
+  const blankPoint = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    if (!container) throw new Error("Missing PDF container");
+    (window as Window & { __pdfSpikePointerSeen?: boolean }).__pdfSpikePointerSeen = false;
+    container.addEventListener(
+      "pointerdown",
+      () => {
+        (window as Window & { __pdfSpikePointerSeen?: boolean }).__pdfSpikePointerSeen = true;
+      },
+      { capture: true, once: true },
+    );
+    const containerRect = container.getBoundingClientRect();
+    const xCandidates = [containerRect.left + 20, containerRect.left + 80, containerRect.left + 160];
+    const yCandidates = [containerRect.top + 20, containerRect.top + 80, containerRect.top + 160, containerRect.top + 240];
+    for (const x of xCandidates) {
+      for (const y of yCandidates) {
+        if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) continue;
+        const hit = document.elementFromPoint(x, y);
+        if (hit?.closest(".pdf-container") && !hit.closest(".highlightAnnotation, .freeTextAnnotation, .inkAnnotation")) {
+          return { x, y };
+        }
+      }
+    }
+    throw new Error("Missing clickable blank PDF container point");
+  });
+  await page.mouse.click(blankPoint.x, blankPoint.y);
+  await expect.poll(() => page.evaluate(() => (window as Window & { __pdfSpikePointerSeen?: boolean }).__pdfSpikePointerSeen)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().annotationFocusBox)).toBeNull();
+
+  await page.getByRole("tab", { name: "Annotations" }).click();
+  await page.locator(".annotation-item").first().click();
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().annotationFocusBox)).not.toBeNull();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const active = document.activeElement;
+        return active instanceof HTMLElement && active.classList.contains("annotation-item");
+      }),
+    )
+    .toBe(true);
+  await page.keyboard.press("Escape");
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().annotationFocusBox)).toBeNull();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const active = document.activeElement;
+        return active instanceof HTMLElement && active.classList.contains("annotation-item");
+      }),
+    )
+    .toBe(false);
+});
+
 test("annotation sidebar snippets survive repeated fixture loads", async ({ page }) => {
   await loadFixture(page);
   await expectSidebarHasUsefulHighlight(page);
@@ -1344,12 +1407,14 @@ test("annotation sidebar stays synced across load, click, delete, edit, and crea
         throw new Error(`Annotation page headers mismatch; expected=${JSON.stringify(expected)} actual=${JSON.stringify(headers)}`);
       }
     };
-    const textInsideFocusBox = () => {
+    const textInsideFocusBox = (pageNumber: number) => {
       const box = document.querySelector(".annotation-focus-box");
       if (!(box instanceof HTMLElement)) return "";
       const boxRect = box.getBoundingClientRect();
       const chunks: string[] = [];
-      for (const pdfPage of document.querySelectorAll(".page")) {
+      const pdfPage = document.querySelector(`.page[data-page-number="${pageNumber}"]`);
+      if (!(pdfPage instanceof HTMLElement)) return "";
+      {
         const walker = document.createTreeWalker(pdfPage.querySelector(".textLayer") ?? pdfPage, NodeFilter.SHOW_TEXT);
         let node;
         while ((node = walker.nextNode())) {
@@ -1397,7 +1462,7 @@ test("annotation sidebar stays synced across load, click, delete, edit, and crea
         let focusText = "";
         for (let attempt = 0; attempt < 20; attempt += 1) {
           await sleep(150);
-          focusText = textInsideFocusBox();
+          focusText = textInsideFocusBox(entry.page);
           const matchingTokens = expectedTokens.filter((token) => focusText.includes(token));
           if (matchingTokens.length >= Math.min(2, expectedTokens.length)) {
             break;
