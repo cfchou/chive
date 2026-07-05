@@ -39,6 +39,7 @@
     rect?: unknown;
     quadPoints?: unknown;
     subtype?: string;
+    it?: string | null;
     id?: string;
   };
   type OutlineEntry = {
@@ -73,6 +74,7 @@
     label: string;
     detail: string;
     color: string | number[] | null;
+    intent?: string | null;
     bounds: RectLike | null;
     targetIndex: number;
     sortTop: number;
@@ -644,6 +646,7 @@
           label: annotationLabel(kind),
           detail: cachedAnnotationDetail(entryId, extractedDetail),
           color: (annotation.color as number[] | null) ?? null,
+          intent: typeof annotation.it === "string" ? annotation.it : null,
           bounds,
           targetIndex,
           sortTop: position.top,
@@ -797,6 +800,34 @@
     const pageNumber = Number(key.slice(0, separator));
     const sourceId = key.slice(separator + 1);
     return Number.isInteger(pageNumber) && pageNumber > 0 && sourceId ? { pageNumber, sourceId } : null;
+  }
+
+  function isInkHighlightEntry(entry: AnnotationEntry) {
+    return entry.kind === "ink" && entry.intent === "InkHighlight";
+  }
+
+  function persistedAnnotationEntry(pageNumber: number, sourceId: string) {
+    return annotationEntries.find(
+      (entry) => entry.source === "pdf" && entry.page === pageNumber && entry.sourceId === sourceId,
+    );
+  }
+
+  function persistedAnnotationEntryForElement(element: Element | null | undefined) {
+    if (!(element instanceof HTMLElement)) return null;
+    const sourceId = sourceIdFromPdfAnnotationElementId(element.id);
+    const pageNumber = pageNumberForAnnotationElement(element);
+    return sourceId && pageNumber ? persistedAnnotationEntry(pageNumber, sourceId) : null;
+  }
+
+  function persistedAnnotationEntryForEditor(editor: AnnotationEditor | null | undefined) {
+    if (!editor) return null;
+    const sourceId = persistedSourceIdForEditor(editor);
+    const pageIndex = pageIndexForEditor(editor);
+    return sourceId && pageIndex !== null ? persistedAnnotationEntry(pageIndex + 1, sourceId) : null;
+  }
+
+  function persistedAnnotationEntryForEditorId(editorId: string) {
+    return persistedAnnotationEntryForEditor(findEditorById(editorId, () => true));
   }
 
   function pageNumberForAnnotationElement(element: Element) {
@@ -2057,6 +2088,9 @@
     selectedHighlightColor = null;
     selectedAnnotationEntryId = entry.id;
     selectedPersistedAnnotationKey = null;
+    if (isInkHighlightEntry(entry)) {
+      return locatePdfAnnotationBounds(entry) || locatePdfAnnotationEntry(entry);
+    }
     for (let attempt = 0; attempt < 12; attempt += 1) {
       if (entry.kind === "ink" && activeTool !== "none") {
         const exactElement = document.getElementById(pdfAnnotationElementId(entry.sourceId));
@@ -2096,10 +2130,7 @@
   }
 
   function locatePdfAnnotationEntry(entry: AnnotationEntry) {
-    if (activeTool !== "none") {
-      setTool("none");
-    }
-    unselectAllIgnoringPdfjsSignalBug();
+    clearLocateOnlyEditorSelection();
     selectedAnnotationEntryId = entry.id;
     selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
     selectedAnnotationKind = null;
@@ -2107,12 +2138,14 @@
     hasSelectedHighlight = false;
     selectedHighlightColor = null;
     status = `Located ${entry.label.toLowerCase()} on page ${entry.page}.`;
+    queueLocateOnlyEditorSelectionClear();
     return true;
   }
 
   function locatePdfAnnotationBounds(entry: AnnotationEntry) {
     const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
     if (!pageElement || !containerEl || !entry.bounds) return false;
+    clearLocateOnlyEditorSelection();
     const left = pageElement.offsetLeft + entry.bounds.left * pageElement.offsetWidth - 3;
     const top = pageElement.offsetTop + entry.bounds.top * pageElement.offsetHeight - 3;
     const width = Math.max(6, (entry.bounds.right - entry.bounds.left) * pageElement.offsetWidth + 6);
@@ -2129,7 +2162,31 @@
     hasSelectedHighlight = false;
     selectedHighlightColor = null;
     status = `Located ${entry.label.toLowerCase()} on page ${entry.page}.`;
+    queueLocateOnlyEditorSelectionClear();
     return true;
+  }
+
+  function clearLocateOnlyEditorSelection() {
+    if (activeTool !== "none") {
+      setTool("none");
+    }
+    unselectAllIgnoringPdfjsSignalBug();
+    document.querySelectorAll<HTMLElement>(".editToolbar:not(.hidden)").forEach((toolbar) => {
+      toolbar.classList.add("hidden");
+    });
+    document.querySelectorAll<HTMLElement>(".selectedEditor").forEach((editor) => {
+      editor.classList.remove("selectedEditor");
+    });
+  }
+
+  function queueLocateOnlyEditorSelectionClear() {
+    for (const delay of [0, 50, 150]) {
+      setTimeout(() => {
+        if (!selectedAnnotationKind && annotationFocusBox) {
+          clearLocateOnlyEditorSelection();
+        }
+      }, delay);
+    }
   }
 
   async function activatePersistedEditorEntry(entry: AnnotationEntry) {
@@ -2545,7 +2602,7 @@
     return null;
   }
 
-  async function activateExistingHighlightEditor(editorId: string) {
+  async function activateExistingHighlightEditor(editorId: string, options: { focusEditor?: boolean } = {}) {
     if (!annotationEditorUIManager || !pdfViewer) {
       status = "Highlight unavailable: PDF.js annotation manager not ready yet.";
       return false;
@@ -2563,7 +2620,9 @@
       status = "Could not activate clicked highlight for editing.";
       return false;
     }
-    await focusEditorById(editor.id);
+    if (options.focusEditor !== false) {
+      await focusEditorById(editor.id);
+    }
     annotationEditorUIManager.setSelected(editor);
     selectedAnnotationEntryId = `live:${editor.id}`;
     syncSelectedEditorState();
@@ -2571,7 +2630,7 @@
     return true;
   }
 
-  async function activateExistingFreeTextEditor(editorId: string) {
+  async function activateExistingFreeTextEditor(editorId: string, options: { focusEditor?: boolean } = {}) {
     if (!annotationEditorUIManager || !pdfViewer) {
       status = "Free text unavailable: PDF.js annotation manager not ready yet.";
       return false;
@@ -2589,7 +2648,9 @@
       status = "Could not activate clicked free text for editing.";
       return false;
     }
-    await focusEditorById(editor.id);
+    if (options.focusEditor !== false) {
+      await focusEditorById(editor.id);
+    }
     annotationEditorUIManager.setSelected(editor);
     selectedAnnotationEntryId = `live:${editor.id}`;
     syncSelectedEditorState();
@@ -2660,7 +2721,7 @@
     return false;
   }
 
-  async function activateExistingInkEditor(editorId: string) {
+  async function activateExistingInkEditor(editorId: string, options: { focusEditor?: boolean } = {}) {
     if (!annotationEditorUIManager || !pdfViewer) {
       status = "Ink unavailable: PDF.js annotation manager not ready yet.";
       return false;
@@ -2678,7 +2739,9 @@
       status = "Could not activate clicked ink for editing.";
       return false;
     }
-    await focusEditorById(editor.id);
+    if (options.focusEditor !== false) {
+      await focusEditorById(editor.id);
+    }
     annotationEditorUIManager.setSelected(editor);
     selectedAnnotationEntryId = `live:${editor.id}`;
     syncSelectedEditorState();
@@ -2814,6 +2877,11 @@
       target.closest<HTMLElement>(".freeTextEditor")?.id ?? findFreeTextEditorIdAtPoint(event.clientX, event.clientY);
     const inkEditorId =
       target.closest<HTMLElement>(".inkEditor")?.id ?? findInkEditorIdAtPoint(event.clientX, event.clientY);
+    const editableEditor = target.closest<HTMLElement>(".highlightEditor:not(.disabled), .freeTextEditor, .inkEditor");
+    if (target.closest(".editToolbar") || editableEditor) {
+      queueEditorStateRefresh(0, 100, 250);
+      return;
+    }
     const clickedAnnotationOrEditor = Boolean(
       disabledEditorId ||
         savedAnnotation ||
@@ -2844,15 +2912,20 @@
     event.preventDefault();
     event.stopPropagation();
     if (disabledEditorId) {
-      void activateExistingHighlightEditor(disabledEditorId);
+      const entry = persistedAnnotationEntryForEditorId(disabledEditorId);
+      if (entry && isInkHighlightEntry(entry)) {
+        void locatePdfAnnotationBounds(entry);
+        return;
+      }
+      void activateExistingHighlightEditor(disabledEditorId, { focusEditor: false });
       return;
     }
     if (freeTextEditorId) {
-      void activateExistingFreeTextEditor(freeTextEditorId);
+      void activateExistingFreeTextEditor(freeTextEditorId, { focusEditor: false });
       return;
     }
     if (inkEditorId) {
-      void activateExistingInkEditor(inkEditorId);
+      void activateExistingInkEditor(inkEditorId, { focusEditor: false });
       return;
     }
     if (savedFreeTextAnnotation) {
@@ -2861,6 +2934,12 @@
       return;
     }
     if (savedInkAnnotation) {
+      const entry = persistedAnnotationEntryForElement(savedInkAnnotation);
+      if (entry && isInkHighlightEntry(entry)) {
+        selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
+        void locatePdfAnnotationBounds(entry);
+        return;
+      }
       rememberPersistedAnnotationElement(savedInkAnnotation);
       void activateInkEditorAtPoint(event.clientX, event.clientY);
       return;
@@ -3090,6 +3169,9 @@
       return;
     }
     selectedAnnotationKind = annotationKindForEditor(editor);
+    if (selectedAnnotationKind) {
+      annotationFocusBox = null;
+    }
     selectedAnnotationColor = editor.color ?? null;
     hasSelectedHighlight = isHighlightEditor(editor);
     selectedHighlightColor = hasSelectedHighlight ? highlightColorNameForValue(editor?.color ?? null) : null;
@@ -3460,6 +3542,7 @@
       highlightEditors: document.querySelectorAll(".highlightEditor").length,
       freeTextEditors: document.querySelectorAll(".freeTextEditor").length,
       inkEditors: document.querySelectorAll(".inkEditor").length,
+      visibleEditorToolbars: document.querySelectorAll(".editToolbar:not(.hidden)").length,
       annotationStorageSize: storage?.size ?? 0,
       annotationStorageKeys: storage?.serializable?.map ? [...storage.serializable.map.keys()] : [],
     };
@@ -3981,6 +4064,7 @@
           quadPoints: "quadPoints" in annotation ? numbersFromUnknown(annotation.quadPoints) : null,
           rect: "rect" in annotation ? numbersFromUnknown(annotation.rect) : null,
           subtype: "subtype" in annotation ? annotation.subtype : null,
+          it: "it" in annotation ? annotation.it : null,
           textContent: "textContent" in annotation ? annotation.textContent : null,
         })),
       });
@@ -5265,6 +5349,19 @@
     z-index: 20;
     border: 1px dashed #2387d8;
     pointer-events: none;
+  }
+
+  :global(.annotationEditorLayer :is(.freeTextEditor, .inkEditor, .stampEditor, .signatureEditor).selectedEditor) {
+    border: 1px dashed #2387d8 !important;
+    outline: 0 !important;
+  }
+
+  :global(.annotationEditorLayer :is(.freeTextEditor, .inkEditor, .stampEditor, .signatureEditor).selectedEditor::before) {
+    border: 0 !important;
+  }
+
+  :global(.annotationEditorLayer .highlightEditor.selectedEditor) {
+    outline: 1px dashed #2387d8 !important;
   }
 
   .bookmark-page-marker {

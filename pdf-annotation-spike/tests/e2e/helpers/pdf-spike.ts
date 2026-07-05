@@ -43,8 +43,10 @@ export type AnnotationEntry = {
   detail: string;
   kind: "highlight" | "freetext" | "ink";
   page: number;
+  intent?: string | null;
   sortTop?: number;
   source?: "live" | "pdf";
+  sourceId?: string;
 };
 
 export type PageAnnotationSummary = {
