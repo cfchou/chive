@@ -1293,15 +1293,28 @@ test("annotation sidebar locates each persisted ink row after editor mode change
         top: box.top,
         bottom: box.top + box.height,
         activeTool: stats.activeTool,
+        selectedAnnotationKind: stats.selectedAnnotationKind,
+        selectedEditorType: stats.selectedEditorType,
+        status: stats.status,
         selectedPersistedAnnotationKey: stats.selectedPersistedAnnotationKey,
         expectedPersistedAnnotationKey: `${entry.page}:${entry.sourceId}`,
       };
     };
-    const clickEntry = async (entry: SidebarEntry) => {
+    const clickEntry = async (entry: SidebarEntry, expectEditable: boolean) => {
       const row = document.getElementById(`annotation-row-${entry.sourceId}`);
       if (!(row instanceof HTMLElement)) throw new Error(`Annotation row not found for ${entry.id}`);
       row.click();
-      await sleep(1200);
+      const expectedPersistedKey = `${entry.page}:${entry.sourceId}`;
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        const stats = window.__pdfSpike!.stats();
+        if (expectEditable && stats.selectedAnnotationKind === "ink" && stats.selectedPersistedAnnotationKey === expectedPersistedKey) {
+          break;
+        }
+        if (!expectEditable && stats.status === `Located ink on page ${entry.page}.`) {
+          break;
+        }
+        await sleep(150);
+      }
       return focusBox(entry);
     };
     const runPair = async (pageNumber: number, firstIndex: number, secondIndex: number) => {
@@ -1315,13 +1328,26 @@ test("annotation sidebar locates each persisted ink row after editor mode change
       if (inks.length <= Math.max(firstIndex, secondIndex)) {
         throw new Error(`Expected enough page ${pageNumber} ink rows; entries=${JSON.stringify(inks)}`);
       }
+      window.__pdfSpike!.setTool("ink");
+      await sleep(500);
+      const editableInkSourceIds = new Set(
+        window.__pdfSpike!
+          .editorSummary()
+          .filter((editor: { annotationElementId?: unknown; editorType?: unknown }) => editor.editorType === "ink")
+          .map((editor: { annotationElementId?: unknown }) =>
+            String(editor.annotationElementId ?? "").replace(/^pdfjs_internal_id_/, ""),
+          )
+          .filter(Boolean),
+      );
       return {
         pageNumber,
         pair: [firstIndex + 1, secondIndex + 1],
-        firstInk: await clickEntry(inks[firstIndex]),
-        secondInk: await clickEntry(inks[secondIndex]),
+        firstInk: await clickEntry(inks[firstIndex], editableInkSourceIds.has(inks[firstIndex].sourceId)),
+        secondInk: await clickEntry(inks[secondIndex], editableInkSourceIds.has(inks[secondIndex].sourceId)),
         firstExpected: pageBounds(inks[firstIndex]),
         secondExpected: pageBounds(inks[secondIndex]),
+        firstEditable: editableInkSourceIds.has(inks[firstIndex].sourceId),
+        secondEditable: editableInkSourceIds.has(inks[secondIndex].sourceId),
       };
     };
     return [await runPair(2, 0, 1), await runPair(2, 1, 2), await runPair(3, 0, 1)];
@@ -1330,10 +1356,22 @@ test("annotation sidebar locates each persisted ink row after editor mode change
   for (const pairResult of result) {
     expect(Math.abs(pairResult.firstInk.top - pairResult.firstExpected.top)).toBeLessThan(30);
     expect(Math.abs(pairResult.secondInk.top - pairResult.secondExpected.top)).toBeLessThan(30);
-    expect(pairResult.firstInk.activeTool).toBe("none");
-    expect(pairResult.secondInk.activeTool).toBe("none");
-    expect(pairResult.firstInk.selectedPersistedAnnotationKey).toBe(pairResult.firstInk.expectedPersistedAnnotationKey);
-    expect(pairResult.secondInk.selectedPersistedAnnotationKey).toBe(pairResult.secondInk.expectedPersistedAnnotationKey);
+    if (pairResult.firstEditable) {
+      expect(pairResult.firstInk.activeTool, JSON.stringify(pairResult)).toBe("ink");
+      expect(pairResult.firstInk.selectedAnnotationKind, JSON.stringify(pairResult)).toBe("ink");
+      expect(pairResult.firstInk.selectedPersistedAnnotationKey).toBe(pairResult.firstInk.expectedPersistedAnnotationKey);
+    } else {
+      expect(pairResult.firstInk.status, JSON.stringify(pairResult)).toBe(`Located ink on page ${pairResult.pageNumber}.`);
+      expect(pairResult.firstInk.selectedAnnotationKind, JSON.stringify(pairResult)).toBeNull();
+    }
+    if (pairResult.secondEditable) {
+      expect(pairResult.secondInk.activeTool, JSON.stringify(pairResult)).toBe("ink");
+      expect(pairResult.secondInk.selectedAnnotationKind, JSON.stringify(pairResult)).toBe("ink");
+      expect(pairResult.secondInk.selectedPersistedAnnotationKey).toBe(pairResult.secondInk.expectedPersistedAnnotationKey);
+    } else {
+      expect(pairResult.secondInk.status, JSON.stringify(pairResult)).toBe(`Located ink on page ${pairResult.pageNumber}.`);
+      expect(pairResult.secondInk.selectedAnnotationKind, JSON.stringify(pairResult)).toBeNull();
+    }
   }
 });
 

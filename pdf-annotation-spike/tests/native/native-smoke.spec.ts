@@ -157,10 +157,11 @@ describe("native WKWebView PDF smoke", () => {
             ({ pageNumber, sourceId }) => {
               const stats = window.__pdfSpike!.stats();
               const box = stats.annotationFocusBox as { top: number; height: number } | null;
-              return Boolean(
-                box &&
-                  stats.activeTool === "none" &&
-                  stats.selectedPersistedAnnotationKey === `${pageNumber}:${sourceId}`,
+              if (!box) return false;
+              return (
+                (stats.selectedAnnotationKind === "ink" &&
+                  stats.selectedPersistedAnnotationKey === `${pageNumber}:${sourceId}`) ||
+                stats.status === `Located ink on page ${pageNumber}.`
               );
             },
             { pageNumber: entry.page, sourceId: entry.sourceId },
@@ -178,6 +179,8 @@ describe("native WKWebView PDF smoke", () => {
           top: box.top,
           bottom: box.top + box.height,
           activeTool: stats.activeTool,
+          selectedAnnotationKind: stats.selectedAnnotationKind,
+          status: stats.status,
           selectedPersistedAnnotationKey: stats.selectedPersistedAnnotationKey,
         };
       });
@@ -210,14 +213,20 @@ describe("native WKWebView PDF smoke", () => {
     for (const pairResult of result) {
       expect(Math.abs(pairResult.firstInk.top - pairResult.firstExpected.top)).toBeLessThan(30);
       expect(Math.abs(pairResult.secondInk.top - pairResult.secondExpected.top)).toBeLessThan(30);
-      expect(pairResult.firstInk.activeTool).toBe("none");
-      expect(pairResult.secondInk.activeTool).toBe("none");
-      expect(pairResult.firstInk.selectedPersistedAnnotationKey).toBe(
-        pairResult.firstExpectedPersistedAnnotationKey,
-      );
-      expect(pairResult.secondInk.selectedPersistedAnnotationKey).toBe(
-        pairResult.secondExpectedPersistedAnnotationKey,
-      );
+      if (pairResult.firstInk.selectedAnnotationKind === "ink") {
+        expect(pairResult.firstInk.activeTool).toBe("ink");
+        expect(pairResult.firstInk.selectedPersistedAnnotationKey).toBe(pairResult.firstExpectedPersistedAnnotationKey);
+      } else {
+        expect(pairResult.firstInk.status).toContain("Located ink");
+        expect(pairResult.firstInk.selectedAnnotationKind).toBeNull();
+      }
+      if (pairResult.secondInk.selectedAnnotationKind === "ink") {
+        expect(pairResult.secondInk.activeTool).toBe("ink");
+        expect(pairResult.secondInk.selectedPersistedAnnotationKey).toBe(pairResult.secondExpectedPersistedAnnotationKey);
+      } else {
+        expect(pairResult.secondInk.status).toContain("Located ink");
+        expect(pairResult.secondInk.selectedAnnotationKind).toBeNull();
+      }
     }
   });
 

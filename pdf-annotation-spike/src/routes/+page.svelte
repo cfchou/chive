@@ -2069,9 +2069,6 @@
       if (element) {
         selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
         await focusAnnotationElement(element);
-        if (entry.kind === "ink") {
-          return locatePdfAnnotationEntry(entry);
-        }
         if (await activatePersistedEditorEntry(entry)) {
           return true;
         }
@@ -2084,6 +2081,9 @@
             : entry.kind === "freetext"
               ? await activateFreeTextEditorAtPoint(x, y)
               : await activateInkEditorAtPoint(x, y);
+        if (!activated && entry.kind === "ink") {
+          return locatePdfAnnotationEntry(entry);
+        }
         return activated;
       }
       await new Promise((resolve) => setTimeout(resolve, 150));
