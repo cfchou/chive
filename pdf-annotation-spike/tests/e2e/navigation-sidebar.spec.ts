@@ -1594,7 +1594,24 @@ test("direct clicks on highlighter-intent ink annotations stay locate-only", asy
     }
     await page.mouse.click(point.x, point.y);
     await page.waitForTimeout(900);
-    return page.evaluate(() => window.__pdfSpike!.stats());
+    return page.evaluate((sourceId) => {
+      const stats = window.__pdfSpike!.stats();
+      const container = document.querySelector<HTMLElement>(".pdf-container");
+      const element = document.getElementById(`pdfjs_internal_id_${sourceId}`);
+      if (!container || !element) {
+        return { ...stats, visualShapeBox: null };
+      }
+      const shapeRects = [...element.querySelectorAll("path, polyline, polygon, line, rect, circle, ellipse")]
+        .map((shape) => shape.getBoundingClientRect())
+        .filter((rect) => rect.width > 0 && rect.height > 0);
+      if (shapeRects.length === 0) {
+        return { ...stats, visualShapeBox: null };
+      }
+      const containerRect = container.getBoundingClientRect();
+      const top = Math.min(...shapeRects.map((rect) => rect.top)) - containerRect.top + container.scrollTop - 3;
+      const bottom = Math.max(...shapeRects.map((rect) => rect.bottom)) - containerRect.top + container.scrollTop + 3;
+      return { ...stats, visualShapeBox: { top, height: bottom - top } };
+    }, entry.id);
   };
 
   const first = inkHighlights[0];
@@ -1604,12 +1621,16 @@ test("direct clicks on highlighter-intent ink annotations stay locate-only", asy
   expect(firstStats.activeTool, JSON.stringify(firstStats)).toBe("none");
   expect(firstStats.selectedAnnotationKind, JSON.stringify(firstStats)).toBeNull();
   expect(firstStats.visibleEditorToolbars, JSON.stringify(firstStats)).toBe(0);
+  expect(Math.abs(firstStats.annotationFocusBox.top - firstStats.visualShapeBox.top)).toBeLessThan(1);
+  expect(Math.abs(firstStats.annotationFocusBox.height - firstStats.visualShapeBox.height)).toBeLessThan(1);
 
   const secondStats = await clickInkHighlightOnPage(second);
   expect(secondStats.status, JSON.stringify(secondStats)).toBe(`Located ink on page ${second.page}.`);
   expect(secondStats.activeTool, JSON.stringify(secondStats)).toBe("none");
   expect(secondStats.selectedAnnotationKind, JSON.stringify(secondStats)).toBeNull();
   expect(secondStats.visibleEditorToolbars, JSON.stringify(secondStats)).toBe(0);
+  expect(Math.abs(secondStats.annotationFocusBox.top - secondStats.visualShapeBox.top)).toBeLessThan(1);
+  expect(Math.abs(secondStats.annotationFocusBox.height - secondStats.visualShapeBox.height)).toBeLessThan(1);
 });
 
 test("annotation sidebar stays synced across load, click, delete, edit, and create", async ({ page }) => {

@@ -2143,17 +2143,15 @@
   }
 
   function locatePdfAnnotationBounds(entry: AnnotationEntry) {
-    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
-    if (!pageElement || !containerEl || !entry.bounds) return false;
+    if (!containerEl) return false;
     clearLocateOnlyEditorSelection();
-    const left = pageElement.offsetLeft + entry.bounds.left * pageElement.offsetWidth - 3;
-    const top = pageElement.offsetTop + entry.bounds.top * pageElement.offsetHeight - 3;
-    const width = Math.max(6, (entry.bounds.right - entry.bounds.left) * pageElement.offsetWidth + 6);
-    const height = Math.max(6, (entry.bounds.bottom - entry.bounds.top) * pageElement.offsetHeight + 6);
+    const focusBox = renderedAnnotationShapeFocusBox(entry) ?? annotationEntryFocusBox(entry);
+    if (!focusBox) return false;
+    const { left, top, width, height } = focusBox;
 
     containerEl.scrollLeft = Math.max(0, left + width / 2 - containerEl.clientWidth / 2);
     containerEl.scrollTop = Math.max(0, top + height / 2 - containerEl.clientHeight / 2);
-    annotationFocusBox = { left, top, width, height };
+    annotationFocusBox = focusBox;
     unselectAllIgnoringPdfjsSignalBug();
     selectedAnnotationEntryId = entry.id;
     selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
@@ -2164,6 +2162,40 @@
     status = `Located ${entry.label.toLowerCase()} on page ${entry.page}.`;
     queueLocateOnlyEditorSelectionClear();
     return true;
+  }
+
+  function annotationEntryFocusBox(entry: AnnotationEntry): FocusBox | null {
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
+    if (!pageElement || !entry.bounds) return null;
+    return {
+      left: pageElement.offsetLeft + entry.bounds.left * pageElement.offsetWidth - 3,
+      top: pageElement.offsetTop + entry.bounds.top * pageElement.offsetHeight - 3,
+      width: Math.max(6, (entry.bounds.right - entry.bounds.left) * pageElement.offsetWidth + 6),
+      height: Math.max(6, (entry.bounds.bottom - entry.bounds.top) * pageElement.offsetHeight + 6),
+    };
+  }
+
+  function renderedAnnotationShapeFocusBox(entry: AnnotationEntry): FocusBox | null {
+    if (!isInkHighlightEntry(entry) || !containerEl) return null;
+    const element = document.getElementById(pdfAnnotationElementId(entry.sourceId));
+    if (!(element instanceof HTMLElement)) return null;
+    const shapeRects = [...element.querySelectorAll("path, polyline, polygon, line, rect, circle, ellipse")]
+      .map((shape) => shape.getBoundingClientRect())
+      .filter((rect) => rect.width > 0 && rect.height > 0);
+    if (shapeRects.length === 0) return null;
+    const rect = {
+      left: Math.min(...shapeRects.map((candidate) => candidate.left)),
+      top: Math.min(...shapeRects.map((candidate) => candidate.top)),
+      right: Math.max(...shapeRects.map((candidate) => candidate.right)),
+      bottom: Math.max(...shapeRects.map((candidate) => candidate.bottom)),
+    };
+    const containerRect = containerEl.getBoundingClientRect();
+    return {
+      left: rect.left - containerRect.left + containerEl.scrollLeft - 3,
+      top: rect.top - containerRect.top + containerEl.scrollTop - 3,
+      width: Math.max(6, rect.right - rect.left + 6),
+      height: Math.max(6, rect.bottom - rect.top + 6),
+    };
   }
 
   function clearLocateOnlyEditorSelection() {
