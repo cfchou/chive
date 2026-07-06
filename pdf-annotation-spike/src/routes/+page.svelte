@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { open, save } from "@tauri-apps/plugin-dialog";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import * as pdfjsLib from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
   import inkCursorUrl from "pdfjs-dist/web/images/cursor-editorInk.svg?url";
@@ -77,6 +77,12 @@
   type AnnotationPageGroup = {
     page: number;
     entries: AnnotationEntry[];
+  };
+  type BookmarkRailRect = {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
   };
   type FocusBox = {
     left: number;
@@ -154,6 +160,10 @@
   const bookmarkTitleWordCount = 4;
   const bookmarkRailAnchorWidthPx = 12;
   const bookmarkRailAnchorHeightPx = 22;
+  const bookmarkRailMarkerTranslateYPx = -2;
+  const bookmarkRailFocusCueSizePx = 22;
+  const bookmarkRailAddCueSizePx = 36;
+  const bookmarkRailAddCueOffsetPx = 22;
 
   let containerEl: HTMLDivElement;
   let viewerEl: HTMLDivElement;
@@ -172,6 +182,7 @@
   let editingBookmarkId = $state<string | null>(null);
   let activeBookmarkId = $state<string | null>(null);
   let bookmarkColorMenuId = $state<string | null>(null);
+  let pendingBookmarkRailMarkerRects: BookmarkRailRect[] = [];
   let bookmarkRailHoverCue = $state<{
     pageNumber: number;
     focusLeft: number;
@@ -898,29 +909,6 @@
     return "Unsaved/live ink";
   }
 
-  function cachedAnnotationDetail(entryId: string, detail: string) {
-    const cached = annotationDetailCache.get(entryId);
-    if (cached) {
-      return cached;
-    }
-    const normalized = detail.trim();
-    if (isUsefulAnnotationDetail(normalized)) {
-      annotationDetailCache.set(entryId, normalized);
-      return normalized;
-    }
-    return annotationDetailCache.get(entryId) ?? normalized;
-  }
-
-  function isUsefulAnnotationDetail(detail: string) {
-    return Boolean(
-      detail &&
-        detail !== "Persisted PDF annotation" &&
-        detail !== "Unsaved/live highlight" &&
-        detail !== "Unsaved/live free text" &&
-        detail !== "Unsaved/live ink",
-    );
-  }
-
   function textForAnnotationDom(
     pageNumber: number,
     kind: Exclude<SelectedAnnotationKind, null>,
@@ -1320,14 +1308,22 @@
   async function handlePdfContainerClick(event: MouseEvent) {
     if ((event.target as Element | null)?.closest("button, input")) return;
     editingBookmarkId = null;
+    const cueHit = bookmarkRailHoverCueHitAtPoint(event.clientX, event.clientY);
+    if (cueHit) {
+      await createBookmarkAtPageRailPoint(cueHit.clientY, cueHit.pageNumber);
+      return;
+    }
     const hit = bookmarkRailHitAtPoint(event.clientX, event.clientY);
     if (!hit) return;
+    if (bookmarkRailPointConflicts(hit.pageElement, event.clientY)) {
+      bookmarkRailHoverCue = null;
+      return;
+    }
     await createBookmarkAtPageRailPoint(event.clientY, hit.pageNumber);
   }
 
   function handlePdfContainerMouseMove(event: MouseEvent) {
-    if (bookmarkMarkerDmzHitAtPoint(event.clientX, event.clientY)) {
-      bookmarkRailHoverCue = null;
+    if (bookmarkRailHoverCueHitAtPoint(event.clientX, event.clientY)) {
       return;
     }
     const hit = bookmarkRailHitAtPoint(event.clientX, event.clientY);
@@ -1335,28 +1331,100 @@
       bookmarkRailHoverCue = null;
       return;
     }
+    if (bookmarkRailPointConflicts(hit.pageElement, event.clientY)) {
+      bookmarkRailHoverCue = null;
+      return;
+    }
     const containerRect = containerEl.getBoundingClientRect();
     const pointerLeft = containerEl.scrollLeft + event.clientX - containerRect.left;
     const pointerTop = containerEl.scrollTop + event.clientY - containerRect.top;
+    const pagePosition = pagePositionInContainer(hit.pageElement);
     bookmarkRailHoverCue = {
       pageNumber: hit.pageNumber,
-      focusLeft: hit.pageElement.offsetLeft,
+      focusLeft: pagePosition.left,
       focusTop: pointerTop,
-      hintLeft: pointerLeft + 22,
-      hintTop: pointerTop + 22,
+      hintLeft: pointerLeft + bookmarkRailAddCueOffsetPx,
+      hintTop: pointerTop + bookmarkRailAddCueOffsetPx,
     };
   }
 
-  function bookmarkMarkerDmzHitAtPoint(clientX: number, clientY: number) {
-    return [...document.querySelectorAll<HTMLElement>(".bookmark-page-marker")].some((marker) => {
-      const rect = marker.getBoundingClientRect();
-      return (
-        clientX >= rect.left - 28 &&
-        clientX <= rect.right + 8 &&
-        clientY >= rect.top - rect.height &&
-        clientY <= rect.bottom + rect.height
-      );
+  function bookmarkRailHoverCueHitAtPoint(clientX: number, clientY: number) {
+    if (!bookmarkRailHoverCue || !containerEl) return null;
+    const containerRect = containerEl.getBoundingClientRect();
+    const focusCenter = {
+      x: containerRect.left + bookmarkRailHoverCue.focusLeft - containerEl.scrollLeft,
+      y: containerRect.top + bookmarkRailHoverCue.focusTop - containerEl.scrollTop,
+    };
+    const addCenter = {
+      x: containerRect.left + bookmarkRailHoverCue.hintLeft - containerEl.scrollLeft,
+      y: containerRect.top + bookmarkRailHoverCue.hintTop - containerEl.scrollTop,
+    };
+    const withinFocusCue =
+      Math.abs(clientX - focusCenter.x) <= bookmarkRailFocusCueSizePx / 2 &&
+      Math.abs(clientY - focusCenter.y) <= bookmarkRailFocusCueSizePx / 2;
+    const withinAddCue =
+      Math.abs(clientX - addCenter.x) <= bookmarkRailAddCueSizePx / 2 &&
+      Math.abs(clientY - addCenter.y) <= bookmarkRailAddCueSizePx / 2;
+    return withinFocusCue || withinAddCue
+      ? { pageNumber: bookmarkRailHoverCue.pageNumber, clientY: focusCenter.y }
+      : null;
+  }
+
+  function bookmarkRailActionRectsAtPoint(pageElement: HTMLElement, clientY: number) {
+    return [bookmarkRailMarkerRectAtPoint(pageElement, clientY)];
+  }
+
+  function bookmarkRailMarkerRectAtPoint(pageElement: HTMLElement, clientY: number) {
+    const pageRect = pageElement.getBoundingClientRect();
+    const top = clientY + bookmarkRailMarkerTranslateYPx;
+    return {
+      left: pageRect.left,
+      right: pageRect.left + bookmarkRailAnchorWidthPx,
+      top,
+      bottom: top + bookmarkRailAnchorHeightPx,
+    };
+  }
+
+  function bookmarkRailActionDmzHit(candidateRects: BookmarkRailRect[]) {
+    const markerRects = [
+      ...[...document.querySelectorAll<HTMLElement>(".bookmark-page-marker")].map((marker) => {
+        const rect = marker.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+      }),
+      ...pendingBookmarkRailMarkerRects,
+    ];
+    return markerRects.some((markerRect) =>
+      candidateRects.some((candidateRect) => bookmarkRailRectsConflict(candidateRect, markerRect)),
+    );
+  }
+
+  function bookmarkRailPointConflicts(pageElement: HTMLElement, clientY: number) {
+    if (bookmarkRailActionDmzHit(bookmarkRailActionRectsAtPoint(pageElement, clientY))) {
+      return true;
+    }
+    const candidateRect = bookmarkRailMarkerContentRectAtPoint(pageElement, clientY);
+    return bookmarkEntries.some((entry) => {
+      const markerRect = bookmarkRailMarkerContentRect(entry.pageNumber, entry.targetY, entry.pageHeight);
+      return markerRect ? bookmarkRailRectsConflict(candidateRect, markerRect) : false;
     });
+  }
+
+  function bookmarkRailRectsConflict(candidateRect: BookmarkRailRect, markerRect: BookmarkRailRect) {
+    const markerDmzTop = markerRect.top - bookmarkRailAnchorHeightPx;
+    const markerDmzBottom = markerRect.bottom + bookmarkRailAnchorHeightPx;
+    return (
+      candidateRect.left <= markerRect.right + 8 &&
+      candidateRect.right >= markerRect.left - 28 &&
+      candidateRect.bottom >= markerDmzTop &&
+      candidateRect.top <= markerDmzBottom
+    );
+  }
+
+  function reserveBookmarkRailMarkerRect(rect: BookmarkRailRect) {
+    pendingBookmarkRailMarkerRects = [...pendingBookmarkRailMarkerRects, rect];
+    return () => {
+      pendingBookmarkRailMarkerRects = pendingBookmarkRailMarkerRects.filter((pendingRect) => pendingRect !== rect);
+    };
   }
 
   function bookmarkRailHitAtPoint(clientX: number, clientY: number) {
@@ -1385,8 +1453,19 @@
     }
     const pageRect = pageElement.getBoundingClientRect();
     const offsetIntoPage = Math.max(0, Math.min(pageRect.height, clientY - pageRect.top));
-    const pageTarget = await bookmarkPageTarget(pageNumber, offsetIntoPage);
-    await createBookmarkFromTarget(pageTarget);
+    const markerRect = bookmarkRailMarkerRectAtPoint(pageElement, clientY);
+    if (bookmarkRailPointConflicts(pageElement, clientY)) {
+      bookmarkRailHoverCue = null;
+      return;
+    }
+    const releaseRailMarkerReservation = reserveBookmarkRailMarkerRect(markerRect);
+    try {
+      const pageTarget = await bookmarkPageTarget(pageNumber, offsetIntoPage);
+      await createBookmarkFromTarget(pageTarget);
+    } finally {
+      await tick();
+      releaseRailMarkerReservation();
+    }
   }
 
   async function createBookmarkFromTarget(
@@ -1395,6 +1474,11 @@
   ) {
     if (!pageTarget) {
       status = "Could not resolve current page for bookmark.";
+      return;
+    }
+    if (bookmarkTargetConflictsWithExistingBookmarks(pageTarget)) {
+      bookmarkRailHoverCue = null;
+      status = "Bookmark too close to existing bookmark.";
       return;
     }
     const pageNumber = pageTarget.pageNumber;
@@ -1415,8 +1499,42 @@
     editingBookmarkId = editAfterCreate ? entry.id : null;
     bookmarkColorMenuId = null;
     hoveredBookmarkId = null;
+    bookmarkRailHoverCue = null;
     isDirty = true;
     status = `Added bookmark ${title}.`;
+  }
+
+  function bookmarkTargetConflictsWithExistingBookmarks(pageTarget: NonNullable<Awaited<ReturnType<typeof bookmarkPageTarget>>>) {
+    const candidateRect = bookmarkRailMarkerContentRect(pageTarget.pageNumber, pageTarget.targetY, pageTarget.pageHeight);
+    if (!candidateRect) return false;
+    return bookmarkEntries.some((entry) => {
+      const markerRect = bookmarkRailMarkerContentRect(entry.pageNumber, entry.targetY, entry.pageHeight);
+      return markerRect ? bookmarkRailRectsConflict(candidateRect, markerRect) : false;
+    });
+  }
+
+  function bookmarkRailMarkerContentRect(pageNumber: number, targetY: number, pageHeight: number) {
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    if (!pageElement || pageHeight <= 0) return null;
+    const offsetIntoPage = ((pageHeight - targetY) / pageHeight) * pageElement.offsetHeight;
+    return bookmarkRailMarkerContentRectFromOffset(pageElement, offsetIntoPage);
+  }
+
+  function bookmarkRailMarkerContentRectAtPoint(pageElement: HTMLElement, clientY: number) {
+    const pageRect = pageElement.getBoundingClientRect();
+    const offsetIntoPage = Math.max(0, Math.min(pageRect.height, clientY - pageRect.top));
+    return bookmarkRailMarkerContentRectFromOffset(pageElement, offsetIntoPage);
+  }
+
+  function bookmarkRailMarkerContentRectFromOffset(pageElement: HTMLElement, offsetIntoPage: number) {
+    const pagePosition = pagePositionInContainer(pageElement);
+    const top = pagePosition.top + offsetIntoPage + bookmarkRailMarkerTranslateYPx;
+    return {
+      left: pagePosition.left,
+      right: pagePosition.left + bookmarkRailAnchorWidthPx,
+      top,
+      bottom: top + bookmarkRailAnchorHeightPx,
+    };
   }
 
   function updateBookmarkTitle(id: string, title: string) {
@@ -1645,7 +1763,8 @@
     const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.pageNumber}"]`);
     if (!pageElement || !containerEl) return false;
     const offsetIntoPage = ((entry.pageHeight - entry.targetY) / entry.pageHeight) * pageElement.offsetHeight;
-    containerEl.scrollTop = Math.max(0, pageElement.offsetTop + offsetIntoPage - bookmarkRailAnchorHeightPx);
+    const pagePosition = pagePositionInContainer(pageElement);
+    containerEl.scrollTop = Math.max(0, pagePosition.top + offsetIntoPage - bookmarkRailAnchorHeightPx);
     return true;
   }
 
@@ -1657,9 +1776,22 @@
       return `left: 12px; top: 18px; ${colorStyle}`;
     }
     const offsetIntoPage = ((entry.pageHeight - entry.targetY) / entry.pageHeight) * pageElement.offsetHeight;
-    const left = pageElement.offsetLeft;
-    const top = pageElement.offsetTop + offsetIntoPage;
+    const pagePosition = pagePositionInContainer(pageElement);
+    const left = pagePosition.left;
+    const top = pagePosition.top + offsetIntoPage;
     return `left: ${left}px; top: ${top}px; ${colorStyle}`;
+  }
+
+  function pagePositionInContainer(pageElement: HTMLElement) {
+    if (!containerEl) {
+      return { left: pageElement.offsetLeft, top: pageElement.offsetTop };
+    }
+    const containerRect = containerEl.getBoundingClientRect();
+    const pageRect = pageElement.getBoundingClientRect();
+    return {
+      left: containerEl.scrollLeft + pageRect.left - containerRect.left,
+      top: containerEl.scrollTop + pageRect.top - containerRect.top,
+    };
   }
 
   function bookmarkColorStyle(entry: BookmarkEntry) {

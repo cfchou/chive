@@ -1050,6 +1050,242 @@ test("hovering an existing page-rail bookmark marker DMZ hides the add cue", asy
   }
 });
 
+test("clicking an existing page-rail bookmark marker DMZ does not create a bookmark", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await addCurrentPageBookmark(page);
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(1);
+
+  const dmzPoints = await page.evaluate(() => {
+    const marker = document.querySelector<HTMLElement>(".bookmark-page-marker");
+    if (!marker) throw new Error("Missing bookmark marker");
+    const rect = marker.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    return [
+      { x, y: rect.top - rect.height * 0.75 },
+      { x, y: rect.bottom + rect.height * 0.75 },
+    ];
+  });
+
+  for (const point of dmzPoints) {
+    await page.mouse.click(point.x, point.y);
+    await expect(page.locator(".bookmark-page-marker")).toHaveCount(1);
+    await expect(page.locator(".bookmark-row")).toHaveCount(1);
+    await expect(page.locator(".bookmark-rail-focus-cue")).toHaveCount(0);
+    await expect(page.locator(".bookmark-rail-add-cue")).toHaveCount(0);
+  }
+});
+
+test("page-rail bookmark marker DMZ accounts for the marker that would be created", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "JIT tiers table 13" }).click();
+  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
+  const railPoints = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+    if (!container || !pageElement) throw new Error("Missing page 13 layout");
+    container.scrollTop = pageElement.offsetTop + pageElement.offsetHeight * 0.2;
+    const pageRect = pageElement.getBoundingClientRect();
+    return [
+      { x: pageRect.left - 12, y: pageRect.top + pageRect.height * 0.25 },
+      { x: pageRect.left - 12, y: pageRect.top + pageRect.height * 0.55 },
+    ];
+  });
+  for (const point of railPoints) {
+    await page.mouse.click(point.x, point.y);
+  }
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(2);
+
+  const candidatePoint = await page.evaluate(() => {
+    const markers = [...document.querySelectorAll<HTMLElement>(".bookmark-page-marker")].sort(
+      (left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top,
+    );
+    const lowerRect = markers[1]?.getBoundingClientRect();
+    if (!lowerRect) throw new Error("Missing lower bookmark marker");
+    const focusCueRadius = 11;
+    return {
+      x: lowerRect.left + lowerRect.width / 2,
+      y: lowerRect.top - lowerRect.height - focusCueRadius - 1,
+    };
+  });
+
+  await page.mouse.move(candidatePoint.x, candidatePoint.y);
+  await expect(page.locator(".bookmark-rail-focus-cue")).toHaveCount(0);
+  await expect(page.locator(".bookmark-rail-add-cue")).toHaveCount(0);
+
+  await page.mouse.click(candidatePoint.x, candidatePoint.y);
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(2);
+  await expect(page.locator(".bookmark-row")).toHaveCount(2);
+});
+
+test("rapid page-rail clicks cannot create bookmark markers closer than one marker height", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "JIT tiers table 13" }).click();
+  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
+  const clickPoints = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+    if (!container || !pageElement) throw new Error("Missing page 13 layout");
+    container.scrollTop = pageElement.offsetTop + pageElement.offsetHeight * 0.2;
+    const pageRect = pageElement.getBoundingClientRect();
+    const firstY = pageRect.top + pageRect.height * 0.25;
+    return [
+      { x: pageRect.left - 12, y: firstY },
+      { x: pageRect.left - 12, y: firstY + 38 },
+    ];
+  });
+
+  for (const point of clickPoints) {
+    await page.mouse.click(point.x, point.y);
+  }
+
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(1);
+  await expect(page.locator(".bookmark-row")).toHaveCount(1);
+});
+
+test("clicking the visible page-rail add cue creates a bookmark at that cue", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await addCurrentPageBookmark(page);
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(1);
+
+  const hoverPoint = await page.evaluate(() => {
+    const marker = document.querySelector<HTMLElement>(".bookmark-page-marker");
+    if (!marker) throw new Error("Missing bookmark marker");
+    const rect = marker.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.bottom + rect.height * 4,
+    };
+  });
+  await page.mouse.move(hoverPoint.x, hoverPoint.y);
+  await expect(page.locator(".bookmark-rail-add-cue")).toHaveCount(1);
+
+  const addCueCenter = await page.evaluate(() => {
+    const cue = document.querySelector<HTMLElement>(".bookmark-rail-add-cue");
+    if (!cue) throw new Error("Missing bookmark add cue");
+    const rect = cue.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  });
+
+  await page.mouse.click(addCueCenter.x, addCueCenter.y);
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(2);
+  await expect(page.locator(".bookmark-row")).toHaveCount(2);
+});
+
+test("first visible page-rail add cue below a bookmark can create a bookmark", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("tab", { name: "Bookmarks" }).click();
+  await addCurrentPageBookmark(page);
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(1);
+
+  const searchRange = await page.evaluate(() => {
+    const marker = document.querySelector<HTMLElement>(".bookmark-page-marker");
+    if (!marker) throw new Error("Missing bookmark marker");
+    const rect = marker.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      startY: Math.ceil(rect.bottom),
+      endY: Math.ceil(rect.bottom + rect.height * 4),
+    };
+  });
+  let candidate: { x: number; y: number } | null = null;
+  for (let y = searchRange.startY; y <= searchRange.endY; y += 1) {
+    await page.mouse.move(searchRange.x, y);
+    if ((await page.locator(".bookmark-rail-add-cue").count()) > 0) {
+      candidate = { x: searchRange.x, y };
+      break;
+    }
+  }
+  if (!candidate) throw new Error("No visible add cue found below bookmark");
+
+  await page.mouse.click(candidate.x, candidate.y);
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(2);
+  await expect(page.locator(".bookmark-row")).toHaveCount(2);
+});
+
+test("first available page-rail bookmark gaps are balanced above and below a bookmark", async ({ page }) => {
+  await loadFixture(page);
+
+  await page.getByRole("button", { name: "JIT tiers table 13" }).click();
+  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
+  const basePoint = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+    if (!container || !pageElement) throw new Error("Missing page 13 layout");
+    container.scrollTop = pageElement.offsetTop + pageElement.offsetHeight * 0.2;
+    const pageRect = pageElement.getBoundingClientRect();
+    return { x: pageRect.left - 12, y: pageRect.top + pageRect.height * 0.35 };
+  });
+  await page.mouse.click(basePoint.x, basePoint.y);
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(1);
+
+  const baseRect = await page.evaluate(() => {
+    const marker = document.querySelector<HTMLElement>(".bookmark-page-marker");
+    if (!marker) throw new Error("Missing bookmark marker");
+    const rect = marker.getBoundingClientRect();
+    return {
+      x: rect.left - rect.width,
+      top: rect.top,
+      bottom: rect.bottom,
+      height: rect.height,
+      centerY: rect.top + rect.height / 2,
+    };
+  });
+
+  let belowPoint: { x: number; y: number } | null = null;
+  for (let y = Math.ceil(baseRect.bottom); y <= Math.ceil(baseRect.bottom + baseRect.height * 4); y += 1) {
+    await page.mouse.move(baseRect.x, y);
+    if ((await page.locator(".bookmark-rail-add-cue").count()) > 0) {
+      belowPoint = { x: baseRect.x, y };
+      break;
+    }
+  }
+  if (!belowPoint) throw new Error("No visible add cue found below bookmark");
+  await page.mouse.click(belowPoint.x, belowPoint.y);
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(2);
+
+  let abovePoint: { x: number; y: number } | null = null;
+  for (let y = Math.floor(baseRect.top); y >= Math.floor(baseRect.top - baseRect.height * 4); y -= 1) {
+    await page.mouse.move(baseRect.x, y);
+    if ((await page.locator(".bookmark-rail-add-cue").count()) > 0) {
+      abovePoint = { x: baseRect.x, y };
+      break;
+    }
+  }
+  if (!abovePoint) throw new Error("No visible add cue found above bookmark");
+  await page.mouse.click(abovePoint.x, abovePoint.y);
+  await expect(page.locator(".bookmark-page-marker")).toHaveCount(3);
+
+  const gaps = await page.evaluate((baseCenterY) => {
+    const markers = [...document.querySelectorAll<HTMLElement>(".bookmark-page-marker")]
+      .map((marker) => {
+        const rect = marker.getBoundingClientRect();
+        return { top: rect.top, bottom: rect.bottom, centerY: rect.top + rect.height / 2 };
+      })
+      .sort((left, right) => left.top - right.top);
+    const baseIndex = markers.reduce(
+      (bestIndex, marker, index) =>
+        Math.abs(marker.centerY - baseCenterY) < Math.abs(markers[bestIndex].centerY - baseCenterY) ? index : bestIndex,
+      0,
+    );
+    const above = markers[baseIndex - 1];
+    const base = markers[baseIndex];
+    const below = markers[baseIndex + 1];
+    if (!above || !below) throw new Error("Missing balanced bookmark markers");
+    return {
+      upperGap: Math.round(base.top - above.bottom),
+      lowerGap: Math.round(below.top - base.bottom),
+    };
+  }, baseRect.centerY);
+  expect(Math.abs(gaps.upperGap - gaps.lowerGap)).toBeLessThanOrEqual(1);
+});
+
 test("bookmark rows and rail markers highlight each other on hover", async ({ page }) => {
   await loadFixture(page);
 
