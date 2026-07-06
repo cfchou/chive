@@ -31,6 +31,11 @@ export type AnnotationEntry = {
   sortLeft: number;
 };
 
+export type AnnotationPosition = {
+  top: number;
+  left: number;
+};
+
 type PdfDocumentWithPages = {
   getPage: (pageNumber: number) => Promise<{
     getTextContent?: () => Promise<{ items: Record<string, unknown>[] }>;
@@ -48,6 +53,176 @@ type PdfDocumentWithPages = {
     };
   }>;
 };
+
+type PdfAnnotationPageSummary = {
+  page?: unknown;
+  annotations?: unknown;
+};
+
+export type BuildPdfAnnotationEntriesOptions = {
+  pdfDocument: PdfDocumentWithPages | null;
+  pages: PdfAnnotationPageSummary[];
+  detailCache: Map<string, string>;
+  isHidden: (pageNumber: number, sourceId: string) => boolean;
+  fallbackText: (pageNumber: number, kind: AnnotationKind, targetIndex: number) => string;
+  fallbackPosition: (pageNumber: number, kind: AnnotationKind, targetIndex: number) => AnnotationPosition;
+};
+
+export type BuildLiveAnnotationEntriesOptions<TEditor> = {
+  pageCount: number;
+  persistedEntries: AnnotationEntry[];
+  detailCache: Map<string, string>;
+  getEditors: (pageIndex: number) => Iterable<TEditor>;
+  editorId: (editor: TEditor) => string;
+  editorColor: (editor: TEditor) => string | number[] | null;
+  isDeleted: (editor: TEditor) => boolean;
+  kindForEditor: (editor: TEditor) => AnnotationKind | null;
+  isUnmodifiedMirrorOfPersistedAnnotation: (
+    editor: TEditor,
+    persistedEntries: AnnotationEntry[],
+    pageNumber: number,
+  ) => boolean;
+  targetIndexForEditor: (
+    pageNumber: number,
+    kind: AnnotationKind,
+    editor: TEditor,
+    fallbackTargetIndex: number,
+  ) => number;
+  positionForEditor: (
+    pageNumber: number,
+    kind: AnnotationKind,
+    targetIndex: number,
+    editor: TEditor,
+  ) => AnnotationPosition;
+  boundsForEditor: (
+    pageNumber: number,
+    kind: AnnotationKind,
+    targetIndex: number,
+    editor: TEditor,
+  ) => RectLike | null;
+  detailForEditor: (
+    editor: TEditor,
+    pageNumber: number,
+    targetIndex: number,
+  ) => string;
+};
+
+export async function buildPdfAnnotationEntries({
+  pdfDocument,
+  pages,
+  detailCache,
+  isHidden,
+  fallbackText,
+  fallbackPosition,
+}: BuildPdfAnnotationEntriesOptions) {
+  const entries: AnnotationEntry[] = [];
+  const targetIndexes = new Map<string, number>();
+  for (const page of pages) {
+    const pageNumber = Number(page.page);
+    const annotations = Array.isArray(page.annotations) ? page.annotations : [];
+    for (const annotation of annotations as Record<string, unknown>[]) {
+      const kind = annotationKindForSubtype(annotation.subtype);
+      if (!kind) continue;
+      const id = String(annotation.id ?? `${pageNumber}-${entries.length}`);
+      if (isHidden(pageNumber, id)) continue;
+      const indexKey = `${pageNumber}:${kind}`;
+      const targetIndex = targetIndexes.get(indexKey) ?? 0;
+      targetIndexes.set(indexKey, targetIndex + 1);
+      const extractedDetail =
+        kind === "highlight"
+          ? (await textForPdfAnnotation(pdfDocument, pageNumber, annotation)) ||
+            fallbackText(pageNumber, kind, targetIndex) ||
+            annotationDetail(annotation)
+          : annotationDetail(annotation);
+      const entryId = `pdf:${id}`;
+      const position =
+        (await pdfAnnotationSortPosition(pdfDocument, pageNumber, annotation)) ??
+        fallbackPosition(pageNumber, kind, targetIndex);
+      const bounds = await pdfAnnotationBounds(pdfDocument, pageNumber, annotation);
+      entries.push({
+        id: entryId,
+        sourceId: id,
+        source: "pdf",
+        page: pageNumber,
+        kind,
+        label: annotationLabel(kind),
+        detail: cachedAnnotationDetail(detailCache, entryId, extractedDetail),
+        color: (annotation.color as number[] | null) ?? null,
+        intent: typeof annotation.it === "string" ? annotation.it : null,
+        bounds,
+        targetIndex,
+        sortTop: position.top,
+        sortLeft: position.left,
+      });
+    }
+  }
+  return entries;
+}
+
+export function buildLiveAnnotationEntries<TEditor>({
+  pageCount,
+  persistedEntries,
+  detailCache,
+  getEditors,
+  editorId,
+  editorColor,
+  isDeleted,
+  kindForEditor,
+  isUnmodifiedMirrorOfPersistedAnnotation,
+  targetIndexForEditor,
+  positionForEditor,
+  boundsForEditor,
+  detailForEditor,
+}: BuildLiveAnnotationEntriesOptions<TEditor>) {
+  const entries: AnnotationEntry[] = [];
+  const targetIndexes = new Map<string, number>();
+  for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+    for (const editor of getEditors(pageIndex)) {
+      if (isDeleted(editor)) continue;
+      const kind = kindForEditor(editor);
+      if (!kind) continue;
+      const pageNumber = pageIndex + 1;
+      if (isUnmodifiedMirrorOfPersistedAnnotation(editor, persistedEntries, pageNumber)) {
+        continue;
+      }
+      const indexKey = `${pageNumber}:${kind}`;
+      const fallbackTargetIndex = targetIndexes.get(indexKey) ?? 0;
+      targetIndexes.set(indexKey, fallbackTargetIndex + 1);
+      const sourceId = editorId(editor);
+      const entryId = `live:${sourceId}`;
+      const targetIndex = targetIndexForEditor(pageNumber, kind, editor, fallbackTargetIndex);
+      const position = positionForEditor(pageNumber, kind, targetIndex, editor);
+      const bounds = boundsForEditor(pageNumber, kind, targetIndex, editor);
+      if (
+        bounds &&
+        persistedEntries.some(
+          (entry) => entry.bounds && entry.page === pageNumber && boundsOverlapSignificantly(bounds, entry.bounds),
+        )
+      ) {
+        continue;
+      }
+      const detail = detailForEditor(editor, pageNumber, targetIndex);
+      if (isDuplicateLiveAnnotation(entries, pageNumber, kind, bounds, detail)) {
+        continue;
+      }
+      entries.push({
+        id: entryId,
+        sourceId,
+        source: "live",
+        page: pageNumber,
+        kind,
+        label: annotationLabel(kind),
+        detail: cachedAnnotationDetail(detailCache, entryId, detail),
+        color: editorColor(editor),
+        bounds,
+        targetIndex,
+        sortTop: position.top,
+        sortLeft: position.left,
+      });
+    }
+  }
+  return entries;
+}
 
 export function annotationKindForSubtype(subtype: unknown): AnnotationKind | null {
   if (subtype === "Highlight") return "highlight";

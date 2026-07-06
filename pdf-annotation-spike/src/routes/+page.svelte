@@ -12,18 +12,12 @@
   } from "pdfjs-dist/web/pdf_viewer.mjs";
   import "pdfjs-dist/web/pdf_viewer.css";
   import {
-    annotationDetail,
     annotationKindForSubtype,
-    annotationLabel,
-    boundsOverlapSignificantly,
-    cachedAnnotationDetail,
-    isDuplicateLiveAnnotation,
+    buildLiveAnnotationEntries,
+    buildPdfAnnotationEntries,
     numbersFromUnknown,
-    pdfAnnotationBounds,
-    pdfAnnotationSortPosition,
     rectArea,
     rectToPagePercent,
-    textForPdfAnnotation,
     type AnnotationEntry,
     type RectLike,
   } from "$lib/pdf/annotation-sidebar";
@@ -624,94 +618,36 @@
 
   async function getPdfAnnotationEntries() {
     const pages = await getAnnotationSummary();
-    const entries: AnnotationEntry[] = [];
-    const targetIndexes = new Map<string, number>();
-    for (const page of pages) {
-      const pageNumber = Number(page.page);
-      const annotations = Array.isArray(page.annotations) ? page.annotations : [];
-      for (const annotation of annotations as Record<string, unknown>[]) {
-        const kind = annotationKindForSubtype(annotation.subtype);
-        if (!kind) continue;
-        const id = String(annotation.id ?? `${pageNumber}-${entries.length}`);
-        if (isPersistedAnnotationHidden(pageNumber, id)) continue;
-        const indexKey = `${pageNumber}:${kind}`;
-        const targetIndex = targetIndexes.get(indexKey) ?? 0;
-        targetIndexes.set(indexKey, targetIndex + 1);
-        const extractedDetail =
-          kind === "highlight"
-            ? (await textForPdfAnnotation(pdfDocument, pageNumber, annotation)) ||
-              textForAnnotationDom(pageNumber, kind, targetIndex) ||
-              annotationDetail(annotation)
-            : annotationDetail(annotation);
-        const entryId = `pdf:${id}`;
-        const position =
-          (await pdfAnnotationSortPosition(pdfDocument, pageNumber, annotation)) ??
-          annotationTargetPosition(pageNumber, kind, targetIndex);
-        const bounds = await pdfAnnotationBounds(pdfDocument, pageNumber, annotation);
-        entries.push({
-          id: entryId,
-          sourceId: id,
-          source: "pdf",
-          page: pageNumber,
-          kind,
-          label: annotationLabel(kind),
-          detail: cachedAnnotationDetail(annotationDetailCache, entryId, extractedDetail),
-          color: (annotation.color as number[] | null) ?? null,
-          intent: typeof annotation.it === "string" ? annotation.it : null,
-          bounds,
-          targetIndex,
-          sortTop: position.top,
-          sortLeft: position.left,
-        });
-      }
-    }
-    return entries;
+    return buildPdfAnnotationEntries({
+      pdfDocument,
+      pages,
+      detailCache: annotationDetailCache,
+      isHidden: isPersistedAnnotationHidden,
+      fallbackText: textForAnnotationDom,
+      fallbackPosition: annotationTargetPosition,
+    });
   }
 
   function getLiveAnnotationEntries(persistedEntries: AnnotationEntry[]) {
     if (!annotationEditorUIManager || !pdfDocument) return [];
-    const entries: AnnotationEntry[] = [];
-    const targetIndexes = new Map<string, number>();
-    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
-      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
-        if (editor.deleted) continue;
-        const kind = annotationKindForEditor(editor);
-        if (!kind) continue;
-        const pageNumber = pageIndex + 1;
-        if (isUnmodifiedEditorMirrorOfPersistedAnnotation(editor, persistedEntries, pageNumber)) {
-          continue;
-        }
-        const indexKey = `${pageNumber}:${kind}`;
-        const fallbackTargetIndex = targetIndexes.get(indexKey) ?? 0;
-        targetIndexes.set(indexKey, fallbackTargetIndex + 1);
-        const entryId = `live:${editor.id}`;
-        const targetIndex = targetIndexForEditor(pageNumber, kind, editor.id, fallbackTargetIndex);
-        const position = annotationTargetPosition(pageNumber, kind, targetIndex, editor.id);
-        const bounds = annotationTargetBounds(pageNumber, kind, targetIndex, editor.id);
-        if (bounds && persistedEntries.some((entry) => entry.bounds && entry.page === pageNumber && boundsOverlapSignificantly(bounds, entry.bounds))) {
-          continue;
-        }
-        const detail = liveAnnotationDetail(editor, pageNumber, targetIndex);
-        if (isDuplicateLiveAnnotation(entries, pageNumber, kind, bounds, detail)) {
-          continue;
-        }
-        entries.push({
-          id: entryId,
-          sourceId: editor.id,
-          source: "live",
-          page: pageNumber,
-          kind,
-          label: annotationLabel(kind),
-          detail: cachedAnnotationDetail(annotationDetailCache, entryId, detail),
-          color: editor.color ?? null,
-          bounds,
-          targetIndex,
-          sortTop: position.top,
-          sortLeft: position.left,
-        });
-      }
-    }
-    return entries;
+    return buildLiveAnnotationEntries({
+      pageCount: pdfDocument.numPages,
+      persistedEntries,
+      detailCache: annotationDetailCache,
+      getEditors: (pageIndex) => annotationEditorUIManager?.getEditors(pageIndex) ?? [],
+      editorId: (editor) => editor.id,
+      editorColor: (editor) => editor.color ?? null,
+      isDeleted: (editor) => Boolean(editor.deleted),
+      kindForEditor: annotationKindForEditor,
+      isUnmodifiedMirrorOfPersistedAnnotation: isUnmodifiedEditorMirrorOfPersistedAnnotation,
+      targetIndexForEditor: (pageNumber, kind, editor, fallbackTargetIndex) =>
+        targetIndexForEditor(pageNumber, kind, editor.id, fallbackTargetIndex),
+      positionForEditor: (pageNumber, kind, targetIndex, editor) =>
+        annotationTargetPosition(pageNumber, kind, targetIndex, editor.id),
+      boundsForEditor: (pageNumber, kind, targetIndex, editor) =>
+        annotationTargetBounds(pageNumber, kind, targetIndex, editor.id),
+      detailForEditor: liveAnnotationDetail,
+    });
   }
 
   function isPersistedAnnotationHidden(pageNumber: number, sourceId: string) {
