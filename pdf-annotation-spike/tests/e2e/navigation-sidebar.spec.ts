@@ -1192,17 +1192,33 @@ test("annotation sidebar keeps useful highlight snippets after load and click", 
     true,
   );
 
-  const activated = await page.evaluate(() => window.__pdfSpike!.activateFirstAnnotationItem());
+  const activated = await page.evaluate(() => {
+    window.__pdfSpike!.setTool("ink");
+    return window.__pdfSpike!.activateFirstAnnotationItem();
+  });
   expect(activated).toBe(true);
   await expect
     .poll(() =>
       page.evaluate(
-        () =>
-          Boolean(window.__pdfSpike!.stats().annotationFocusBox) ||
-          Boolean(document.querySelector(".annotationEditorLayer .selectedEditor")),
+        () => {
+          const stats = window.__pdfSpike!.stats();
+          return {
+            activeTool: stats.activeTool,
+            hasAnnotationFocusBox: Boolean(stats.annotationFocusBox),
+            hasSelectedEditor: Boolean(document.querySelector(".annotationEditorLayer .selectedEditor")),
+            selectedAnnotationKind: stats.selectedAnnotationKind,
+            visibleEditorToolbars: stats.visibleEditorToolbars,
+          };
+        },
       ),
     )
-    .toBe(true);
+    .toMatchObject({
+      activeTool: "ink",
+      hasAnnotationFocusBox: true,
+      hasSelectedEditor: false,
+      selectedAnnotationKind: null,
+      visibleEditorToolbars: 0,
+    });
 });
 
 test("annotation sidebar locate focus clears on blank PDF click and Escape", async ({ page }) => {
@@ -1341,7 +1357,7 @@ test("annotation sidebar locates each persisted ink row after editor mode change
         expectedPersistedAnnotationKey: `${entry.page}:${entry.sourceId}`,
       };
     };
-    const clickEntry = async (entry: SidebarEntry, expectEditable: boolean) => {
+    const clickEntry = async (entry: SidebarEntry) => {
       const row = document.getElementById(`annotation-row-${entry.sourceId}`);
       if (!(row instanceof HTMLElement)) throw new Error(`Annotation row not found for ${entry.id}`);
       row.click();
@@ -1350,24 +1366,13 @@ test("annotation sidebar locates each persisted ink row after editor mode change
       for (let attempt = 0; attempt < 30; attempt += 1) {
         const stats = window.__pdfSpike!.stats();
         const box = stats.annotationFocusBox as { top: number; height: number } | null;
-        const editorBox = selectedEditorBox();
         if (
-          expectEditable &&
-          stats.selectedAnnotationKind === "ink" &&
-          stats.selectedPersistedAnnotationKey === expectedPersistedKey &&
-          !box &&
-          editorBox &&
-          editorBox.borderStyle === "dashed"
-        ) {
-          break;
-        }
-        if (
-          !expectEditable &&
           stats.status === `Located ink on page ${entry.page}.` &&
-          stats.activeTool === "none" &&
+          stats.activeTool === "ink" &&
           stats.selectedAnnotationKind === null &&
           stats.selectedEditorType === null &&
           stats.visibleEditorToolbars === 0 &&
+          stats.selectedPersistedAnnotationKey === expectedPersistedKey &&
           box &&
           Math.abs(box.top - expectedBounds.top) < 30
         ) {
@@ -1390,29 +1395,13 @@ test("annotation sidebar locates each persisted ink row after editor mode change
       }
       window.__pdfSpike!.setTool("ink");
       await sleep(500);
-      const inkHighlightSourceIds = new Set(
-        (await window.__pdfSpike!.annotationSummary())
-          .flatMap(
-            (summary: { annotations?: { id?: unknown; it?: unknown; subtype?: unknown }[] }) =>
-              summary.annotations ?? [],
-          )
-          .filter(
-            (annotation: { id?: unknown; it?: unknown; subtype?: unknown }) =>
-              annotation.subtype === "Ink" && annotation.it === "InkHighlight",
-          )
-          .map((annotation: { id?: unknown }) => String(annotation.id ?? ""))
-          .filter(Boolean),
-      );
-      const isEditableInk = (entry: SidebarEntry) => !inkHighlightSourceIds.has(entry.sourceId);
       return {
         pageNumber,
         pair: [firstIndex + 1, secondIndex + 1],
-        firstInk: await clickEntry(inks[firstIndex], isEditableInk(inks[firstIndex])),
-        secondInk: await clickEntry(inks[secondIndex], isEditableInk(inks[secondIndex])),
+        firstInk: await clickEntry(inks[firstIndex]),
+        secondInk: await clickEntry(inks[secondIndex]),
         firstExpected: pageBounds(inks[firstIndex]),
         secondExpected: pageBounds(inks[secondIndex]),
-        firstEditable: isEditableInk(inks[firstIndex]),
-        secondEditable: isEditableInk(inks[secondIndex]),
       };
     };
     return [await runPair(2, 0, 1), await runPair(2, 1, 2), await runPair(3, 0, 1)];
@@ -1421,34 +1410,20 @@ test("annotation sidebar locates each persisted ink row after editor mode change
   for (const pairResult of result) {
     expect(Math.abs(pairResult.firstInk.top - pairResult.firstExpected.top)).toBeLessThan(30);
     expect(Math.abs(pairResult.secondInk.top - pairResult.secondExpected.top)).toBeLessThan(30);
-    if (pairResult.firstEditable) {
-      expect(pairResult.firstInk.activeTool, JSON.stringify(pairResult)).toBe("ink");
-      expect(pairResult.firstInk.hasAnnotationFocusBox, JSON.stringify(pairResult)).toBe(false);
-      expect(pairResult.firstInk.selectedAnnotationKind, JSON.stringify(pairResult)).toBe("ink");
-      expect(pairResult.firstInk.selectedEditorBorderStyle, JSON.stringify(pairResult)).toBe("dashed");
-      expect(pairResult.firstInk.selectedPersistedAnnotationKey).toBe(pairResult.firstInk.expectedPersistedAnnotationKey);
-    } else {
-      expect(pairResult.firstInk.status, JSON.stringify(pairResult)).toBe(`Located ink on page ${pairResult.pageNumber}.`);
-      expect(pairResult.firstInk.activeTool, JSON.stringify(pairResult)).toBe("none");
-      expect(pairResult.firstInk.hasAnnotationFocusBox, JSON.stringify(pairResult)).toBe(true);
-      expect(pairResult.firstInk.selectedAnnotationKind, JSON.stringify(pairResult)).toBeNull();
-      expect(pairResult.firstInk.selectedEditorType, JSON.stringify(pairResult)).toBeNull();
-      expect(pairResult.firstInk.visibleEditorToolbars, JSON.stringify(pairResult)).toBe(0);
-    }
-    if (pairResult.secondEditable) {
-      expect(pairResult.secondInk.activeTool, JSON.stringify(pairResult)).toBe("ink");
-      expect(pairResult.secondInk.hasAnnotationFocusBox, JSON.stringify(pairResult)).toBe(false);
-      expect(pairResult.secondInk.selectedAnnotationKind, JSON.stringify(pairResult)).toBe("ink");
-      expect(pairResult.secondInk.selectedEditorBorderStyle, JSON.stringify(pairResult)).toBe("dashed");
-      expect(pairResult.secondInk.selectedPersistedAnnotationKey).toBe(pairResult.secondInk.expectedPersistedAnnotationKey);
-    } else {
-      expect(pairResult.secondInk.status, JSON.stringify(pairResult)).toBe(`Located ink on page ${pairResult.pageNumber}.`);
-      expect(pairResult.secondInk.activeTool, JSON.stringify(pairResult)).toBe("none");
-      expect(pairResult.secondInk.hasAnnotationFocusBox, JSON.stringify(pairResult)).toBe(true);
-      expect(pairResult.secondInk.selectedAnnotationKind, JSON.stringify(pairResult)).toBeNull();
-      expect(pairResult.secondInk.selectedEditorType, JSON.stringify(pairResult)).toBeNull();
-      expect(pairResult.secondInk.visibleEditorToolbars, JSON.stringify(pairResult)).toBe(0);
-    }
+    expect(pairResult.firstInk.status, JSON.stringify(pairResult)).toBe(`Located ink on page ${pairResult.pageNumber}.`);
+    expect(pairResult.firstInk.activeTool, JSON.stringify(pairResult)).toBe("ink");
+    expect(pairResult.firstInk.hasAnnotationFocusBox, JSON.stringify(pairResult)).toBe(true);
+    expect(pairResult.firstInk.selectedAnnotationKind, JSON.stringify(pairResult)).toBeNull();
+    expect(pairResult.firstInk.selectedEditorType, JSON.stringify(pairResult)).toBeNull();
+    expect(pairResult.firstInk.visibleEditorToolbars, JSON.stringify(pairResult)).toBe(0);
+    expect(pairResult.firstInk.selectedPersistedAnnotationKey).toBe(pairResult.firstInk.expectedPersistedAnnotationKey);
+    expect(pairResult.secondInk.status, JSON.stringify(pairResult)).toBe(`Located ink on page ${pairResult.pageNumber}.`);
+    expect(pairResult.secondInk.activeTool, JSON.stringify(pairResult)).toBe("ink");
+    expect(pairResult.secondInk.hasAnnotationFocusBox, JSON.stringify(pairResult)).toBe(true);
+    expect(pairResult.secondInk.selectedAnnotationKind, JSON.stringify(pairResult)).toBeNull();
+    expect(pairResult.secondInk.selectedEditorType, JSON.stringify(pairResult)).toBeNull();
+    expect(pairResult.secondInk.visibleEditorToolbars, JSON.stringify(pairResult)).toBe(0);
+    expect(pairResult.secondInk.selectedPersistedAnnotationKey).toBe(pairResult.secondInk.expectedPersistedAnnotationKey);
   }
 });
 
@@ -1471,9 +1446,8 @@ test("direct re-click of selected editable annotation does not flash locate box"
       .filter((candidate) => candidate.kind === "ink")
       .find((candidate) => !inkHighlightSourceIds.has(candidate.sourceId));
     if (!entry) throw new Error("Missing editable ink row");
-    const row = document.getElementById(`annotation-row-${entry.sourceId}`);
-    if (!(row instanceof HTMLElement)) throw new Error(`Missing editable ink row button ${entry.sourceId}`);
-    row.click();
+    const activated = await window.__pdfSpike!.activateAnnotationBySourceId(entry.sourceId);
+    if (!activated) throw new Error(`Could not activate editable ink ${entry.sourceId}`);
     return { expectedPersistedAnnotationKey: `${entry.page}:${entry.sourceId}`, sourceId: entry.sourceId };
   });
 
@@ -1526,7 +1500,7 @@ test("direct re-click of selected editable annotation does not flash locate box"
   await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().annotationFocusBox)).toBeNull();
 });
 
-test("direct clicks on highlighter-intent ink annotations edit through the highlight path", async ({ page }) => {
+test("direct double-clicks on highlighter-intent ink annotations edit through the highlight path without toggling tools", async ({ page }) => {
   await loadFixture(page);
 
   const inkHighlights = await page.evaluate(async () => {
@@ -1562,7 +1536,7 @@ test("direct clicks on highlighter-intent ink annotations edit through the highl
   });
   expect(plainInks.length).toBeGreaterThanOrEqual(1);
 
-  const clickInkHighlightOnPage = async (entry: (typeof inkHighlights)[number]) => {
+  const doubleClickInkOnPage = async (entry: (typeof inkHighlights)[number]) => {
     const point = await page.evaluate(async ({ pageNumber, sourceId }) => {
       const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
       const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
@@ -1636,20 +1610,12 @@ test("direct clicks on highlighter-intent ink annotations edit through the highl
       return { hit: target ? target.id || hitName(target) : hitName(hit), usedBoundsFallback: false, x, y };
     }, { pageNumber: entry.page, sourceId: entry.id });
 
-    if (
-      !point.usedBoundsFallback &&
-      !point.hit.includes(`pdfjs_internal_id_${entry.id}`) &&
-      !point.hit.includes("inkAnnotation") &&
-      !point.hit.includes("highlightEditor")
-    ) {
-      throw new Error(`Direct click point missed ${entry.id}; hit=${point.hit} point=${JSON.stringify(point)}`);
-    }
     const clickX = Number(point.x);
     const clickY = Number(point.y);
     if (!Number.isFinite(clickX) || !Number.isFinite(clickY)) {
       throw new Error(`Invalid click point ${JSON.stringify(point)}`);
     }
-    await page.mouse.click(clickX, clickY);
+    await page.mouse.dblclick(clickX, clickY);
     await page.waitForTimeout(900);
     return page.evaluate((sourceId) => {
       const stats = window.__pdfSpike!.stats();
@@ -1673,12 +1639,13 @@ test("direct clicks on highlighter-intent ink annotations edit through the highl
 
   const first = inkHighlights[0];
   const second = inkHighlights[1];
-  const selectedPlainInkStats = await clickInkHighlightOnPage(plainInks[0]);
+  const selectedPlainInkStats = await doubleClickInkOnPage(plainInks[0]);
+  expect(selectedPlainInkStats.activeTool, JSON.stringify(selectedPlainInkStats)).toBe("none");
   expect(selectedPlainInkStats.selectedAnnotationKind, JSON.stringify(selectedPlainInkStats)).toBe("ink");
 
-  const firstStats = await clickInkHighlightOnPage(first);
+  const firstStats = await doubleClickInkOnPage(first);
   expect(firstStats.status, JSON.stringify(firstStats)).toBe("Selected highlight. Change color or delete it, then save.");
-  expect(firstStats.activeTool, JSON.stringify(firstStats)).toBe("highlight");
+  expect(firstStats.activeTool, JSON.stringify(firstStats)).toBe("none");
   expect(firstStats.selectedAnnotationKind, JSON.stringify(firstStats)).toBe("highlight");
   expect(firstStats.selectedPersistedAnnotationKey, JSON.stringify(firstStats)).toBe(`${first.page}:${first.id}`);
   expect(firstStats.visibleEditorToolbars, JSON.stringify(firstStats)).toBe(1);
@@ -1702,7 +1669,7 @@ test("direct clicks on highlighter-intent ink annotations edit through the highl
       subtype: "Ink",
     });
 
-  const reselectedFirstStats = await clickInkHighlightOnPage(first);
+  const reselectedFirstStats = await doubleClickInkOnPage(first);
   expect(reselectedFirstStats.selectedAnnotationKind, JSON.stringify(reselectedFirstStats)).toBe("highlight");
   const deleted = await page.evaluate(() => window.__pdfSpike!.deleteSelected());
   expect(deleted).toBe(true);
@@ -1720,9 +1687,9 @@ test("direct clicks on highlighter-intent ink annotations edit through the highl
     )
     .toBe(false);
 
-  const secondStats = await clickInkHighlightOnPage(second);
+  const secondStats = await doubleClickInkOnPage(second);
   expect(secondStats.status, JSON.stringify(secondStats)).toBe("Selected highlight. Change color or delete it, then save.");
-  expect(secondStats.activeTool, JSON.stringify(secondStats)).toBe("highlight");
+  expect(secondStats.activeTool, JSON.stringify(secondStats)).toBe("none");
   expect(secondStats.selectedAnnotationKind, JSON.stringify(secondStats)).toBe("highlight");
   expect(secondStats.selectedPersistedAnnotationKey, JSON.stringify(secondStats)).toBe(`${second.page}:${second.id}`);
   expect(secondStats.visibleEditorToolbars, JSON.stringify(secondStats)).toBe(1);
@@ -1867,10 +1834,9 @@ test("annotation sidebar stays synced across load, click, delete, edit, and crea
     const clickEntryAndWait = async (predicate: (entry: SidebarEntry) => boolean, selectedKind: string) => {
       const entry = entries().find(predicate);
       if (!entry) throw new Error(`Annotation entry not found; entries=${JSON.stringify(entries())}`);
-      const row = document.getElementById(`annotation-row-${entry.sourceId}`);
-      if (!(row instanceof HTMLElement)) throw new Error(`Annotation row not found for ${entry.id}`);
       const expectedPersistedKey = entry.source === "pdf" ? `${entry.page}:${entry.sourceId}` : null;
-      row.click();
+      const activated = await window.__pdfSpike!.activateAnnotationBySourceId(entry.sourceId);
+      if (!activated) throw new Error(`Could not activate annotation ${entry.id}`);
       for (let attempt = 0; attempt < 30; attempt += 1) {
         const stats = window.__pdfSpike!.stats();
         if (

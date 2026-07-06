@@ -155,7 +155,7 @@ test("keeps multiple live highlights independently selectable and colored", asyn
   expect(liveHighlightColors).toContain("#8ecbff");
 
   await activateNthLiveHighlight(page, 0);
-  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().activeTool)).toBe("highlight");
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().activeTool)).toBe("none");
 });
 
 test("highlighting selected text after ink mode creates only a highlight", async ({ page }) => {
@@ -226,6 +226,47 @@ test("toolbar highlight creates an annotation from mouse-selected text", async (
       }, beforePageOneHighlights),
     )
     .toEqual({ activeTool: "highlight", newPageOneHighlights: 1, selectedText: "" });
+});
+
+test("highlight button ignores text that was deselected by clicking back into the PDF", async ({ page }) => {
+  const before = await page.evaluate(() => window.__pdfSpike!.annotationSidebarSummary());
+  const beforePageOneHighlights = before.filter(
+    (entry: { kind: string; page: number }) => entry.kind === "highlight" && entry.page === 1,
+  ).length;
+  const titleBox = await page.evaluate(() => {
+    const titleSpan = [...document.querySelectorAll<HTMLElement>(".textLayer span")].find(
+      (span) =>
+        span.textContent?.includes("How Modern Browsers Work") &&
+        span.getBoundingClientRect().width > 0,
+    );
+    if (!titleSpan) throw new Error("Could not find selectable title text");
+    const rect = titleSpan.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  });
+
+  await page.mouse.move(titleBox.left + 1, titleBox.top + titleBox.height * 0.55);
+  await page.mouse.down();
+  await page.mouse.move(titleBox.left + titleBox.width, titleBox.top + titleBox.height * 0.55, { steps: 80 });
+  await page.mouse.up();
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe("How Modern Browsers Work");
+
+  await page.mouse.click(titleBox.left + 4, titleBox.top + titleBox.height + 42);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString().trim() ?? "")).toBe("");
+  await page.locator(".segmented").getByRole("button", { name: "Highlight", exact: true }).click();
+
+  await expect
+    .poll(() =>
+      page.evaluate((previousPageOneHighlights) => {
+        const entries = window.__pdfSpike!.annotationSidebarSummary();
+        return {
+          activeTool: window.__pdfSpike!.stats().activeTool,
+          newPageOneHighlights:
+            entries.filter((entry: { kind: string; page: number }) => entry.kind === "highlight" && entry.page === 1)
+              .length - previousPageOneHighlights,
+        };
+      }, beforePageOneHighlights),
+    )
+    .toEqual({ activeTool: "highlight", newPageOneHighlights: 0 });
 });
 
 test("selected text is only consumed by the highlight tool", async ({ page }) => {
@@ -630,20 +671,41 @@ test("active annotation tool creates over empty existing ink editor bounds", asy
     });
 });
 
-test("active annotation tool still edits visible free text and ink annotations", async ({ page }) => {
+test("active annotation tool double-click edits visible annotations without switching tools", async ({ page }) => {
   await createFreeText(page, "Clickable visible text");
-  await page.getByRole("button", { name: "Free text", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => window.__pdfSpike!.setTool("text"));
   const freeTextPoint = await page.evaluate(() => {
     const editor = document.querySelector<HTMLElement>(".page[data-page-number='1'] .freeTextEditor .internal");
     if (!editor) throw new Error("Missing free text editor content");
     const rect = editor.getBoundingClientRect();
     return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
   });
+  const beforeFreeTextEditors = await page.evaluate(() => window.__pdfSpike!.stats().freeTextEditors);
   await page.mouse.click(freeTextPoint.x, freeTextPoint.y);
-  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("freetext");
+  await page.waitForTimeout(150);
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        freeTextEditors: window.__pdfSpike!.stats().freeTextEditors,
+        hasAnnotationFocusBox: Boolean(window.__pdfSpike!.stats().annotationFocusBox),
+        selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+      })),
+    )
+    .toEqual({ freeTextEditors: beforeFreeTextEditors, hasAnnotationFocusBox: false, selectedAnnotationKind: null });
+  await page.mouse.click(freeTextPoint.x, freeTextPoint.y);
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        activeTool: window.__pdfSpike!.stats().activeTool,
+        hasAnnotationFocusBox: Boolean(window.__pdfSpike!.stats().annotationFocusBox),
+        selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+      })),
+    )
+    .toEqual({ activeTool: "text", hasAnnotationFocusBox: false, selectedAnnotationKind: "freetext" });
 
   await createInkStroke(page);
-  await page.getByRole("button", { name: "Free text", exact: true }).click();
+  await page.evaluate(() => window.__pdfSpike!.setTool("text"));
   const inkPoint = await page.evaluate(() => {
     const polyline = document.querySelector<SVGGeometryElement>(".page[data-page-number='1'] .inkEditor .ink-hit-area polyline");
     if (!polyline) throw new Error("Missing ink hit area");
@@ -656,11 +718,18 @@ test("active annotation tool still edits visible free text and ink annotations",
     }
     return { x, y };
   });
-  await page.mouse.click(inkPoint.x, inkPoint.y);
-  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("ink");
+  await page.mouse.dblclick(inkPoint.x, inkPoint.y);
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        activeTool: window.__pdfSpike!.stats().activeTool,
+        selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+      })),
+    )
+    .toEqual({ activeTool: "text", selectedAnnotationKind: "ink" });
 });
 
-test("selection mode direct-click edits existing free text and ink annotations", async ({ page }) => {
+test("selection mode double-click edits existing free text and ink annotations without toggling tools", async ({ page }) => {
   await createFreeText(page, "Direct click text");
   await page.evaluate(() => window.__pdfSpike!.setTool("none"));
   const freeTextPoint = await page.evaluate(() => {
@@ -669,8 +738,16 @@ test("selection mode direct-click edits existing free text and ink annotations",
     const rect = editor.getBoundingClientRect();
     return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
   });
-  await page.mouse.click(freeTextPoint.x, freeTextPoint.y);
-  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("freetext");
+  await page.mouse.dblclick(freeTextPoint.x, freeTextPoint.y);
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        activeTool: window.__pdfSpike!.stats().activeTool,
+        hasAnnotationFocusBox: Boolean(window.__pdfSpike!.stats().annotationFocusBox),
+        selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+      })),
+    )
+    .toEqual({ activeTool: "none", hasAnnotationFocusBox: false, selectedAnnotationKind: "freetext" });
 
   await createInkStroke(page);
   await page.evaluate(() => window.__pdfSpike!.setTool("none"));
@@ -689,11 +766,106 @@ test("selection mode direct-click edits existing free text and ink annotations",
     }
     throw new Error("Could not find clickable ink point");
   });
-  await page.mouse.click(inkPoint.x, inkPoint.y);
-  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("ink");
+  await page.mouse.dblclick(inkPoint.x, inkPoint.y);
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        activeTool: window.__pdfSpike!.stats().activeTool,
+        selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+      })),
+    )
+    .toEqual({ activeTool: "none", selectedAnnotationKind: "ink" });
 });
 
-test("selection mode direct-click edits persisted free text annotation", async ({ page }) => {
+test("direct double-click editing an annotation does not scroll the PDF viewport", async ({ page }) => {
+  await createFreeText(page, "No scroll direct edit", 2);
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+  const target = await page.evaluate(async () => {
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const editor = document.querySelector<HTMLElement>(".page[data-page-number='2'] .freeTextEditor");
+    if (!container || !editor) throw new Error("Missing PDF container or page 2 free text editor");
+    const containerRect = container.getBoundingClientRect();
+    const editorRect = editor.getBoundingClientRect();
+    const absoluteTop = editorRect.top - containerRect.top + container.scrollTop;
+    container.scrollTop = Math.max(0, absoluteTop - 36);
+    await sleep(150);
+    const rect = editor.getBoundingClientRect();
+    return {
+      beforeScrollTop: container.scrollTop,
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+    };
+  });
+
+  await page.mouse.dblclick(target.x, target.y);
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (beforeScrollTop) => ({
+          activeTool: window.__pdfSpike!.stats().activeTool,
+          scrollDelta: Math.abs(
+            (document.querySelector<HTMLElement>(".pdf-container")?.scrollTop ?? 0) - beforeScrollTop,
+          ),
+          selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+        }),
+        target.beforeScrollTop,
+      ),
+    )
+    .toEqual({ activeTool: "none", scrollDelta: 0, selectedAnnotationKind: "freetext" });
+});
+
+test("direct double-click editing a persisted annotation does not scroll the PDF viewport", async ({ page }) => {
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+  const target = await page.evaluate(async () => {
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const entry = (window.__pdfSpike!.annotationSidebarSummary() as {
+      bounds?: { left: number; right: number; top: number; bottom: number } | null;
+      kind: string;
+      page: number;
+    }[]).find((candidate) => candidate.kind === "freetext" && candidate.bounds);
+    if (!container) throw new Error("Missing PDF container");
+    if (!entry?.bounds) throw new Error("Missing persisted free text entry");
+
+    const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
+    if (!pageElement) throw new Error(`Missing page ${entry.page}`);
+    container.scrollTop = Math.max(0, pageElement.offsetTop - 20);
+    await sleep(400);
+
+    const containerRect = container.getBoundingClientRect();
+    const pageRect = pageElement.getBoundingClientRect();
+    const absoluteTop = pageRect.top - containerRect.top + container.scrollTop + entry.bounds.top * pageRect.height;
+    container.scrollTop = Math.max(0, absoluteTop - 36);
+    await sleep(150);
+    const updatedPageRect = pageElement.getBoundingClientRect();
+    return {
+      beforeScrollTop: container.scrollTop,
+      x: Math.round(updatedPageRect.left + ((entry.bounds.left + entry.bounds.right) / 2) * updatedPageRect.width),
+      y: Math.round(updatedPageRect.top + ((entry.bounds.top + entry.bounds.bottom) / 2) * updatedPageRect.height),
+    };
+  });
+
+  await page.mouse.dblclick(target.x, target.y);
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (beforeScrollTop) => ({
+          activeTool: window.__pdfSpike!.stats().activeTool,
+          scrollDelta: Math.abs(
+            (document.querySelector<HTMLElement>(".pdf-container")?.scrollTop ?? 0) - beforeScrollTop,
+          ),
+          selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+        }),
+        target.beforeScrollTop,
+      ),
+    )
+    .toEqual({ activeTool: "none", scrollDelta: 0, selectedAnnotationKind: "freetext" });
+});
+
+test("single-click on persisted free text does not locate, double-click edits without toggling tools", async ({ page }) => {
   await createFreeText(page, "Persisted direct click text");
   await saveAndReopen(page, "/tmp/pdfspike-playwright-persisted-free-text-direct-click.pdf");
   await page.evaluate(() => window.__pdfSpike!.setTool("none"));
@@ -706,10 +878,28 @@ test("selection mode direct-click edits persisted free text annotation", async (
     return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
   });
   await page.mouse.click(freeTextPoint.x, freeTextPoint.y);
-  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("freetext");
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        activeTool: window.__pdfSpike!.stats().activeTool,
+        hasAnnotationFocusBox: Boolean(window.__pdfSpike!.stats().annotationFocusBox),
+        selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+      })),
+    )
+    .toEqual({ activeTool: "none", hasAnnotationFocusBox: false, selectedAnnotationKind: null });
+
+  await page.mouse.dblclick(freeTextPoint.x, freeTextPoint.y);
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        activeTool: window.__pdfSpike!.stats().activeTool,
+        selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+      })),
+    )
+    .toEqual({ activeTool: "none", selectedAnnotationKind: "freetext" });
 });
 
-test("selection mode direct-click edits persisted ink annotation", async ({ page }) => {
+test("selection mode double-click edits persisted ink annotation without toggling tools", async ({ page }) => {
   await createInkStroke(page);
   await saveAndReopen(page, "/tmp/pdfspike-playwright-persisted-ink-direct-click.pdf");
   await page.evaluate(() => window.__pdfSpike!.setTool("none"));
@@ -728,8 +918,208 @@ test("selection mode direct-click edits persisted ink annotation", async ({ page
     const rect = mark.getBoundingClientRect();
     return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
   });
-  await page.mouse.click(inkPoint.x, inkPoint.y);
-  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("ink");
+  await page.mouse.dblclick(inkPoint.x, inkPoint.y);
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        activeTool: window.__pdfSpike!.stats().activeTool,
+        selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+      })),
+    )
+    .toEqual({ activeTool: "none", selectedAnnotationKind: "ink" });
+});
+
+test("editing one ink annotation does not arm single-click editing for another ink", async ({ page }) => {
+  await createInkStroke(page);
+
+  const firstInk = await page.evaluate(() => {
+    const editor = document.querySelector<HTMLElement>(".page[data-page-number='1'] .inkEditor");
+    if (!editor) throw new Error("Missing live ink editor");
+    const rect = editor.getBoundingClientRect();
+    return {
+      id: editor.id,
+      x: Math.round(rect.left + rect.width / 2),
+      y: Math.round(rect.top + rect.height / 2),
+    };
+  });
+
+  await page.mouse.dblclick(firstInk.x, firstInk.y);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const stats = window.__pdfSpike!.stats();
+        const selected = window.__pdfSpike!
+          .editorSummary()
+          .find((editor: { isFirstSelectedEditor?: unknown }) => editor.isFirstSelectedEditor);
+        const inkLayer = document.querySelector<HTMLElement>(".annotationEditorLayer.inkEditing");
+        return {
+          activeTool: stats.activeTool,
+          inkLayerCursor: inkLayer ? getComputedStyle(inkLayer).cursor : null,
+          selectedAnnotationKind: stats.selectedAnnotationKind,
+          selectedEditorId: selected?.id ?? null,
+          selectedPersistedAnnotationKey: stats.selectedPersistedAnnotationKey,
+        };
+      }),
+    )
+    .toEqual({
+      activeTool: "none",
+      inkLayerCursor: "auto",
+      selectedAnnotationKind: "ink",
+      selectedEditorId: firstInk.id,
+      selectedPersistedAnnotationKey: null,
+    });
+
+  const plainInks = await page.evaluate(async () => {
+    return (await window.__pdfSpike!.annotationSummary())
+      .flatMap((summary: { page?: unknown; annotations?: { id?: unknown; it?: unknown; subtype?: unknown }[] }) =>
+        (summary.annotations ?? []).map((annotation) => ({
+          id: String(annotation.id ?? ""),
+          intent: annotation.it,
+          page: Number(summary.page),
+          subtype: annotation.subtype,
+        })),
+      )
+      .filter(
+        (annotation: { id: string; intent: unknown; page: number; subtype: unknown }) =>
+          annotation.subtype === "Ink" && annotation.intent !== "InkHighlight" && annotation.id,
+      )
+      .slice(0, 1);
+  });
+  expect(plainInks.length).toBeGreaterThanOrEqual(1);
+
+  const secondInk = await page.evaluate(async ({ pageNumber, sourceId }) => {
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    if (!pageElement || !container) throw new Error(`Missing page/container for ${sourceId}`);
+    container.scrollTop = Math.max(pageElement.offsetTop - 20, 0);
+    await sleep(300);
+    const entry = (window.__pdfSpike!.annotationSidebarSummary() as {
+      bounds?: { left: number; right: number; top: number; bottom: number } | null;
+      page: number;
+      sourceId: string;
+    }[]).find((candidate) => candidate.page === pageNumber && candidate.sourceId === sourceId);
+    if (!entry?.bounds) throw new Error(`Missing ink bounds ${sourceId}`);
+    const pageRect = pageElement.getBoundingClientRect();
+    return {
+      x: Math.round(pageRect.left + ((entry.bounds.left + entry.bounds.right) / 2) * pageRect.width),
+      y: Math.round(pageRect.top + ((entry.bounds.top + entry.bounds.bottom) / 2) * pageRect.height),
+    };
+  }, { pageNumber: plainInks[0].page, sourceId: plainInks[0].id });
+
+  await page.mouse.move(secondInk.x, secondInk.y);
+  await page.mouse.click(secondInk.x, secondInk.y);
+  await page.waitForTimeout(300);
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const stats = window.__pdfSpike!.stats();
+        const selected = window.__pdfSpike!
+          .editorSummary()
+          .find((editor: { isFirstSelectedEditor?: unknown }) => editor.isFirstSelectedEditor);
+        return {
+          activeTool: stats.activeTool,
+          selectedAnnotationKind: stats.selectedAnnotationKind,
+          selectedEditorId: selected?.id ?? null,
+          selectedPersistedAnnotationKey: stats.selectedPersistedAnnotationKey,
+        };
+      }),
+    )
+    .toEqual({
+      activeTool: "none",
+      selectedAnnotationKind: "ink",
+      selectedEditorId: firstInk.id,
+      selectedPersistedAnnotationKey: null,
+    });
+});
+
+test("selection mode can drag-select text starting inside highlight and ink visuals", async ({ page }) => {
+  const dragTarget = async (kind: "highlight" | "ink") =>
+    page.evaluate(async (targetKind) => {
+      window.__pdfSpike!.setTool("none");
+      document.getSelection()?.removeAllRanges();
+
+      type Point = { x: number; y: number };
+      type Rect = { left: number; right: number; top: number; bottom: number };
+      const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      const overlaps = (left: Rect, right: Rect) =>
+        left.left < right.right && left.right > right.left && left.top < right.bottom && left.bottom > right.top;
+      const rectFromDom = (rect: DOMRect): Rect => ({
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+      });
+      const center = (rect: Rect): Point => ({
+        x: Math.round((rect.left + rect.right) / 2),
+        y: Math.round((rect.top + rect.bottom) / 2),
+      });
+      const textDragForVisualRect = (visualRect: Rect, pageElement: HTMLElement) => {
+        const textLayer = pageElement.querySelector(".textLayer") ?? pageElement;
+        const chars: { rect: Rect; text: string }[] = [];
+        const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+          const text = node.textContent ?? "";
+          for (let offset = 0; offset < text.length; offset += 1) {
+            if (!text[offset]?.trim()) continue;
+            const range = document.createRange();
+            range.setStart(node, offset);
+            range.setEnd(node, offset + 1);
+            const rect = range.getBoundingClientRect();
+            range.detach();
+            if (rect.width > 0 && rect.height > 0) {
+              chars.push({ rect: rectFromDom(rect), text: text[offset] });
+            }
+          }
+        }
+        const startIndex = chars.findIndex((char) => overlaps(char.rect, visualRect));
+        if (startIndex < 0) return null;
+        const start = center(chars[startIndex].rect);
+        const end = center(chars[Math.min(chars.length - 1, startIndex + 12)].rect);
+        return { start, end };
+      };
+
+      if (targetKind === "highlight") {
+        const highlight = document.querySelector<HTMLElement>(".highlightAnnotation, .highlightEditor.disabled");
+        if (!highlight) throw new Error("Missing visible highlight annotation");
+        highlight.scrollIntoView({ block: "center", inline: "center" });
+        await sleep(400);
+        const highlightPage = highlight.closest<HTMLElement>(".page");
+        if (!highlightPage) throw new Error("Missing highlight page");
+        const drag = textDragForVisualRect(rectFromDom(highlight.getBoundingClientRect()), highlightPage);
+        if (!drag) throw new Error("Could not find text inside highlight visual rect");
+        return drag;
+      }
+
+      const inkShapes = [...document.querySelectorAll<SVGGraphicsElement>(".inkAnnotation svg :is(path, polyline, polygon, line)")];
+      for (const shape of inkShapes) {
+        shape.scrollIntoView({ block: "center", inline: "center" });
+        await sleep(250);
+        const pageElement = shape.closest<HTMLElement>(".page");
+        const rect = rectFromDom(shape.getBoundingClientRect());
+        if (!pageElement || (rect.right <= rect.left && rect.bottom <= rect.top)) continue;
+        const padded = { left: rect.left - 8, right: rect.right + 8, top: rect.top - 8, bottom: rect.bottom + 8 };
+        const drag = textDragForVisualRect(padded, pageElement);
+        if (drag) return drag;
+      }
+      throw new Error("Could not find text under an ink visual shape");
+    }, kind);
+
+  const dragAndReadSelection = async (target: Awaited<ReturnType<typeof dragTarget>>) => {
+    await page.evaluate(() => document.getSelection()?.removeAllRanges());
+    await page.mouse.move(target.start.x, target.start.y);
+    await page.mouse.down();
+    await page.mouse.move(target.end.x, target.end.y, { steps: 8 });
+    await page.mouse.up();
+    return page.evaluate(() => document.getSelection()?.toString().trim() ?? "");
+  };
+
+  await expect.poll(async () => dragAndReadSelection(await dragTarget("highlight"))).not.toBe("");
+  await expect.poll(async () => dragAndReadSelection(await dragTarget("ink"))).not.toBe("");
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBeNull();
+  await expect.poll(() => page.evaluate(() => Boolean(window.__pdfSpike!.stats().annotationFocusBox))).toBe(false);
 });
 
 test("creates marker ink with preset color, thickness, and opacity", async ({ page }) => {

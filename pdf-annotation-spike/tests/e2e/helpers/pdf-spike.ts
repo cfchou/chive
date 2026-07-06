@@ -283,11 +283,9 @@ export async function activateNthLiveHighlight(page: Page, index: number) {
     throw new Error(`Live highlight not found at index ${targetIndex}`);
   }, String(index));
 
-  await page.mouse.move(point.clientX, point.clientY);
-  await page.mouse.down();
-  await page.mouse.up();
+  await page.mouse.dblclick(point.clientX, point.clientY);
   await page.waitForTimeout(300);
-  await expect.poll(() => getStats(page)).toMatchObject({ activeTool: "highlight", selectedHighlightColor: /.+/ });
+  await expect.poll(() => getStats(page)).toMatchObject({ activeTool: "none", selectedHighlightColor: /.+/ });
 }
 
 export async function expectNoVisibleAnnotationPopup(page: Page) {
