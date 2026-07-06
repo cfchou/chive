@@ -567,8 +567,8 @@
         scheduleAnnotationSidebarRefresh(120);
       });
     }
-    eventBus.on("editingstateschanged", syncSelectedEditorState);
-    eventBus.on("annotationeditorparamschanged", syncSelectedEditorState);
+    eventBus.on("editingstateschanged", () => syncSelectedEditorState());
+    eventBus.on("annotationeditorparamschanged", () => syncSelectedEditorState());
   }
 
   function scheduleAnnotationSidebarRefresh(delay = 120) {
@@ -2594,22 +2594,23 @@
           : `${toolLabel(tool)} mode. Create an annotation, then save.`;
   }
 
-  function setPdfjsEditorMode(tool: EditorTool) {
+  function setPdfjsEditorMode(tool: EditorTool, options: { applyDefaultParams?: boolean } = {}) {
     if (!pdfViewer) return;
-    if (tool === "highlight" && annotationEditorUIManager) {
+    const applyDefaultParams = options.applyDefaultParams !== false;
+    if (applyDefaultParams && tool === "highlight" && annotationEditorUIManager) {
       annotationEditorUIManager.updateParams(
         pdfjsLib.AnnotationEditorParamsType.HIGHLIGHT_COLOR,
         highlightColors[defaultHighlightColor],
       );
     }
     pdfViewer.annotationEditorMode = { mode: editorModes[tool] };
-    if (tool === "text" && annotationEditorUIManager) {
+    if (applyDefaultParams && tool === "text" && annotationEditorUIManager) {
       annotationEditorUIManager.updateParams(
         pdfjsLib.AnnotationEditorParamsType.FREETEXT_COLOR,
         freeTextColors[defaultFreeTextColor],
       );
     }
-    if (tool === "ink" && annotationEditorUIManager) {
+    if (applyDefaultParams && tool === "ink" && annotationEditorUIManager) {
       annotationEditorUIManager.updateParams(
         pdfjsLib.AnnotationEditorParamsType.INK_COLOR_AND_OPACITY,
         { color: inkColors[defaultInkColor], opacity: defaultInkOpacity },
@@ -2623,7 +2624,7 @@
   }
 
   async function preparePdfjsEditorModeForEdit(tool: EditorTool) {
-    setPdfjsEditorMode(tool);
+    setPdfjsEditorMode(tool, { applyDefaultParams: false });
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
 
@@ -3670,7 +3671,8 @@
     });
   }
 
-  function syncSelectedEditorState(persistedKeyHint: string | null = null) {
+  function syncSelectedEditorState(persistedKeyHint: unknown = null) {
+    const normalizedPersistedKeyHint = typeof persistedKeyHint === "string" ? persistedKeyHint : null;
     syncInkEditorHitAreas();
     const firstSelectedEditor = annotationEditorUIManager?.firstSelectedEditor;
     const editor = editorBelongsToCurrentManager(firstSelectedEditor) ? firstSelectedEditor : null;
@@ -3712,7 +3714,7 @@
     hasSelectedHighlight = isHighlightEditor(editor);
     selectedHighlightColor = hasSelectedHighlight ? highlightColorNameForValue(editor?.color ?? null) : null;
     selectedAnnotationEntryId = `live:${editor.id}`;
-    selectedPersistedAnnotationKey = persistedAnnotationKeyForEditor(editor) ?? persistedKeyHint;
+    selectedPersistedAnnotationKey = persistedAnnotationKeyForEditor(editor) ?? normalizedPersistedKeyHint;
     if (selectedPersistedAnnotationKey) {
       persistedAnnotationKeyByEditorId.set(editor.id, selectedPersistedAnnotationKey);
     }

@@ -563,6 +563,63 @@ test("preselected free-text color applies to newly created text", async ({ page 
     .toEqual({ color: "rgb(79, 122, 41)", text: "Green text" });
 });
 
+test("selected free text keeps recolored value after clicking inside it", async ({ page }) => {
+  await createFreeText(page, "Free text recolor click");
+  await page.waitForTimeout(700);
+  const target = await page.evaluate(() => {
+    const selected = window.__pdfSpike!
+      .editorSummary()
+      .find((editor: { isFirstSelectedEditor?: unknown }) => editor.isFirstSelectedEditor);
+    if (!selected?.id) throw new Error("Missing selected free text editor summary");
+    const editor = document.getElementById(String(selected.id));
+    if (!editor) throw new Error("Missing selected free text editor");
+    const colorInput = editor.querySelector<HTMLInputElement>(".editToolbar:not(.hidden) .basicColorPicker");
+    if (!colorInput) throw new Error("Missing free text floating color picker");
+    colorInput.focus();
+    colorInput.value = "#2f6ecb";
+    colorInput.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    colorInput.dispatchEvent(new Event("change", { bubbles: true }));
+    const rect = editor.getBoundingClientRect();
+    return { id: String(selected.id), x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+
+  await expect
+    .poll(() =>
+      page.evaluate((editorId) => {
+        const editor = document.getElementById(editorId);
+        return {
+          selectedPersistedAnnotationKey: window.__pdfSpike!.stats().selectedPersistedAnnotationKey,
+          selectedEditorColor: window.__pdfSpike!.stats().selectedEditorColor,
+          styleColor: getComputedStyle(editor!.querySelector<HTMLElement>(".internal")!).color,
+        };
+      }, target.id),
+    )
+    .toEqual({
+      selectedPersistedAnnotationKey: null,
+      selectedEditorColor: "#2f6ecb",
+      styleColor: "rgb(47, 110, 203)",
+    });
+
+  await page.mouse.click(target.x, target.y);
+
+  await expect
+    .poll(() =>
+      page.evaluate((editorId) => {
+        const editor = document.getElementById(editorId);
+        return {
+          selectedPersistedAnnotationKey: window.__pdfSpike!.stats().selectedPersistedAnnotationKey,
+          selectedEditorColor: window.__pdfSpike!.stats().selectedEditorColor,
+          styleColor: getComputedStyle(editor!.querySelector<HTMLElement>(".internal")!).color,
+        };
+      }, target.id),
+    )
+    .toEqual({
+      selectedPersistedAnnotationKey: null,
+      selectedEditorColor: "#2f6ecb",
+      styleColor: "rgb(47, 110, 203)",
+    });
+});
+
 test("creates, moves, recolors, and deletes ink annotation", async ({ page }) => {
   const baseline = (await pageAnnotations(page)).filter((entry) => entry.subtype === "Ink").length;
 
@@ -618,6 +675,56 @@ test("creates, moves, recolors, and deletes ink annotation", async ({ page }) =>
 
   annotations = await pageAnnotations(page);
   expect(annotations.filter((entry) => entry.subtype === "Ink")).toHaveLength(baseline);
+});
+
+test("selected ink keeps recolored value after clicking inside it", async ({ page }) => {
+  await createInkStroke(page);
+  const point = await page.evaluate(() => {
+    const selected = window.__pdfSpike!
+      .editorSummary()
+      .find(
+        (editor: { annotationElementId?: unknown; editorType?: unknown }) =>
+          editor.editorType === "ink" && !editor.annotationElementId,
+      );
+    if (!selected?.id) throw new Error("Missing created ink editor summary");
+    const editor = document.getElementById(String(selected.id));
+    if (!editor) throw new Error("Missing ink editor");
+    const rect = editor.getBoundingClientRect();
+    return { id: String(selected.id), x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.mouse.dblclick(point.x, point.y);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("ink");
+  await page.waitForTimeout(700);
+  await page.evaluate((editorId) => {
+    const editor = document.getElementById(editorId);
+    if (!editor) throw new Error("Missing selected ink editor");
+    const colorInput = editor.querySelector<HTMLInputElement>(".editToolbar:not(.hidden) .basicColorPicker");
+    if (!colorInput) throw new Error("Missing ink floating color picker");
+    colorInput.focus();
+    colorInput.value = "#2f6ecb";
+    colorInput.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
+    colorInput.dispatchEvent(new Event("change", { bubbles: true }));
+  }, point.id);
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        selectedPersistedAnnotationKey: window.__pdfSpike!.stats().selectedPersistedAnnotationKey,
+        selectedEditorColor: window.__pdfSpike!.stats().selectedEditorColor,
+      })),
+    )
+    .toEqual({ selectedPersistedAnnotationKey: null, selectedEditorColor: "#2f6ecb" });
+
+  await page.mouse.click(point.x, point.y);
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        selectedPersistedAnnotationKey: window.__pdfSpike!.stats().selectedPersistedAnnotationKey,
+        selectedEditorColor: window.__pdfSpike!.stats().selectedEditorColor,
+      })),
+    )
+    .toEqual({ selectedPersistedAnnotationKey: null, selectedEditorColor: "#2f6ecb" });
 });
 
 test("active annotation tool creates over empty existing ink editor bounds", async ({ page }) => {
