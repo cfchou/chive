@@ -6,7 +6,7 @@ Date: 2026-07-04
 
 ## Context
 
-The PDF annotation spike supports a navigation sidebar with document outline entries and Chive-created bookmarks.
+The PDF annotation spike supports a navigation sidebar with Document Outline Entries and Chive Bookmarks.
 
 Readers need a way to color-code those entries and keep the colors after saving and reopening the PDF.
 
@@ -21,7 +21,7 @@ This means Chive can use the PDF's native outline color field instead of inventi
 
 ## Decision
 
-Use native PDF outline item `/C` for outline and bookmark color persistence.
+Use native PDF outline item `/C` for outline and Chive Bookmark color persistence.
 
 Do not use:
 
@@ -44,32 +44,32 @@ Default means "remove `/C` when the user explicitly chooses Default." It does no
 
 ## Terms
 
-- Document outline entry: an outline item that came from the opened PDF and is not under Chive's bookmark root.
-- Chive bookmark: a user-created bookmark stored under the `My Bookmarks` outline group.
+- Document Outline Entry: an outline item that came from the opened PDF and is not under Chive's bookmark root.
+- Chive Bookmark: a user-created bookmark stored under the `My Bookmarks` outline group.
 - Native outline color: PDF outline item `/C`.
 - Imported outline patch: an incremental PDF update that rewrites only `/C` for existing document outline item dictionaries.
 - Capability gate: a strict check that Chive can locate and safely rewrite the exact outline objects before enabling color editing.
 
 ## User Experience
 
-For document outline rows:
+For Document Outline Entries:
 
 - normal state shows a small left color accent
 - hover and focus states reveal a compact color button
 - the color button opens the fixed palette
-- choosing a color updates the row immediately and marks the PDF dirty
+- choosing a color updates the Outline Sidebar Entry immediately and marks the PDF dirty
 
-For bookmarks:
+For Bookmark Sidebar Entries:
 
-- normal state uses the bookmark color for the bookmark icon and page-rail marker
+- normal state uses the Chive Bookmark color for the bookmark icon and page-rail marker
 - edit state shows title input plus a visible color chip
 - the chip opens the same fixed palette
-- choosing a color updates the bookmark immediately and marks the PDF dirty
+- choosing a color updates the Bookmark Sidebar Entry immediately and marks the PDF dirty
 
 Keyboard labels must name the target and color, for example:
 
 - `Set outline color red`
-- `Set bookmark color default`
+- `Set Chive Bookmark color default`
 
 ## Data Model
 
@@ -86,7 +86,7 @@ Extend normalized document outline entries with:
 - `nativeObjectNumber: number | null`
 - `colorDirty: boolean`
 
-Extend bookmark entries with:
+Extend Chive Bookmark entries with:
 
 - `color: string | null`
 
@@ -106,8 +106,8 @@ When loading a PDF:
 2. Read `item.color` from each outline node.
 3. Normalize colors into the fixed palette when possible.
 4. Preserve non-palette native colors as display-only accents unless custom colors are deliberately added later.
-5. Split Chive bookmarks from document outline entries using the `My Bookmarks` root.
-6. Render document outline colors and bookmark colors from the normalized entries.
+5. Split Chive Bookmarks from Document Outline Entries using the `My Bookmarks` root.
+6. Render Document Outline Entry colors and Chive Bookmark colors from the normalized entries.
 
 The read path should work even when write capability is unavailable. A PDF can display existing outline colors without allowing recolor.
 
@@ -116,14 +116,14 @@ The read path should work even when write capability is unavailable. A PDF can d
 Saving follows this order:
 
 1. Call `pdfDocument.saveDocument()` to let PDF.js persist annotation/editor changes.
-2. Remove any prior Chive bookmark outline group.
+2. Remove any prior Chive Bookmark outline group.
 3. Apply imported document-outline color patches only for dirty outline entries.
-4. Append the current Chive bookmark outline group, including `/C` for colored bookmarks.
+4. Append the current Chive Bookmark outline group, including `/C` for colored Chive Bookmarks.
 5. Write the final bytes through the existing atomic Tauri save command.
 
-For Chive bookmarks:
+For Chive Bookmarks:
 
-- write `/C [r g b]` on generated bookmark outline item dictionaries when `color` is non-null
+- write `/C [r g b]` on generated Chive Bookmark outline item dictionaries when `color` is non-null
 - omit `/C` when `color` is null
 - keep the generated outline structure otherwise unchanged
 
@@ -171,7 +171,7 @@ A fixed palette keeps output predictable, testable, and accessible. It also avoi
 
 Default-as-removal keeps generated PDF output clean. It avoids writing `/C [0 0 0]` for normal entries.
 
-The strict capability gate is necessary because arbitrary PDF object rewriting is risky. The current spike already uses incremental string-based dictionary updates for generated bookmark outlines. That pattern is acceptable for controlled objects but must be conservative for imported outline objects from arbitrary PDFs.
+The strict capability gate is necessary because arbitrary PDF object rewriting is risky. The current spike already uses incremental string-based dictionary updates for generated Chive Bookmark outlines. That pattern is acceptable for controlled objects but must be conservative for imported outline objects from arbitrary PDFs.
 
 ## Consequences
 
@@ -207,8 +207,8 @@ Required checks for the initial implementation:
 
 - `npm run check`
 - `npm run build`
-- targeted Playwright coverage for outline and bookmark colors
-- existing navigation/bookmark regression coverage
+- targeted Playwright coverage for outline and Chive Bookmark colors
+- existing navigation/Chive Bookmark regression coverage
 
 Critical behavior should also be covered by native smoke or regression because PDF.js behavior can diverge between browser automation and Tauri WKWebView.
 
@@ -218,9 +218,9 @@ Test cases:
 - imported outline entry recolor saves and persists after reopen
 - imported outline save without user color edits preserves existing colors
 - unsupported imported outline structure displays colors but disables recolor
-- Chive bookmark color can be changed while editing title
-- Chive bookmark color appears on bookmark icon and page-rail marker
-- Chive bookmark color persists after save and reopen
+- Chive Bookmark color can be changed while editing title
+- Chive Bookmark color appears on bookmark icon and page-rail marker
+- Chive Bookmark color persists after save and reopen
 - selecting Default removes `/C` for dirty entries instead of writing black
 - byte-level saved PDF assertion contains expected `/C [r g b]` entries
 
@@ -230,4 +230,4 @@ ADR 0005 explains why persisted sidebar data should be derived from PDF geometry
 
 ADR 0006 and ADR 0007 explain why browser tests are not enough for PDF.js behavior in the native Tauri WKWebView.
 
-ADR 0011 extends that same rule to outline and bookmark colors: PDF bytes are the durable source, and native verification remains part of critical behavior changes.
+ADR 0011 extends that same rule to outline and Chive Bookmark colors: PDF bytes are the durable source, and native verification remains part of critical behavior changes.

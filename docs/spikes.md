@@ -62,10 +62,10 @@ Covered:
 - app-created bookmark save into PDF outline under `My Bookmarks`
 - Bookmark Sidebar Entry create/rename/delete
 - Bookmark Sidebar Entry sorting on create/delete
-- bookmark persistence after save/reopen
-- bookmark click navigation to saved page/location
-- page-rail bookmark anchor create/remove workflow
-- bookmark title derivation from anchor text line
+- Chive Bookmark persistence after save/reopen
+- Chive Bookmark click navigation to saved page/location
+- page-rail Chive Bookmark anchor create/remove workflow
+- Chive Bookmark title derivation from anchor text line
 - Playwright browser regression coverage
 - WDIO Tauri native smoke run passed for current implementation
 
@@ -77,15 +77,15 @@ Remaining validation:
 
 Status: derisked
 
-Goal: prove that outline and bookmark colors can be stored as portable PDF-native metadata.
+Goal: prove that Document Outline Entry and Chive Bookmark colors can be stored as portable PDF-native metadata.
 
 Covered:
 
-- existing PDF outline `/C` colors are read from PDF.js outline data and displayed in the sidebar
+- existing PDF outline `/C` colors are read from PDF.js outline data and displayed on Document Outline Entries
 - imported document outline entries can be recolored when the native object mapping capability gate passes
 - unsupported outline structures keep read-only color display instead of allowing risky rewrites
-- app-created bookmark colors are written into the generated PDF outline under `My Bookmarks`
-- bookmark colors appear in Bookmark Sidebar Entries and page-rail markers
+- app-created Chive Bookmark colors are written into the generated PDF outline under `My Bookmarks`
+- Chive Bookmark colors appear in Bookmark Sidebar Entries and page-rail markers
 - fixed palette color changes mark the PDF dirty and persist after save/reopen
 - selecting Default removes `/C` instead of writing explicit black
 - no XMP, sidecar, or app-local fallback is required for color persistence
