@@ -23,6 +23,12 @@
   } from "$lib/pdf/annotation-sidebar";
   import { writePdfOutlineState } from "$lib/pdf/outline-byte-writer";
   import {
+    pdfAnnotationElementId,
+    persistedAnnotationKey,
+    persistedAnnotationKeyParts,
+    sourceIdFromPdfAnnotationElementId,
+  } from "$lib/pdf/annotation-keys";
+  import {
     bookmarkPalette,
     defaultBookmarkColor,
     freeTextColorNameForValue,
@@ -696,29 +702,6 @@
       : annotationElementId;
   }
 
-  function pdfAnnotationElementId(sourceId: string) {
-    return sourceId.startsWith("pdfjs_internal_id_") ? sourceId : `pdfjs_internal_id_${sourceId}`;
-  }
-
-  function sourceIdFromPdfAnnotationElementId(elementId: string) {
-    if (!elementId) return null;
-    return elementId.startsWith("pdfjs_internal_id_")
-      ? elementId.slice("pdfjs_internal_id_".length)
-      : elementId;
-  }
-
-  function persistedAnnotationKey(pageNumber: number, sourceId: string) {
-    return `${pageNumber}:${sourceId}`;
-  }
-
-  function persistedAnnotationKeyParts(key: string) {
-    if (typeof key !== "string") return null;
-    const separator = key.indexOf(":");
-    if (separator < 0) return null;
-    const pageNumber = Number(key.slice(0, separator));
-    const sourceId = key.slice(separator + 1);
-    return Number.isInteger(pageNumber) && pageNumber > 0 && sourceId ? { pageNumber, sourceId } : null;
-  }
 
   function isInkHighlightEntry(entry: AnnotationEntry) {
     return entry.kind === "ink" && entry.intent === "InkHighlight";
