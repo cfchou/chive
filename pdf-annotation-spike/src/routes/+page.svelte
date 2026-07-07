@@ -27,6 +27,18 @@
   } from "$lib/pdf/annotation-sidebar";
   import { sortBookmarkEntries, type BookmarkEntry } from "$lib/pdf/bookmarks";
   import {
+    createEditorTypeGuards,
+    editorBelongsToManager,
+    editorHasValidManagerSignal,
+    isUsableAbortSignal,
+    managerHasValidSignal,
+    selectEditorIgnoringPdfjsSignalBug,
+    unselectAllIgnoringPdfjsSignalBug as unselectAllForManagerIgnoringSignalBug,
+    type AnnotationEditor,
+    type AnnotationEditorLayerRef,
+    type AnnotationEditorUIManager,
+  } from "$lib/pdf/pdfjs-quirks";
+  import {
     annotationCountLabel,
     bookmarkCountLabel,
     firstWords,
@@ -111,37 +123,6 @@
     top: number;
     width: number;
     height: number;
-  };
-  type AnnotationEditor = {
-    id: string;
-    annotationElementId?: string | null;
-    color?: string | null;
-    deleted?: boolean;
-    editorType: number | string;
-    hasBeenModified?: boolean;
-    pageIndex?: number;
-    commit?: () => void;
-    enterInEditMode?: () => void;
-    remove?: () => void;
-    serialize?: (isForCopying?: boolean, context?: Record<string, unknown> | null) => Record<string, unknown> | null;
-  };
-  type AnnotationEditorLayerRef = {
-    createAndAddNewEditor: (
-      event: { offsetX: number; offsetY: number },
-      isCentered: boolean,
-      data?: Record<string, unknown>,
-    ) => AnnotationEditor | null;
-  };
-  type AnnotationEditorUIManager = {
-    delete: () => void;
-    findParent: (x: number, y: number) => AnnotationEditorLayerRef | null;
-    firstSelectedEditor?: AnnotationEditor;
-    getEditors: (pageIndex: number) => Generator<AnnotationEditor, void, unknown>;
-    highlightSelection: (methodOfCreation?: string, comment?: boolean) => void;
-    isDeletedAnnotationElement?: (annotationElementId: string) => boolean;
-    setSelected: (editor: AnnotationEditor) => void;
-    unselectAll: () => void;
-    updateParams: (type: number, value: unknown) => void;
   };
   type SpikeDebugApi = {
     annotationSummary: () => Promise<Record<string, unknown>[]>;
@@ -248,6 +229,8 @@
     text: pdfjsLib.AnnotationEditorType.FREETEXT,
     ink: pdfjsLib.AnnotationEditorType.INK,
   } as const;
+  const { isHighlightEditor, isFreeTextEditor, isInkEditor, annotationKindForEditor } =
+    createEditorTypeGuards(editorModes);
 
   onMount(() => {
     const debugWindow = window as Window & { __pdfSpike?: SpikeDebugApi };
@@ -1867,54 +1850,8 @@
     return editorBelongsToManager(editor, annotationEditorUIManager);
   }
 
-  function editorBelongsToManager(
-    editor: AnnotationEditor | null | undefined,
-    manager: AnnotationEditorUIManager,
-  ) {
-    return Boolean(editor && (editor as unknown as { _uiManager?: unknown })._uiManager === manager);
-  }
-
-  function managerHasValidSignal(manager: AnnotationEditorUIManager) {
-    return isUsableAbortSignal((manager as unknown as { _signal?: unknown })._signal);
-  }
-
-  function editorHasValidManagerSignal(editor: AnnotationEditor) {
-    const manager = (editor as unknown as { _uiManager?: { _signal?: unknown } })._uiManager;
-    return isUsableAbortSignal(manager?._signal);
-  }
-
-  function isUsableAbortSignal(signal: unknown) {
-    if (!(signal instanceof AbortSignal)) return false;
-    const target = new EventTarget();
-    try {
-      target.addEventListener("pdfspike-signal-check", () => undefined, { signal });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  function selectEditorIgnoringPdfjsSignalBug(manager: AnnotationEditorUIManager, editor: AnnotationEditor) {
-    try {
-      manager.setSelected(editor);
-    } catch (error) {
-      const message = formatError(error);
-      if (!message.includes("AbortSignal") || !message.includes("addEventListener")) {
-        throw error;
-      }
-    }
-  }
-
   function unselectAllIgnoringPdfjsSignalBug(manager = annotationEditorUIManager) {
-    if (!manager) return;
-    try {
-      manager.unselectAll();
-    } catch (error) {
-      const message = formatError(error);
-      if (!message.includes("AbortSignal") || !message.includes("addEventListener")) {
-        throw error;
-      }
-    }
+    unselectAllForManagerIgnoringSignalBug(manager);
   }
 
   function annotationTargetElementForEntry(entry: AnnotationEntry) {
@@ -3202,24 +3139,6 @@
     remapSelectedInkHighlightEntry();
   }
 
-  function isHighlightEditor(editor: AnnotationEditor | null | undefined): editor is AnnotationEditor {
-    return editor?.editorType === editorModes.highlight || editor?.editorType === "highlight";
-  }
-
-  function isFreeTextEditor(editor: AnnotationEditor | null | undefined): editor is AnnotationEditor {
-    return editor?.editorType === editorModes.text || editor?.editorType === "freetext";
-  }
-
-  function isInkEditor(editor: AnnotationEditor | null | undefined): editor is AnnotationEditor {
-    return editor?.editorType === editorModes.ink || editor?.editorType === "ink";
-  }
-
-  function annotationKindForEditor(editor: AnnotationEditor): SelectedAnnotationKind {
-    if (isHighlightEditor(editor)) return "highlight";
-    if (isFreeTextEditor(editor)) return "freetext";
-    if (isInkEditor(editor)) return "ink";
-    return null;
-  }
 
   function findFirstHighlightEditor() {
     if (!annotationEditorUIManager || !pdfDocument) return null;
