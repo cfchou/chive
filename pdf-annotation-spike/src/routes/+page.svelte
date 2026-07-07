@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { onMount, tick } from "svelte";
+  import AnnotationsSidebar from "$lib/pdf/AnnotationsSidebar.svelte";
   import * as pdfjsLib from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
   import inkCursorUrl from "pdfjs-dist/web/images/cursor-editorInk.svg?url";
@@ -16,7 +17,6 @@
     boundsOverlapRatio,
     buildLiveAnnotationEntries,
     buildPdfAnnotationEntries,
-    groupAnnotationEntriesByPage,
     numbersFromNumericRecord,
     numbersFromUnknown,
     rectCenterDistance,
@@ -45,7 +45,6 @@
     bookmarkCountLabel,
     firstWords,
     formatError,
-    itemCountLabel,
   } from "$lib/format";
   import { writePdfOutlineState } from "$lib/pdf/outline-byte-writer";
   import {
@@ -4129,44 +4128,12 @@
         {/if}
       </div>
     {:else}
-      <div class="nav-content" role="tabpanel" aria-label="Annotations">
-        <div class="nav-heading">
-          <span class="label">Annotations</span>
-          <span>{annotationStatus}</span>
-        </div>
-        {#if annotationEntries.length > 0}
-          <div class="annotation-list">
-            {#each groupAnnotationEntriesByPage(annotationEntries) as group (group.page)}
-              <section class="annotation-page-group" aria-label={`Page ${group.page} annotations`}>
-                <div class="annotation-page-header">
-                  <span>Page {group.page}</span>
-                  <span>{itemCountLabel(group.entries.length)}</span>
-                </div>
-                <ul>
-                  {#each group.entries as entry (entry.id)}
-                    <li>
-                      <button
-                        id={`annotation-row-${entry.sourceId}`}
-                        class="annotation-item"
-                        class:active={selectedAnnotationEntryId === entry.id}
-                        data-entry-id={entry.id}
-                        data-source-id={entry.sourceId}
-                        onclick={() => void locateAnnotationEntry(entry)}
-                        title={`${entry.label} on page ${entry.page}`}
-                      >
-                        <span class="annotation-kind">{entry.label}</span>
-                        <span class="annotation-detail">{entry.detail}</span>
-                      </button>
-                    </li>
-                  {/each}
-                </ul>
-              </section>
-            {/each}
-          </div>
-        {:else}
-          <p class="empty-state">{annotationStatus}</p>
-        {/if}
-      </div>
+      <AnnotationsSidebar
+        {annotationEntries}
+        {annotationStatus}
+        {selectedAnnotationEntryId}
+        {locateAnnotationEntry}
+      />
     {/if}
   </aside>
 
@@ -4583,16 +4550,10 @@
 
   .outline-list,
   .outline-list ul,
-  .bookmark-list,
-  .annotation-list ul {
+  .bookmark-list {
     margin: 0;
     padding: 0;
     list-style: none;
-  }
-
-  .annotation-list {
-    display: flex;
-    flex-direction: column;
   }
 
   .outline-row {
@@ -4610,28 +4571,8 @@
     background: var(--outline-bg-color, transparent);
   }
 
-  .annotation-page-group + .annotation-page-group {
-    border-top: 1px solid #d8dde5;
-  }
-
-  .annotation-page-header {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 9px 12px 8px;
-    color: #2f3742;
-    background: #f3f5f8;
-    border-bottom: 1px solid #d8dde5;
-    font-size: 12px;
-  }
-
-  .annotation-page-header span:last-child {
-    color: #8a929c;
-  }
-
   .outline-item,
-  .bookmark-item,
-  .annotation-item {
+  .bookmark-item {
     display: grid;
     width: 100%;
     min-height: 34px;
@@ -4760,8 +4701,7 @@
   }
 
   .outline-title,
-  .bookmark-title-button,
-  .annotation-detail {
+  .bookmark-title-button {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -4771,8 +4711,7 @@
   .outline-row-main:hover,
   .bookmark-item:hover:not(:disabled),
   .bookmark-item.bookmark-hovered,
-  .bookmark-item.bookmark-active,
-  .annotation-item:hover:not(:disabled) {
+  .bookmark-item.bookmark-active {
     background: var(--outline-hover-bg-color, #edf4ff);
   }
 
@@ -4878,29 +4817,6 @@
   .outline-color-option:hover span,
   .outline-color-option:focus-visible span {
     box-shadow: 0 0 0 2px #d8e8ff;
-  }
-
-  .annotation-item {
-    grid-template-rows: auto auto;
-    padding: 10px 12px;
-  }
-
-  .annotation-item.active {
-    color: #1e2329;
-    background: #e5f0ff;
-  }
-
-  .annotation-kind {
-    font-weight: 700;
-  }
-
-  .annotation-detail {
-    color: #7a838f;
-    font-size: 12px;
-  }
-
-  .annotation-detail {
-    grid-column: 1 / -1;
   }
 
   .page-number {
