@@ -23,6 +23,22 @@
   } from "$lib/pdf/annotation-sidebar";
   import { writePdfOutlineState } from "$lib/pdf/outline-byte-writer";
   import {
+    bookmarkPalette,
+    defaultBookmarkColor,
+    freeTextColorNameForValue,
+    freeTextColors,
+    hexToRgba,
+    highlightColorNameForValue,
+    highlightColors,
+    inkColorNameForValue,
+    inkColors,
+    normalizeOutlineColor,
+    outlinePalette,
+    type FreeTextColorName,
+    type HighlightColorName,
+    type InkColorName,
+  } from "$lib/pdf/colors";
+  import {
     bookmarkAnchorInsetForScale,
     bookmarkAnchorYForInset,
     bookmarkDestinationYForInset,
@@ -49,10 +65,6 @@
   type PdfPage = Awaited<ReturnType<PdfDocument["getPage"]>>;
   type EditorTool = "none" | "highlight" | "text" | "ink";
   type NavigationTab = "outline" | "bookmarks" | "annotations";
-  type HighlightColorName = "yellow" | "green" | "blue" | "pink";
-  type FreeTextColorName = "black" | "green" | "blue" | "pink";
-  type InkColorName = "black" | "red" | "yellow" | "blue" | "pink";
-  type OutlinePaletteColorName = "default" | "red" | "orange" | "yellow" | "green" | "blue" | "purple";
   type SelectedAnnotationKind = "highlight" | "freetext" | "ink" | null;
   type PdfDestination = string | unknown[] | null;
   type PdfOutlineRaw = {
@@ -225,39 +237,6 @@
   const pendingDeletedPersistedAnnotationKeys = new Set<string>();
   const persistedAnnotationKeyByEditorId = new Map<string, string>();
 
-  const highlightColors: Record<HighlightColorName, string> = {
-    yellow: "#fff35c",
-    green: "#7cf2aa",
-    blue: "#8ecbff",
-    pink: "#ffb6de",
-  };
-  const freeTextColors: Record<FreeTextColorName, string> = {
-    black: "#1e2329",
-    green: "#4f7a29",
-    blue: "#2f6ecb",
-    pink: "#b82f76",
-  };
-  const inkColors: Record<InkColorName, string> = {
-    black: "#1e2329",
-    red: "#e32400",
-    yellow: "#fff35c",
-    blue: "#2f6ecb",
-    pink: "#b82f76",
-  };
-  const outlinePalette: { name: OutlinePaletteColorName; label: string; color: string | null }[] = [
-    { name: "default", label: "default", color: null },
-    { name: "red", label: "red", color: "#f04444" },
-    { name: "orange", label: "orange", color: "#f97316" },
-    { name: "yellow", label: "yellow", color: "#eab308" },
-    { name: "green", label: "green", color: "#22c55e" },
-    { name: "blue", label: "blue", color: "#3b82f6" },
-    { name: "purple", label: "purple", color: "#a855f7" },
-  ];
-  const bookmarkPalette = [
-    { name: "pink", label: "pink", color: "#ec4899" },
-    ...outlinePalette.filter((option) => option.color !== null),
-  ];
-  const defaultBookmarkColor = "#f04444";
   const inkThicknesses = [1, 3, 8, 14] as const;
 
   const editorModes = {
@@ -1147,24 +1126,6 @@
   function outlineColorStyle(color: string | null) {
     if (!color) return "--outline-color: transparent; --outline-bg-color: transparent; --outline-hover-bg-color: #edf4ff";
     return `--outline-color: ${color}; --outline-bg-color: ${hexToRgba(color, 0.16)}; --outline-hover-bg-color: ${hexToRgba(color, 0.24)}`;
-  }
-
-  function normalizeOutlineColor(color: Uint8ClampedArray | number[] | undefined) {
-    const components = numbersFromUnknown(color);
-    if (!components || components.length < 3) return null;
-    const rgb = components.slice(0, 3).map((component) => Math.max(0, Math.min(255, Math.round(component))));
-    if (rgb.every((component) => component === 0)) return null;
-    return `#${rgb.map((component) => component.toString(16).padStart(2, "0")).join("")}`;
-  }
-
-  function hexToRgba(color: string, alpha: number) {
-    const match = /^#([0-9a-f]{6})$/i.exec(color);
-    if (!match) return "transparent";
-    const hex = match[1];
-    const red = Number.parseInt(hex.slice(0, 2), 16);
-    const green = Number.parseInt(hex.slice(2, 4), 16);
-    const blue = Number.parseInt(hex.slice(4, 6), 16);
-    return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
   }
 
   async function resolveOutlinePageNumber(
@@ -3425,17 +3386,6 @@
     return null;
   }
 
-  function highlightColorNameForValue(color: string | null) {
-    if (!color) return null;
-    const normalized = color.toLowerCase();
-    for (const [name, value] of Object.entries(highlightColors) as [HighlightColorName, string][]) {
-      if (value === normalized) {
-        return name;
-      }
-    }
-    return null;
-  }
-
   function findFirstHighlightEditor() {
     if (!annotationEditorUIManager || !pdfDocument) return null;
     for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
@@ -3506,16 +3456,6 @@
     status = `Next highlight will use ${colorName}.`;
   }
 
-  function freeTextColorNameForValue(color: string | null) {
-    if (!color) return null;
-    const normalized = color.toLowerCase();
-    for (const [name, value] of Object.entries(freeTextColors) as [FreeTextColorName, string][]) {
-      if (value === normalized) {
-        return name;
-      }
-    }
-    return null;
-  }
 
   function applyFreeTextColor(colorName: FreeTextColorName) {
     if (!annotationEditorUIManager) {
@@ -3541,17 +3481,6 @@
       return;
     }
     status = `Next free text will use ${colorName}.`;
-  }
-
-  function inkColorNameForValue(color: string | null) {
-    if (!color) return null;
-    const normalized = color.toLowerCase();
-    for (const [name, value] of Object.entries(inkColors) as [InkColorName, string][]) {
-      if (value === normalized) {
-        return name;
-      }
-    }
-    return null;
   }
 
   function applyInkColor(colorName: InkColorName) {
