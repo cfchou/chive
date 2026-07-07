@@ -98,6 +98,7 @@
     withinSquareCue,
     type BookmarkRailRect,
   } from "$lib/pdf/bookmark-rail-geometry";
+  import { createSpikeDebugHarness } from "$lib/debug/spike-harness";
 
   if (import.meta.env.VITE_WDIO_TAURI === "1" && typeof window !== "undefined") {
     void import("@wdio/tauri-plugin");
@@ -188,10 +189,43 @@
   let rememberedSelectionText = "";
   let rememberedSelectionRanges: Range[] = [];
   let annotationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-  const debugFileStore = new Map<string, Uint8Array>();
   const annotationDetailCache = new Map<string, string>();
   const pendingDeletedPersistedAnnotationKeys = new Set<string>();
   const persistedAnnotationKeyByEditorId = new Map<string, string>();
+  const debugHarness = createSpikeDebugHarness({
+    getPdfDocument: () => pdfDocument,
+    getPdfViewer: () => pdfViewer,
+    getAnnotationEditorUIManager: () => annotationEditorUIManager,
+    getDomDocument: () => document,
+    getWindow: () => window,
+    getStatsSnapshot: () => ({
+      status,
+      outlineStatus,
+      activeTool,
+      defaultHighlightColor,
+      defaultFreeTextColor,
+      defaultInkColor,
+      defaultInkThickness,
+      defaultInkOpacity,
+      selectedAnnotationKind,
+      selectedPersistedAnnotationKey,
+      pendingDeletedPersistedAnnotationKeys: [...pendingDeletedPersistedAnnotationKeys],
+      selectedAnnotationColor,
+      hasSelectedHighlight,
+      selectedHighlightColor,
+      annotationFocusBox,
+    }),
+    persistPdf,
+    loadPdf,
+    loadPdfBytes,
+    savePdfDocumentBytes,
+    refreshAnnotationSidebar,
+    setCurrentPath: (path) => (currentPath = path),
+    setDirty: (dirty) => (isDirty = dirty),
+    setBusy: (busy) => (isBusy = busy),
+    setActiveTool: (tool) => (activeTool = tool),
+    setStatus: (nextStatus) => (status = nextStatus),
+  });
 
   const inkThicknesses = [1, 3, 8, 14] as const;
   const highlightSwatches: SwatchOption[] = Object.entries(highlightColors).map(([name, color]) => ({
@@ -265,7 +299,7 @@
     containerEl?.addEventListener("mousemove", handlePdfContainerMouseMove);
     containerEl?.addEventListener("mouseleave", clearRailHoverCue);
     const teardownSpikeDebugApi = installSpikeDebugApi(window, {
-      annotationSummary: getAnnotationSummary,
+      annotationSummary: debugHarness.annotationSummary,
       annotationSidebarSummary: () => annotationEntries,
       bookmarkSummary: () => bookmarkEntries,
       outlineSummary: () => outlineEntries,
@@ -275,11 +309,11 @@
       createBookmarkForCurrentPage,
       createPageFreeText,
       createSelectionHighlightInToolMode,
-      editorSummary: getEditorSummary,
+      editorSummary: debugHarness.editorSummary,
       loadSample: loadSamplePdf,
-      loadPath: debugLoadPath,
-      loadUrl: debugLoadUrl,
-      saveToPath: debugSaveToPath,
+      loadPath: debugHarness.loadPath,
+      loadUrl: debugHarness.loadUrl,
+      saveToPath: debugHarness.saveToPath,
       selectFirstHighlight: () => selectFirstHighlight(),
       selectFirstText,
       recolorSelectedHighlight: applyHighlightColor,
@@ -290,8 +324,8 @@
       moveSelected: moveSelectedAnnotation,
       editSelectedFreeText,
       deleteSelected: deleteSelectedAnnotation,
-      debugSavedBytes,
-      stats: getDebugStats,
+      debugSavedBytes: debugHarness.debugSavedBytes,
+      stats: debugHarness.stats,
       setTool,
     });
     return () => {
@@ -572,7 +606,7 @@
   }
 
   async function getPdfAnnotationEntries() {
-    const pages = await getAnnotationSummary();
+    const pages = await debugHarness.annotationSummary();
     return buildPdfAnnotationEntries({
       pdfDocument,
       pages,
@@ -3445,73 +3479,6 @@
     return selection?.toString() ?? "";
   }
 
-  function getDebugStats() {
-    const storage = (pdfDocument as unknown as {
-      annotationStorage?: {
-        size?: number;
-        serializable?: { map?: Map<unknown, unknown> };
-      };
-    } | null)?.annotationStorage;
-    const selectedEditor = annotationEditorUIManager?.firstSelectedEditor;
-
-    return {
-      pages: pdfDocument?.numPages ?? 0,
-      currentPageNumber: pdfViewer?.currentPageNumber ?? null,
-      status,
-      outlineStatus,
-      activeTool,
-      defaultHighlightColor,
-      defaultFreeTextColor,
-      defaultInkColor,
-      defaultInkThickness,
-      defaultInkOpacity,
-      selectedAnnotationKind,
-      selectedPersistedAnnotationKey,
-      pendingDeletedPersistedAnnotationKeys: [...pendingDeletedPersistedAnnotationKeys],
-      selectedAnnotationColor,
-      hasSelectedHighlight,
-      selectedHighlightColor,
-      selectedEditorType: selectedEditor?.editorType ?? null,
-      selectedEditorColor: selectedEditor?.color ?? null,
-      annotationFocusBox,
-      selectedText: document.getSelection()?.toString() ?? "",
-      canvases: document.querySelectorAll(".page canvas").length,
-      textLayerSpans: document.querySelectorAll(".textLayer span").length,
-      annotationEditorLayers: document.querySelectorAll(".annotationEditorLayer").length,
-      highlightEditors: document.querySelectorAll(".highlightEditor").length,
-      freeTextEditors: document.querySelectorAll(".freeTextEditor").length,
-      inkEditors: document.querySelectorAll(".inkEditor").length,
-      visibleEditorToolbars: document.querySelectorAll(".editToolbar:not(.hidden)").length,
-      annotationStorageSize: storage?.size ?? 0,
-      annotationStorageKeys: storage?.serializable?.map ? [...storage.serializable.map.keys()] : [],
-    };
-  }
-
-  function getEditorSummary() {
-    if (!annotationEditorUIManager || !pdfDocument) {
-      return [];
-    }
-    const selectedEditorId = document.querySelector<HTMLElement>(".selectedEditor")?.id ?? null;
-    const entries: Record<string, unknown>[] = [];
-    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
-      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
-        entries.push({
-          color: editor.color ?? null,
-          annotationElementId: editor.annotationElementId ?? null,
-          deleted: editor.deleted ?? false,
-          editorType: editor.editorType,
-          hasBeenModified: editor.hasBeenModified ?? false,
-          id: editor.id,
-          isDomSelected: editor.id === selectedEditorId,
-          isFirstSelectedEditor: annotationEditorUIManager.firstSelectedEditor?.id === editor.id,
-          page: pageIndex + 1,
-          pageIndex: editor.pageIndex ?? null,
-        });
-      }
-    }
-    return entries;
-  }
-
   function moveSelectedAnnotation(x: number, y: number) {
     if (!annotationEditorUIManager?.firstSelectedEditor) {
       return false;
@@ -3584,32 +3551,6 @@
     }
   }
 
-  function isTauriRuntime() {
-    return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-  }
-
-  async function debugSaveToPath(path: string) {
-    if (isTauriRuntime()) {
-      await persistPdf(path);
-      return;
-    }
-    if (!pdfDocument) {
-      throw new Error("No PDF loaded");
-    }
-    const saved = await savePdfDocumentBytes();
-    debugFileStore.set(path, saved);
-    currentPath = path;
-    isDirty = false;
-    await refreshAnnotationSidebar();
-    status = `Saved debug snapshot ${path}`;
-  }
-
-  function debugSavedBytes(path: string) {
-    const bytes = debugFileStore.get(path);
-    if (!bytes) throw new Error(`No debug snapshot stored for ${path}`);
-    return Array.from(bytes);
-  }
-
   async function savePdfDocumentBytes() {
     if (!pdfDocument) throw new Error("No PDF loaded");
     const saved = new Uint8Array(await pdfDocument.saveDocument());
@@ -3618,78 +3559,6 @@
       bookmarks: bookmarkEntries,
       documentOutlineEntries: outlineEntries,
     });
-  }
-
-  async function debugLoadPath(path: string) {
-    if (isTauriRuntime()) {
-      await loadPdf(path);
-      return;
-    }
-    const bytes = debugFileStore.get(path);
-    if (!bytes) {
-      throw new Error(`No debug snapshot stored for ${path}`);
-    }
-    await loadPdfBytes(bytes.slice(), path);
-      currentPath = path;
-      isDirty = false;
-      activeTool = "none";
-      await refreshAnnotationSidebar();
-      status = `Loaded debug snapshot ${path}`;
-  }
-
-  async function debugLoadUrl(url: string, label = url) {
-    isBusy = true;
-    status = `Loading ${label}...`;
-    try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      await loadPdfBytes(new Uint8Array(await response.arrayBuffer()), label);
-      currentPath = label;
-      isDirty = false;
-      activeTool = "none";
-      await refreshAnnotationSidebar();
-      status = `Loaded ${label}`;
-    } finally {
-      isBusy = false;
-    }
-  }
-
-  async function getAnnotationSummary() {
-    if (!pdfDocument) {
-      return [];
-    }
-    const documentWithPageAccess = pdfDocument as PdfDocument & {
-      getPage: (
-        pageNumber: number,
-      ) => Promise<{
-        getAnnotations: () => Promise<Record<string, unknown>[]>;
-      }>;
-    };
-    const pages: Record<string, unknown>[] = [];
-    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
-      const page = await documentWithPageAccess.getPage(pageIndex + 1);
-      const annotations = await page.getAnnotations();
-      pages.push({
-        page: pageIndex + 1,
-        annotations: annotations.map((annotation: Record<string, unknown>) => ({
-          annotationType: annotation.annotationType,
-          borderStyle: "borderStyle" in annotation ? annotation.borderStyle : null,
-          color: "color" in annotation ? numbersFromUnknown(annotation.color) : null,
-          contentsObj: "contentsObj" in annotation ? annotation.contentsObj : null,
-          defaultAppearanceData:
-            "defaultAppearanceData" in annotation ? annotation.defaultAppearanceData : null,
-          id: annotation.id,
-          opacity: "opacity" in annotation ? annotation.opacity : null,
-          popupRef: "popupRef" in annotation ? annotation.popupRef : null,
-          quadPoints: "quadPoints" in annotation ? numbersFromUnknown(annotation.quadPoints) : null,
-          rect: "rect" in annotation ? numbersFromUnknown(annotation.rect) : null,
-          subtype: "subtype" in annotation ? annotation.subtype : null,
-          it: "it" in annotation ? annotation.it : null,
-          textContent: "textContent" in annotation ? annotation.textContent : null,
-        })),
-      });
-    }
-    return pages;
   }
 
   async function createPageFreeText(text = "Regression free text", pageNumber = 1) {
