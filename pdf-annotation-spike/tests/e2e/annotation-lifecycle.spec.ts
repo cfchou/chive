@@ -884,6 +884,50 @@ test("selection mode double-click edits existing free text and ink annotations w
     .toEqual({ activeTool: "none", selectedAnnotationKind: "ink" });
 });
 
+test("selection mode double-click puts caret inside existing free text", async ({ page }) => {
+  await createFreeText(page, "Caret direct click text");
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+  const freeTextPoint = await page.evaluate(() => {
+    const editor = document.querySelector<HTMLElement>(".page[data-page-number='1'] .freeTextEditor .internal");
+    if (!editor) throw new Error("Missing free text editor");
+    const rect = editor.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+
+  await page.mouse.dblclick(freeTextPoint.x, freeTextPoint.y);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const editor = document.querySelector<HTMLElement>(".freeTextEditor .internal");
+        return {
+          activeInsideEditor: Boolean(editor?.contains(document.activeElement)),
+          activeTool: window.__pdfSpike!.stats().activeTool,
+          isEditable: editor?.isContentEditable ?? false,
+          selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+        };
+      }),
+    )
+    .toEqual({
+      activeInsideEditor: true,
+      activeTool: "none",
+      isEditable: true,
+      selectedAnnotationKind: "freetext",
+    });
+
+  await page.mouse.click(freeTextPoint.x, freeTextPoint.y);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const editor = document.querySelector<HTMLElement>(".freeTextEditor .internal");
+        return {
+          activeInsideEditor: Boolean(editor?.contains(document.activeElement)),
+          isEditable: editor?.isContentEditable ?? false,
+        };
+      }),
+    )
+    .toEqual({ activeInsideEditor: true, isEditable: true });
+});
+
 test("direct double-click editing an annotation does not scroll the PDF viewport", async ({ page }) => {
   await createFreeText(page, "No scroll direct edit", 2);
   await page.evaluate(() => window.__pdfSpike!.setTool("none"));

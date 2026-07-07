@@ -1611,7 +1611,7 @@
 
   async function activatePdfAnnotationEntry(
     entry: AnnotationEntry,
-    options: { scrollIntoView?: boolean } = {},
+    options: { enterEditMode?: boolean; scrollIntoView?: boolean } = {},
   ) {
     unselectAllIgnoringPdfjsSignalBug();
     selectedAnnotationKind = null;
@@ -1635,7 +1635,7 @@
           scrollIntoView: options.scrollIntoView,
           showFocusBox: false,
         });
-        if (await activatePersistedEditorEntry(entry, { scrollIntoView: options.scrollIntoView })) {
+        if (await activatePersistedEditorEntry(entry, { enterEditMode: options.enterEditMode, scrollIntoView: options.scrollIntoView })) {
           return true;
         }
         const editorKind = editorKindForAnnotationEntry(entry);
@@ -1646,7 +1646,7 @@
           editorKind === "highlight"
             ? await activateHighlightEditorAtPoint(x, y)
             : editorKind === "freetext"
-              ? await activateFreeTextEditorAtPoint(x, y)
+              ? await activateFreeTextEditorAtPoint(x, y, { enterEditMode: options.enterEditMode })
               : await activateInkEditorAtPoint(x, y);
         if (!activated && entry.kind === "ink") {
           return locatePdfAnnotationEntry(entry);
@@ -1760,7 +1760,7 @@
 
   async function activatePersistedEditorEntry(
     entry: AnnotationEntry,
-    options: { scrollIntoView?: boolean } = {},
+    options: { enterEditMode?: boolean; scrollIntoView?: boolean } = {},
   ) {
     const manager = annotationEditorUIManager;
     const editorKind = editorKindForAnnotationEntry(entry);
@@ -1791,7 +1791,12 @@
     if (editorKind === "highlight") {
       status = "Selected highlight. Change color or delete it, then save.";
     } else if (editorKind === "freetext") {
-      status = "Selected free text. Press Enter to edit text, change color, or delete it.";
+      if (options.enterEditMode) {
+        enterFreeTextEditMode(editor);
+        status = "Editing free text. Press Enter to finish editing.";
+      } else {
+        status = "Selected free text. Press Enter to edit text, change color, or delete it.";
+      }
     } else {
       status = "Selected ink. Change color or delete it, then save.";
     }
@@ -2163,7 +2168,11 @@
     return true;
   }
 
-  async function activateExistingFreeTextEditor(editorId: string, options: { focusEditor?: boolean } = {}) {
+  function enterFreeTextEditMode(editor: AnnotationEditor) {
+    editor.enterInEditMode?.();
+  }
+
+  async function activateExistingFreeTextEditor(editorId: string, options: { enterEditMode?: boolean; focusEditor?: boolean } = {}) {
     if (!annotationEditorUIManager || !pdfViewer) {
       status = "Free text unavailable: PDF.js annotation manager not ready yet.";
       return false;
@@ -2184,11 +2193,20 @@
     annotationEditorUIManager.setSelected(editor);
     selectedAnnotationEntryId = `live:${editor.id}`;
     syncSelectedEditorState();
-    status = "Selected free text. Press Enter to edit text, change color, or delete it.";
+    if (options.enterEditMode) {
+      enterFreeTextEditMode(editor);
+      status = "Editing free text. Press Enter to finish editing.";
+    } else {
+      status = "Selected free text. Press Enter to edit text, change color, or delete it.";
+    }
     return true;
   }
 
-  async function activateFreeTextEditorAtPoint(clientX: number, clientY: number) {
+  async function activateFreeTextEditorAtPoint(
+    clientX: number,
+    clientY: number,
+    options: { enterEditMode?: boolean } = {},
+  ) {
     if (!annotationEditorUIManager || !pdfViewer) {
       status = "Free text unavailable: PDF.js annotation manager not ready yet.";
       return false;
@@ -2237,7 +2255,12 @@
           isFreeTextEditor(annotationEditorUIManager.firstSelectedEditor) &&
           selectedEditorMatchesPersistedHint(annotationEditorUIManager.firstSelectedEditor, persistedKeyHint)
         ) {
-          status = "Selected free text. Press Enter to edit text, change color, or delete it.";
+          if (options.enterEditMode) {
+            enterFreeTextEditMode(annotationEditorUIManager.firstSelectedEditor);
+            status = "Editing free text. Press Enter to finish editing.";
+          } else {
+            status = "Selected free text. Press Enter to edit text, change color, or delete it.";
+          }
           return true;
         }
         unselectAllIgnoringPdfjsSignalBug();
@@ -2560,7 +2583,7 @@
       return true;
     }
     if (directFreeTextEditorId) {
-      void activateExistingFreeTextEditor(directFreeTextEditorId, { focusEditor: false });
+      void activateExistingFreeTextEditor(directFreeTextEditorId, { enterEditMode: true, focusEditor: false });
       return true;
     }
     if (directInkEditorId) {
@@ -2579,7 +2602,7 @@
     }
     if (savedFreeTextAnnotation) {
       rememberPersistedAnnotationElement(savedFreeTextAnnotation);
-      void activateFreeTextEditorAtPoint(clientX, clientY);
+      void activateFreeTextEditorAtPoint(clientX, clientY, { enterEditMode: true });
       return true;
     }
     if (savedInkAnnotation) {
@@ -2605,7 +2628,7 @@
       if (entry.kind === "highlight") {
         void activateExistingHighlightEditor(entry.sourceId, { focusEditor: false });
       } else if (entry.kind === "freetext") {
-        void activateExistingFreeTextEditor(entry.sourceId, { focusEditor: false });
+        void activateExistingFreeTextEditor(entry.sourceId, { enterEditMode: true, focusEditor: false });
       } else {
         void activateExistingInkEditor(entry.sourceId, { focusEditor: false });
       }
@@ -2615,7 +2638,7 @@
       activateInkHighlightEntryAtPoint(entry, clientX, clientY);
       return true;
     }
-    void activatePdfAnnotationEntry(entry, { scrollIntoView: false });
+    void activatePdfAnnotationEntry(entry, { enterEditMode: entry.kind === "freetext", scrollIntoView: false });
     return true;
   }
 
