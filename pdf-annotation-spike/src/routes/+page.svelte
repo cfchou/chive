@@ -22,6 +22,24 @@
     type RectLike,
   } from "$lib/pdf/annotation-sidebar";
   import { writePdfOutlineState } from "$lib/pdf/outline-byte-writer";
+  import {
+    bookmarkAnchorInsetForScale,
+    bookmarkAnchorYForInset,
+    bookmarkDestinationYForInset,
+    bookmarkRailAddCueOffsetPx,
+    bookmarkRailAddCueSizePx,
+    bookmarkRailAnchorHeightPx,
+    bookmarkRailAnchorWidthPx,
+    bookmarkRailFocusCueSizePx,
+    bookmarkRailRectsConflict,
+    offsetIntoPageForTargetY,
+    railMarkerContentRectForOffset,
+    railMarkerRectAt,
+    renderedPageScale,
+    targetYForOffsetIntoPage,
+    withinSquareCue,
+    type BookmarkRailRect,
+  } from "$lib/pdf/bookmark-rail-geometry";
 
   if (import.meta.env.VITE_WDIO_TAURI === "1" && typeof window !== "undefined") {
     void import("@wdio/tauri-plugin");
@@ -72,12 +90,6 @@
   type AnnotationPageGroup = {
     page: number;
     entries: AnnotationEntry[];
-  };
-  type BookmarkRailRect = {
-    left: number;
-    right: number;
-    top: number;
-    bottom: number;
   };
   type FocusBox = {
     left: number;
@@ -153,12 +165,6 @@
   const bookmarkTitleSnapTolerancePdfPoints = 4;
   const bookmarkTitleLookaheadPdfPoints = 180;
   const bookmarkTitleWordCount = 4;
-  const bookmarkRailAnchorWidthPx = 12;
-  const bookmarkRailAnchorHeightPx = 22;
-  const bookmarkRailMarkerTranslateYPx = -2;
-  const bookmarkRailFocusCueSizePx = 22;
-  const bookmarkRailAddCueSizePx = 36;
-  const bookmarkRailAddCueOffsetPx = 22;
 
   let containerEl: HTMLDivElement;
   let viewerEl: HTMLDivElement;
@@ -1296,12 +1302,8 @@
       x: containerRect.left + bookmarkRailHoverCue.hintLeft - containerEl.scrollLeft,
       y: containerRect.top + bookmarkRailHoverCue.hintTop - containerEl.scrollTop,
     };
-    const withinFocusCue =
-      Math.abs(clientX - focusCenter.x) <= bookmarkRailFocusCueSizePx / 2 &&
-      Math.abs(clientY - focusCenter.y) <= bookmarkRailFocusCueSizePx / 2;
-    const withinAddCue =
-      Math.abs(clientX - addCenter.x) <= bookmarkRailAddCueSizePx / 2 &&
-      Math.abs(clientY - addCenter.y) <= bookmarkRailAddCueSizePx / 2;
+    const withinFocusCue = withinSquareCue(clientX, clientY, focusCenter.x, focusCenter.y, bookmarkRailFocusCueSizePx);
+    const withinAddCue = withinSquareCue(clientX, clientY, addCenter.x, addCenter.y, bookmarkRailAddCueSizePx);
     return withinFocusCue || withinAddCue
       ? { pageNumber: bookmarkRailHoverCue.pageNumber, clientY: focusCenter.y }
       : null;
@@ -1312,14 +1314,7 @@
   }
 
   function bookmarkRailMarkerRectAtPoint(pageElement: HTMLElement, clientY: number) {
-    const pageRect = pageElement.getBoundingClientRect();
-    const top = clientY + bookmarkRailMarkerTranslateYPx;
-    return {
-      left: pageRect.left,
-      right: pageRect.left + bookmarkRailAnchorWidthPx,
-      top,
-      bottom: top + bookmarkRailAnchorHeightPx,
-    };
+    return railMarkerRectAt(pageElement.getBoundingClientRect().left, clientY);
   }
 
   function bookmarkRailActionDmzHit(candidateRects: BookmarkRailRect[]) {
@@ -1344,17 +1339,6 @@
       const markerRect = bookmarkRailMarkerContentRect(entry.pageNumber, entry.targetY, entry.pageHeight);
       return markerRect ? bookmarkRailRectsConflict(candidateRect, markerRect) : false;
     });
-  }
-
-  function bookmarkRailRectsConflict(candidateRect: BookmarkRailRect, markerRect: BookmarkRailRect) {
-    const markerDmzTop = markerRect.top - bookmarkRailAnchorHeightPx;
-    const markerDmzBottom = markerRect.bottom + bookmarkRailAnchorHeightPx;
-    return (
-      candidateRect.left <= markerRect.right + 8 &&
-      candidateRect.right >= markerRect.left - 28 &&
-      candidateRect.bottom >= markerDmzTop &&
-      candidateRect.top <= markerDmzBottom
-    );
   }
 
   function reserveBookmarkRailMarkerRect(rect: BookmarkRailRect) {
@@ -1453,7 +1437,7 @@
   function bookmarkRailMarkerContentRect(pageNumber: number, targetY: number, pageHeight: number) {
     const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
     if (!pageElement || pageHeight <= 0) return null;
-    const offsetIntoPage = ((pageHeight - targetY) / pageHeight) * pageElement.offsetHeight;
+    const offsetIntoPage = offsetIntoPageForTargetY(targetY, pageHeight, pageElement.offsetHeight);
     return bookmarkRailMarkerContentRectFromOffset(pageElement, offsetIntoPage);
   }
 
@@ -1464,14 +1448,7 @@
   }
 
   function bookmarkRailMarkerContentRectFromOffset(pageElement: HTMLElement, offsetIntoPage: number) {
-    const pagePosition = pagePositionInContainer(pageElement);
-    const top = pagePosition.top + offsetIntoPage + bookmarkRailMarkerTranslateYPx;
-    return {
-      left: pagePosition.left,
-      right: pagePosition.left + bookmarkRailAnchorWidthPx,
-      top,
-      bottom: top + bookmarkRailAnchorHeightPx,
-    };
+    return railMarkerContentRectForOffset(pagePositionInContainer(pageElement), offsetIntoPage);
   }
 
   function updateBookmarkTitle(id: string, title: string) {
@@ -1639,26 +1616,20 @@
     const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
     if (!containerEl || !pageElement) return pageHeight;
     const offsetIntoPage = explicitOffsetIntoPage ?? Math.max(0, containerEl.scrollTop - pageElement.offsetTop);
-    const scale = pageElement.offsetHeight > 0 ? pageElement.offsetHeight / pageHeight : 1;
-    return clampPdfY(pageHeight - offsetIntoPage / scale, pageHeight);
+    return targetYForOffsetIntoPage(offsetIntoPage, renderedPageScale(pageElement.offsetHeight, pageHeight), pageHeight);
   }
 
   function bookmarkAnchorInsetPdfPoints(pageNumber: number, pageHeight: number) {
     const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
-    const scale = pageElement && pageElement.offsetHeight > 0 ? pageElement.offsetHeight / pageHeight : 1;
-    return bookmarkRailAnchorHeightPx / scale;
+    return bookmarkAnchorInsetForScale(renderedPageScale(pageElement?.offsetHeight ?? 0, pageHeight));
   }
 
   function bookmarkDestinationY(pageNumber: number, targetY: number, pageHeight: number) {
-    return clampPdfY(targetY + bookmarkAnchorInsetPdfPoints(pageNumber, pageHeight), pageHeight);
+    return bookmarkDestinationYForInset(targetY, bookmarkAnchorInsetPdfPoints(pageNumber, pageHeight), pageHeight);
   }
 
   function bookmarkAnchorYFromDestination(pageNumber: number, destinationY: number, pageHeight: number) {
-    return clampPdfY(destinationY - bookmarkAnchorInsetPdfPoints(pageNumber, pageHeight), pageHeight);
-  }
-
-  function clampPdfY(value: number, pageHeight: number) {
-    return Math.max(0, Math.min(pageHeight, value));
+    return bookmarkAnchorYForInset(destinationY, bookmarkAnchorInsetPdfPoints(pageNumber, pageHeight), pageHeight);
   }
 
   function explicitDestinationRef(dest: PdfDestination) {
@@ -1699,7 +1670,7 @@
   function scrollBookmarkTargetIntoView(entry: BookmarkEntry) {
     const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.pageNumber}"]`);
     if (!pageElement || !containerEl) return false;
-    const offsetIntoPage = ((entry.pageHeight - entry.targetY) / entry.pageHeight) * pageElement.offsetHeight;
+    const offsetIntoPage = offsetIntoPageForTargetY(entry.targetY, entry.pageHeight, pageElement.offsetHeight);
     const pagePosition = pagePositionInContainer(pageElement);
     containerEl.scrollTop = Math.max(0, pagePosition.top + offsetIntoPage - bookmarkRailAnchorHeightPx);
     return true;
@@ -1712,7 +1683,7 @@
     if (!pageElement || entry.pageHeight <= 0) {
       return `left: 12px; top: 18px; ${colorStyle}`;
     }
-    const offsetIntoPage = ((entry.pageHeight - entry.targetY) / entry.pageHeight) * pageElement.offsetHeight;
+    const offsetIntoPage = offsetIntoPageForTargetY(entry.targetY, entry.pageHeight, pageElement.offsetHeight);
     const pagePosition = pagePositionInContainer(pageElement);
     const left = pagePosition.left;
     const top = pagePosition.top + offsetIntoPage;
