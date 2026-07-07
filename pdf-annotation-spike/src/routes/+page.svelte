@@ -125,6 +125,10 @@
     width: number;
     height: number;
   };
+  type SwatchOption = {
+    name: string;
+    color: string;
+  };
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
   const pdfjsWasmUrl = "/pdfjs-wasm/";
@@ -193,6 +197,18 @@
   const persistedAnnotationKeyByEditorId = new Map<string, string>();
 
   const inkThicknesses = [1, 3, 8, 14] as const;
+  const highlightSwatches: SwatchOption[] = Object.entries(highlightColors).map(([name, color]) => ({
+    name,
+    color,
+  }));
+  const freeTextSwatches: SwatchOption[] = Object.entries(freeTextColors).map(([name, color]) => ({
+    name,
+    color,
+  }));
+  const inkSwatches: SwatchOption[] = Object.entries(inkColors).map(([name, color]) => ({
+    name,
+    color,
+  }));
 
   const editorModes = {
     none: pdfjsLib.AnnotationEditorType.NONE,
@@ -3233,6 +3249,30 @@
     status = `Next ink will use ${colorName}.`;
   }
 
+  function isHighlightSwatchActive(colorName: string) {
+    return (hasSelectedHighlight ? selectedHighlightColor : defaultHighlightColor) === colorName;
+  }
+
+  function isFreeTextSwatchActive(colorName: string) {
+    return activeTool === "text" && (freeTextColorNameForValue(selectedAnnotationColor) ?? defaultFreeTextColor) === colorName;
+  }
+
+  function isInkSwatchActive(colorName: string) {
+    return activeTool === "ink" && (inkColorNameForValue(selectedAnnotationColor) ?? defaultInkColor) === colorName;
+  }
+
+  function applyHighlightSwatchColor(colorName: string) {
+    applyHighlightColor(colorName as HighlightColorName);
+  }
+
+  function applyFreeTextSwatchColor(colorName: string) {
+    applyFreeTextColor(colorName as FreeTextColorName);
+  }
+
+  function applyInkSwatchColor(colorName: string) {
+    applyInkColor(colorName as InkColorName);
+  }
+
   function applyInkThickness(thickness: number) {
     if (!annotationEditorUIManager) {
       status = "Ink thickness unavailable: PDF.js annotation manager not ready yet.";
@@ -3819,49 +3859,33 @@
       </div>
     </div>
 
+    {#snippet swatchRow(
+      label: string,
+      swatches: SwatchOption[],
+      isSwatchActive: (colorName: string) => boolean,
+      applySwatchColor: (colorName: string) => void,
+      ariaTarget: string,
+    )}
+      <span class="label">{label}</span>
+      <div class="swatches">
+        {#each swatches as option (option.name)}
+          <button
+            class:swatch-active={isSwatchActive(option.name)}
+            class="swatch"
+            onclick={() => applySwatchColor(option.name)}
+            disabled={!pdfDocument}
+            aria-label={`Set ${ariaTarget} color to ${option.name}`}
+            title={`Set ${ariaTarget} color to ${option.name}`}
+            style={`--swatch-color: ${option.color}`}
+          ></button>
+        {/each}
+      </div>
+    {/snippet}
+
     <div class="group">
-      <span class="label">Highlight color</span>
-      <div class="swatches">
-        {#each (Object.keys(highlightColors) as HighlightColorName[]) as colorName}
-          <button
-            class:swatch-active={(hasSelectedHighlight ? selectedHighlightColor : defaultHighlightColor) === colorName}
-            class="swatch"
-            onclick={() => applyHighlightColor(colorName)}
-            disabled={!pdfDocument}
-            aria-label={`Set highlight color to ${colorName}`}
-            title={`Set highlight color to ${colorName}`}
-            style={`--swatch-color: ${highlightColors[colorName]}`}
-          ></button>
-        {/each}
-      </div>
-      <span class="label">Free-text color</span>
-      <div class="swatches">
-        {#each (Object.keys(freeTextColors) as FreeTextColorName[]) as colorName}
-          <button
-            class:swatch-active={activeTool === "text" && (freeTextColorNameForValue(selectedAnnotationColor) ?? defaultFreeTextColor) === colorName}
-            class="swatch"
-            onclick={() => applyFreeTextColor(colorName)}
-            disabled={!pdfDocument}
-            aria-label={`Set free-text color to ${colorName}`}
-            title={`Set free-text color to ${colorName}`}
-            style={`--swatch-color: ${freeTextColors[colorName]}`}
-          ></button>
-        {/each}
-      </div>
-      <span class="label">Ink color</span>
-      <div class="swatches">
-        {#each (Object.keys(inkColors) as InkColorName[]) as colorName}
-          <button
-            class:swatch-active={activeTool === "ink" && (inkColorNameForValue(selectedAnnotationColor) ?? defaultInkColor) === colorName}
-            class="swatch"
-            onclick={() => applyInkColor(colorName)}
-            disabled={!pdfDocument}
-            aria-label={`Set ink color to ${colorName}`}
-            title={`Set ink color to ${colorName}`}
-            style={`--swatch-color: ${inkColors[colorName]}`}
-          ></button>
-        {/each}
-      </div>
+      {@render swatchRow("Highlight color", highlightSwatches, isHighlightSwatchActive, applyHighlightSwatchColor, "highlight")}
+      {@render swatchRow("Free-text color", freeTextSwatches, isFreeTextSwatchActive, applyFreeTextSwatchColor, "free-text")}
+      {@render swatchRow("Ink color", inkSwatches, isInkSwatchActive, applyInkSwatchColor, "ink")}
       <span class="label">Ink thickness</span>
       <div class="toolbar">
         {#each inkThicknesses as thickness}
