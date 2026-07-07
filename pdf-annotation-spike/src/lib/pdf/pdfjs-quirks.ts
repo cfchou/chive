@@ -54,6 +54,10 @@ export type AnnotationEditorUIManager = {
   updateParams: (type: number, value: unknown) => void;
 };
 
+// The app-level annotation tool selection; editorModes in the page maps each
+// tool to its pdf.js AnnotationEditorType value.
+export type EditorTool = "none" | "highlight" | "text" | "ink";
+
 export type EditorModeValues = {
   highlight: number | string;
   text: number | string;

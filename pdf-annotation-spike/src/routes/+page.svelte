@@ -37,7 +37,9 @@
     type AnnotationEditor,
     type AnnotationEditorLayerRef,
     type AnnotationEditorUIManager,
+    type EditorTool,
   } from "$lib/pdf/pdfjs-quirks";
+  import { installSpikeDebugApi } from "$lib/debug/spike-api";
   import {
     annotationCountLabel,
     bookmarkCountLabel,
@@ -106,7 +108,6 @@
 
   type PdfDocument = Awaited<ReturnType<typeof pdfjsLib.getDocument>["promise"]>;
   type PdfPage = Awaited<ReturnType<PdfDocument["getPage"]>>;
-  type EditorTool = "none" | "highlight" | "text" | "ink";
   type NavigationTab = "outline" | "bookmarks" | "annotations";
   type SelectedAnnotationKind = "highlight" | "freetext" | "ink" | null;
   type PdfOutlineRaw = {
@@ -123,36 +124,6 @@
     top: number;
     width: number;
     height: number;
-  };
-  type SpikeDebugApi = {
-    annotationSummary: () => Promise<Record<string, unknown>[]>;
-    annotationSidebarSummary: () => AnnotationEntry[];
-    bookmarkSummary: () => BookmarkEntry[];
-    outlineSummary: () => OutlineEntry[];
-    activateFirstOutlineItem: () => Promise<boolean>;
-    activateFirstAnnotationItem: () => Promise<boolean>;
-    activateAnnotationBySourceId: (sourceId: string) => Promise<boolean>;
-    createBookmarkForCurrentPage: () => Promise<void>;
-    createPageFreeText: (text?: string, pageNumber?: number) => Promise<boolean>;
-    createSelectionHighlightInToolMode: () => Promise<boolean>;
-    editorSummary: () => Record<string, unknown>[];
-    loadSample: () => Promise<void>;
-    loadPath: (path: string) => Promise<void>;
-    loadUrl: (url: string, label?: string) => Promise<void>;
-    saveToPath: (path: string) => Promise<void>;
-    selectFirstHighlight: () => Promise<boolean>;
-    selectFirstText: () => string;
-    recolorSelectedHighlight: (color: HighlightColorName) => void;
-    recolorSelectedFreeText: (color: FreeTextColorName) => void;
-    recolorSelectedInk: (color: InkColorName) => void;
-    setInkThickness: (thickness: number) => void;
-    setInkMarkerPreset: () => void;
-    moveSelected: (x: number, y: number) => boolean;
-    editSelectedFreeText: (text: string) => Promise<boolean>;
-    deleteSelected: () => boolean;
-    debugSavedBytes: (path: string) => number[];
-    stats: () => Record<string, unknown>;
-    setTool: (tool: EditorTool) => void;
   };
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -233,7 +204,6 @@
     createEditorTypeGuards(editorModes);
 
   onMount(() => {
-    const debugWindow = window as Window & { __pdfSpike?: SpikeDebugApi };
     document.documentElement.style.setProperty(
       "--pdf-spike-ink-cursor",
       `url("${inkCursorUrl}") 1 14, pointer`,
@@ -281,7 +251,7 @@
     containerEl?.addEventListener("scroll", handlePdfScroll);
     containerEl?.addEventListener("mousemove", handlePdfContainerMouseMove);
     containerEl?.addEventListener("mouseleave", clearRailHoverCue);
-    debugWindow.__pdfSpike = {
+    const teardownSpikeDebugApi = installSpikeDebugApi(window, {
       annotationSummary: getAnnotationSummary,
       annotationSidebarSummary: () => annotationEntries,
       bookmarkSummary: () => bookmarkEntries,
@@ -310,7 +280,7 @@
       debugSavedBytes,
       stats: getDebugStats,
       setTool,
-    };
+    });
     return () => {
       containerEl?.removeEventListener("mouseleave", clearRailHoverCue);
       containerEl?.removeEventListener("mousemove", handlePdfContainerMouseMove);
@@ -325,7 +295,7 @@
       document.removeEventListener("keydown", handleAnnotationEscapeKey, { capture: true });
       document.removeEventListener("pointerdown", handleDocumentPointerDown, { capture: true });
       document.removeEventListener("selectionchange", rememberSelection);
-      delete debugWindow.__pdfSpike;
+      teardownSpikeDebugApi();
     };
   });
 
