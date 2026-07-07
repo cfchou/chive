@@ -31,6 +31,11 @@ export type AnnotationEntry = {
   sortLeft: number;
 };
 
+export type AnnotationPageGroup = {
+  page: number;
+  entries: AnnotationEntry[];
+};
+
 export type AnnotationPosition = {
   top: number;
   left: number;
@@ -530,15 +535,51 @@ export function rectToPagePercent(rect: RectLike, width: number, height: number)
 }
 
 export function boundsOverlapSignificantly(left: RectLike, right: RectLike) {
+  return boundsOverlapRatio(left, right) > 0.55;
+}
+
+export function boundsOverlapRatio(left: RectLike, right: RectLike) {
   const intersectionWidth = Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left));
   const intersectionHeight = Math.max(0, Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top));
   const intersectionArea = intersectionWidth * intersectionHeight;
   const smallerArea = Math.min(rectArea(left), rectArea(right));
-  return smallerArea > 0 && intersectionArea / smallerArea > 0.55;
+  return smallerArea > 0 ? intersectionArea / smallerArea : 0;
+}
+
+export function rectCenterDistance(left: RectLike, right: RectLike) {
+  const leftX = (left.left + left.right) / 2;
+  const leftY = (left.top + left.bottom) / 2;
+  const rightX = (right.left + right.right) / 2;
+  const rightY = (right.top + right.bottom) / 2;
+  return Math.hypot(leftX - rightX, leftY - rightY);
+}
+
+export function numbersFromNumericRecord(value: unknown): number[] {
+  if (Array.isArray(value) || ArrayBuffer.isView(value) || typeof value === "number") {
+    return numbersFromUnknown(value);
+  }
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value)
+    .filter(([key, item]) => /^\d+$/.test(key) && typeof item === "number" && Number.isFinite(item))
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([, item]) => item as number);
 }
 
 export function rectArea(rect: RectLike) {
   return Math.max(0, rect.right - rect.left) * Math.max(0, rect.bottom - rect.top);
+}
+
+export function groupAnnotationEntriesByPage(entries: AnnotationEntry[]): AnnotationPageGroup[] {
+  const groups: AnnotationPageGroup[] = [];
+  for (const entry of entries) {
+    const last = groups[groups.length - 1];
+    if (last?.page === entry.page) {
+      last.entries.push(entry);
+    } else {
+      groups.push({ page: entry.page, entries: [entry] });
+    }
+  }
+  return groups;
 }
 
 export function cachedAnnotationDetail(cache: Map<string, string>, entryId: string, detail: string) {

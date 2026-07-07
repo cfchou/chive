@@ -68,6 +68,20 @@ export function visibleActiveOutlineEntryId(
   return path.at(-1)?.id ?? null;
 }
 
+export function explicitDestinationRef(dest: PdfDestination) {
+  return Array.isArray(dest) ? dest[0] : null;
+}
+
+export function pdfRefString(ref: unknown) {
+  if (typeof ref === "object" && ref !== null && "num" in ref) {
+    const candidate = ref as { num: unknown; gen?: unknown };
+    if (typeof candidate.num === "number") {
+      return `${candidate.num} ${typeof candidate.gen === "number" ? candidate.gen : 0} R`;
+    }
+  }
+  return null;
+}
+
 export function updateOutlineEntryColor(entries: OutlineEntry[], id: string, color: string | null): OutlineEntry[] {
   return entries.map((entry) =>
     entry.id === id

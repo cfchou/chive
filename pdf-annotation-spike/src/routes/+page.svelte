@@ -13,21 +13,35 @@
   import "pdfjs-dist/web/pdf_viewer.css";
   import {
     annotationKindForSubtype,
+    boundsOverlapRatio,
     buildLiveAnnotationEntries,
     buildPdfAnnotationEntries,
+    groupAnnotationEntriesByPage,
+    numbersFromNumericRecord,
     numbersFromUnknown,
-    rectArea,
+    rectCenterDistance,
+    rectLikesOverlap,
     rectToPagePercent,
     type AnnotationEntry,
     type RectLike,
   } from "$lib/pdf/annotation-sidebar";
+  import { sortBookmarkEntries, type BookmarkEntry } from "$lib/pdf/bookmarks";
+  import {
+    annotationCountLabel,
+    bookmarkCountLabel,
+    firstWords,
+    formatError,
+    itemCountLabel,
+  } from "$lib/format";
   import { writePdfOutlineState } from "$lib/pdf/outline-byte-writer";
   import {
     countOutlineEntries,
     countUnavailableOutlineEntries,
+    explicitDestinationRef,
     flattenOutlineEntries,
     isOutlineEntryNavigable,
     outlineDestinationStatus,
+    pdfRefString,
     updateOutlineEntryColor,
     visibleActiveOutlineEntryId,
     type OutlineEntry,
@@ -91,20 +105,6 @@
     bold?: boolean;
     italic?: boolean;
     items?: PdfOutlineRaw[];
-  };
-  type BookmarkEntry = {
-    id: string;
-    title: string;
-    pageNumber: number;
-    pageRef: string;
-    pageHeight: number;
-    targetY: number;
-    destinationY: number;
-    color: string | null;
-  };
-  type AnnotationPageGroup = {
-    page: number;
-    entries: AnnotationEntry[];
   };
   type FocusBox = {
     left: number;
@@ -846,7 +846,7 @@
         range.setEnd(textNode, offset + 1);
         const rect = range.getBoundingClientRect();
         range.detach();
-        if (rect.width > 0 && rect.height > 0 && rectsOverlap(targetRect, rect, 1)) {
+        if (rect.width > 0 && rect.height > 0 && rectLikesOverlap(targetRect, rect, 1)) {
           firstOffset ??= offset;
           lastOffset = offset + 1;
         }
@@ -870,15 +870,6 @@
       .join(" ")
       .replace(/\s+/g, " ")
       .trim();
-  }
-
-  function rectsOverlap(left: DOMRect, right: DOMRect, padding = 0) {
-    return (
-      left.left - padding < right.right &&
-      left.right + padding > right.left &&
-      left.top - padding < right.bottom &&
-      left.bottom + padding > right.top
-    );
   }
 
   async function loadOutline(document: PdfDocument) {
@@ -1359,16 +1350,6 @@
     isDirty = true;
   }
 
-  function sortBookmarkEntries(entries: BookmarkEntry[]) {
-    return [...entries].sort((left, right) => {
-      const pageOrder = left.pageNumber - right.pageNumber;
-      if (pageOrder !== 0) return pageOrder;
-      const pagePositionOrder = right.targetY - left.targetY;
-      if (pagePositionOrder !== 0) return pagePositionOrder;
-      return left.id.localeCompare(right.id);
-    });
-  }
-
   function handleBookmarkTitleKey(event: KeyboardEvent) {
     if (event.key === "Enter") {
       editingBookmarkId = null;
@@ -1443,14 +1424,6 @@
     return firstWords(lineText, bookmarkTitleWordCount) || null;
   }
 
-  function firstWords(text: string, count: number) {
-    return text
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, count)
-      .join(" ")
-      .replace(/[,:;.!?]+$/, "");
-  }
 
   function outlineBookmarkTitle(pageNumber: number, targetY: number) {
     const candidates = flattenOutlineEntries(outlineEntries).filter(
@@ -1517,19 +1490,6 @@
     return bookmarkAnchorYForInset(destinationY, bookmarkAnchorInsetPdfPoints(pageNumber, pageHeight), pageHeight);
   }
 
-  function explicitDestinationRef(dest: PdfDestination) {
-    return Array.isArray(dest) ? dest[0] : null;
-  }
-
-  function pdfRefString(ref: unknown) {
-    if (typeof ref === "object" && ref !== null && "num" in ref) {
-      const candidate = ref as { num: unknown; gen?: unknown };
-      if (typeof candidate.num === "number") {
-        return `${candidate.num} ${typeof candidate.gen === "number" ? candidate.gen : 0} R`;
-      }
-    }
-    return null;
-  }
 
   async function goToBookmarkEntry(entry: BookmarkEntry) {
     editingBookmarkId = null;
@@ -1641,30 +1601,6 @@
     return activateAnnotationEntry(entry);
   }
 
-  function groupAnnotationEntriesByPage(entries: AnnotationEntry[]): AnnotationPageGroup[] {
-    const groups: AnnotationPageGroup[] = [];
-    for (const entry of entries) {
-      const last = groups[groups.length - 1];
-      if (last?.page === entry.page) {
-        last.entries.push(entry);
-      } else {
-        groups.push({ page: entry.page, entries: [entry] });
-      }
-    }
-    return groups;
-  }
-
-  function itemCountLabel(count: number) {
-    return `${count} item${count === 1 ? "" : "s"}`;
-  }
-
-  function bookmarkCountLabel(count: number) {
-    return `${count} bookmark${count === 1 ? "" : "s"}`;
-  }
-
-  function annotationCountLabel(count: number) {
-    return `${count} annotation${count === 1 ? "" : "s"}`;
-  }
 
   async function activateAnnotationEntry(entry: AnnotationEntry) {
     selectedAnnotationEntryId = entry.id;
@@ -2105,21 +2041,6 @@
     );
   }
 
-  function boundsOverlapRatio(left: RectLike, right: RectLike) {
-    const intersectionWidth = Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left));
-    const intersectionHeight = Math.max(0, Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top));
-    const intersectionArea = intersectionWidth * intersectionHeight;
-    const smallerArea = Math.min(rectArea(left), rectArea(right));
-    return smallerArea > 0 ? intersectionArea / smallerArea : 0;
-  }
-
-  function rectCenterDistance(left: RectLike, right: RectLike) {
-    const leftX = (left.left + left.right) / 2;
-    const leftY = (left.top + left.bottom) / 2;
-    const rightX = (right.left + right.right) / 2;
-    const rightY = (right.top + right.bottom) / 2;
-    return Math.hypot(leftX - rightX, leftY - rightY);
-  }
 
   async function focusAnnotationElement(
     element: HTMLElement,
@@ -3222,16 +3143,6 @@
     editorElement.prepend(svg);
   }
 
-  function numbersFromNumericRecord(value: unknown): number[] {
-    if (Array.isArray(value) || ArrayBuffer.isView(value) || typeof value === "number") {
-      return numbersFromUnknown(value);
-    }
-    if (!value || typeof value !== "object") return [];
-    return Object.entries(value)
-      .filter(([key, item]) => /^\d+$/.test(key) && typeof item === "number" && Number.isFinite(item))
-      .sort(([left], [right]) => Number(left) - Number(right))
-      .map(([, item]) => item as number);
-  }
 
   async function createSelectionHighlightInToolMode() {
     return createHighlightFromSelection({
@@ -3984,9 +3895,6 @@
     return tool[0].toUpperCase() + tool.slice(1);
   }
 
-  function formatError(error: unknown) {
-    return error instanceof Error ? error.message : String(error);
-  }
 </script>
 
 <main class="app">
