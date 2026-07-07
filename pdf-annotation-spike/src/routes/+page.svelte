@@ -23,6 +23,17 @@
   } from "$lib/pdf/annotation-sidebar";
   import { writePdfOutlineState } from "$lib/pdf/outline-byte-writer";
   import {
+    countOutlineEntries,
+    countUnavailableOutlineEntries,
+    flattenOutlineEntries,
+    isOutlineEntryNavigable,
+    outlineDestinationStatus,
+    updateOutlineEntryColor,
+    visibleActiveOutlineEntryId,
+    type OutlineEntry,
+    type PdfDestination,
+  } from "$lib/pdf/outline-tree";
+  import {
     pdfAnnotationElementId,
     persistedAnnotationKey,
     persistedAnnotationKeyParts,
@@ -72,7 +83,6 @@
   type EditorTool = "none" | "highlight" | "text" | "ink";
   type NavigationTab = "outline" | "bookmarks" | "annotations";
   type SelectedAnnotationKind = "highlight" | "freetext" | "ink" | null;
-  type PdfDestination = string | unknown[] | null;
   type PdfOutlineRaw = {
     title?: string;
     dest?: PdfDestination;
@@ -81,19 +91,6 @@
     bold?: boolean;
     italic?: boolean;
     items?: PdfOutlineRaw[];
-  };
-  type OutlineEntry = {
-    id: string;
-    title: string;
-    dest: PdfDestination;
-    url: string | null;
-    pageNumber: number | null;
-    targetY: number | null;
-    pageHeight: number | null;
-    color: string | null;
-    colorDirty: boolean;
-    destinationStatus: string | null;
-    items: OutlineEntry[];
   };
   type BookmarkEntry = {
     id: string;
@@ -1001,13 +998,7 @@
   }
 
   function updateOutlineColor(id: string, color: string | null) {
-    const updateEntries = (entries: OutlineEntry[]): OutlineEntry[] =>
-      entries.map((entry) =>
-        entry.id === id
-          ? { ...entry, color, colorDirty: true }
-          : { ...entry, items: updateEntries(entry.items) },
-      );
-    outlineEntries = updateEntries(outlineEntries);
+    outlineEntries = updateOutlineEntryColor(outlineEntries, id, color);
     outlineColorMenuId = null;
     isDirty = true;
   }
@@ -1036,28 +1027,7 @@
   }
 
   function isActiveOutlineRow(id: string) {
-    return visibleActiveOutlineEntryId(outlineEntries, activeOutlineEntryId) === id;
-  }
-
-  function visibleActiveOutlineEntryId(entries: OutlineEntry[], activeId: string | null) {
-    if (!activeId) return null;
-    const path = outlinePathToEntry(entries, activeId);
-    if (path.length === 0) return null;
-    for (let index = 0; index < path.length - 1; index += 1) {
-      if (isOutlineCollapsed(path[index].id)) {
-        return path[index].id;
-      }
-    }
-    return path.at(-1)?.id ?? null;
-  }
-
-  function outlinePathToEntry(entries: OutlineEntry[], id: string): OutlineEntry[] {
-    for (const entry of entries) {
-      if (entry.id === id) return [entry];
-      const childPath = outlinePathToEntry(entry.items, id);
-      if (childPath.length > 0) return [entry, ...childPath];
-    }
-    return [];
+    return visibleActiveOutlineEntryId(outlineEntries, activeOutlineEntryId, isOutlineCollapsed) === id;
   }
 
   function refreshActiveOutlineFromScroll() {
@@ -1155,31 +1125,6 @@
     } catch {
       return null;
     }
-  }
-
-  function countOutlineEntries(entries: OutlineEntry[]): number {
-    return entries.reduce((count, entry) => count + 1 + countOutlineEntries(entry.items), 0);
-  }
-
-  function countUnavailableOutlineEntries(entries: OutlineEntry[]): number {
-    return entries.reduce(
-      (count, entry) =>
-        count +
-        (isOutlineEntryNavigable(entry) ? 0 : 1) +
-        countUnavailableOutlineEntries(entry.items),
-      0,
-    );
-  }
-
-  function outlineDestinationStatus(dest: PdfDestination, url: string | null, pageNumber: number | null) {
-    if (url) return "External link";
-    if (!dest) return "No destination";
-    if (!pageNumber) return "Destination unavailable";
-    return null;
-  }
-
-  function isOutlineEntryNavigable(entry: OutlineEntry) {
-    return Boolean(entry.url || (entry.dest && entry.pageNumber));
   }
 
   async function createBookmarkForCurrentPage(editAfterCreate = false) {
@@ -1530,10 +1475,6 @@
       .filter((entry) => entry.pageNumber !== pageNumber)
       .sort((left, right) => (left.pageNumber ?? 0) - (right.pageNumber ?? 0));
     return previousPageCandidates.at(-1)?.title ?? `Page ${pageNumber}`;
-  }
-
-  function flattenOutlineEntries(entries: OutlineEntry[]): OutlineEntry[] {
-    return entries.flatMap((entry) => [entry, ...flattenOutlineEntries(entry.items)]);
   }
 
   async function bookmarkPageTarget(pageNumber: number, offsetIntoPage?: number) {
