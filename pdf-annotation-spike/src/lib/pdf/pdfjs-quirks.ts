@@ -1,7 +1,25 @@
 import { formatError } from "../format";
 import type { AnnotationKind } from "./annotation-sidebar";
 
+// Everything the app knows about pdf.js *private* editor internals lives in
+// this module, so a pdfjs-dist upgrade has one file to re-verify.
+//
+// Background: pdf.js gives each rendered document one AnnotationEditorUIManager
+// that owns editor creation and selection. Every time a PDF is (re)loaded the
+// viewer builds a fresh manager and aborts the old one's AbortSignal, but
+// editor objects and event paths captured earlier can still point at the dead
+// manager. Calling setSelected()/unselectAll() through such a stale manager
+// makes WebKit throw from addEventListener ("The provided AbortSignal is
+// aborted"); other engines, and Node, silently no-op instead. We swallow that
+// one failure rather than avoid the call because the app cannot always tell
+// which manager a pdf.js-internal event path will route through, and the
+// failed call is harmless — the selection is being replaced anyway.
+
 // Structural typings for the private pdf.js editor objects the app touches.
+// pdfjs-dist exports no types for these internals, and hand-writing them
+// documents exactly which private surface we depend on. When bumping
+// pdfjs-dist, confirm these properties — and the _signal/_uiManager slots read
+// below — still exist.
 export type AnnotationEditor = {
   id: string;
   annotationElementId?: string | null;
@@ -42,9 +60,9 @@ export type EditorModeValues = {
   ink: number | string;
 };
 
-// pdf.js keeps aborted AbortSignals on stale UI managers; selecting through
-// them throws from addEventListener. These helpers detect that state and
-// swallow only that specific failure.
+// Probes whether the runtime would accept this signal in addEventListener.
+// The result is environment-specific by design: WebKit rejects an
+// already-aborted signal, Node and Chromium accept it (see module header).
 export function isUsableAbortSignal(signal: unknown) {
   if (!(signal instanceof AbortSignal)) return false;
   const target = new EventTarget();
@@ -72,6 +90,8 @@ export function editorBelongsToManager(
   return Boolean(editor && (editor as unknown as { _uiManager?: unknown })._uiManager === manager);
 }
 
+// Matches only the stale-manager failure described in the module header; any
+// other error from pdf.js must keep propagating.
 function isPdfjsSignalBugError(error: unknown) {
   const message = formatError(error);
   return message.includes("AbortSignal") && message.includes("addEventListener");
@@ -98,6 +118,11 @@ export function unselectAllIgnoringPdfjsSignalBug(manager: AnnotationEditorUIMan
   }
 }
 
+// Each guard checks the numeric AnnotationEditorType enum *and* a string name
+// because live editors carry the number while editors rebuilt from serialized
+// annotation data carry the serialized name. Taking the enum values as a
+// parameter (instead of importing pdfjs-dist here) keeps this module loadable
+// in plain Node for unit tests.
 export function createEditorTypeGuards(editorModes: EditorModeValues) {
   const isHighlightEditor = (editor: AnnotationEditor | null | undefined): editor is AnnotationEditor =>
     editor?.editorType === editorModes.highlight || editor?.editorType === "highlight";
