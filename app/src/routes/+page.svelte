@@ -301,6 +301,7 @@
   onMount(() => {
     void setupAppMenu({
       openPdf,
+      closePdf,
       savePdf,
       savePdfAs,
       hasDocument: () => Boolean(pdfDocument),
@@ -373,6 +374,7 @@
       activateFirstOutlineItem,
       activateFirstAnnotationItem,
       activateAnnotationBySourceId,
+      closeDocument: closePdf,
       createBookmarkForCurrentPage,
       createPageFreeText,
       createSelectionHighlightInToolMode,
@@ -843,6 +845,19 @@
     }
     eventBus.on("editingstateschanged", () => syncSelectedEditorState());
     eventBus.on("annotationeditorparamschanged", () => syncSelectedEditorState());
+  }
+
+  function closePdf() {
+    if (!pdfDocument && !currentPath) return;
+
+    teardownViewer();
+    currentPath = "";
+    isDirty = false;
+    activeTool = "none";
+    scaleLabel = "Fit Width";
+    rememberedSelectionText = "";
+    rememberedSelectionRanges = [];
+    status = "Closed PDF.";
   }
 
   function scheduleAnnotationSidebarRefresh(delay = 120) {

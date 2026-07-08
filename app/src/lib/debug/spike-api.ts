@@ -24,6 +24,7 @@ export type SpikeDebugApi = {
   createBookmarkForCurrentPage: () => Promise<void>;
   createPageFreeText: (text?: string, pageNumber?: number) => Promise<boolean>;
   createSelectionHighlightInToolMode: () => Promise<boolean>;
+  closeDocument: () => void;
   editorSummary: () => Record<string, unknown>[];
   loadSample: () => Promise<void>;
   loadPath: (path: string) => Promise<void>;

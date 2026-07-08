@@ -3,6 +3,7 @@ import { Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tauri-apps/api/men
 
 type MenuHandlers = {
   openPdf: () => unknown;
+  closePdf: () => unknown;
   savePdf: () => unknown;
   savePdfAs: () => unknown;
   hasDocument: () => boolean;
@@ -10,6 +11,7 @@ type MenuHandlers = {
 
 let saveItem: MenuItem | null = null;
 let saveAsItem: MenuItem | null = null;
+let closeItem: MenuItem | null = null;
 let quitShortcutInstalled = false;
 
 export async function setupAppMenu(handlers: MenuHandlers) {
@@ -42,6 +44,14 @@ export async function setupAppMenu(handlers: MenuHandlers) {
       if (handlers.hasDocument()) void handlers.savePdfAs();
     },
   });
+  closeItem = await MenuItem.new({
+    id: "file-close-pdf",
+    text: "Close PDF",
+    enabled: handlers.hasDocument(),
+    action: () => {
+      if (handlers.hasDocument()) void handlers.closePdf();
+    },
+  });
   const quitItem = await MenuItem.new({
     id: "file-quit",
     text: "Quit Chive",
@@ -56,6 +66,7 @@ export async function setupAppMenu(handlers: MenuHandlers) {
       await PredefinedMenuItem.new({ item: "Separator" }),
       saveItem,
       saveAsItem,
+      closeItem,
       await PredefinedMenuItem.new({ item: "Separator" }),
       await PredefinedMenuItem.new({ item: "CloseWindow" }),
       quitItem,
@@ -103,5 +114,5 @@ function installQuitShortcut() {
 }
 
 export async function setPdfMenuDocumentEnabled(enabled: boolean) {
-  await Promise.all([saveItem?.setEnabled(enabled), saveAsItem?.setEnabled(enabled)]);
+  await Promise.all([saveItem?.setEnabled(enabled), saveAsItem?.setEnabled(enabled), closeItem?.setEnabled(enabled)]);
 }

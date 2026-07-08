@@ -91,6 +91,24 @@ test("header shows document title without app name", async ({ page }) => {
   await expect(header).not.toContainText("Chive");
 });
 
+test("document can be closed while the app remains open", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => Boolean(window.__pdfSpike));
+  await page.evaluate(async () => {
+    await window.__pdfSpike!.loadUrl("/sample.pdf", "sample.pdf");
+  });
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().pages)).toBeGreaterThan(0);
+  await expect(page.locator("header.topbar")).toContainText("sample.pdf");
+
+  await page.evaluate(async () => {
+    await window.__pdfSpike!.closeDocument();
+  });
+
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().pages)).toBe(0);
+  await expect(page.locator("header.topbar")).toContainText("No document open");
+  await expect(page.getByRole("button", { name: "Highlight" })).toBeDisabled();
+});
+
 test("left sidebar starts wider and can be resized", async ({ page }) => {
   await page.goto("/");
 

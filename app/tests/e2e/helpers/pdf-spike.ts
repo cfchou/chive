@@ -8,6 +8,7 @@ export type PdfSpikeApi = {
   bookmarkSummary: () => BookmarkEntry[];
   createBookmarkForCurrentPage: () => Promise<void>;
   createPageFreeText: (text?: string, pageNumber?: number) => Promise<boolean>;
+  closeDocument: () => void;
   createSelectionHighlightInToolMode: () => Promise<boolean>;
   deleteSelected: () => boolean;
   debugSavedBytes: (path: string) => number[];
