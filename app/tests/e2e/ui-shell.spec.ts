@@ -192,4 +192,10 @@ test("sidebars collapse and reopen from the edge", async ({ page }) => {
   await page.getByRole("button", { name: "Open left sidebar" }).click();
 
   await expect(page.getByTestId("left-sidebar")).toBeVisible();
+  for (const testId of ["left-tab-outline", "left-tab-bookmarks", "left-tab-annotations"]) {
+    const tabBox = await page.getByTestId(testId).boundingBox();
+    if (!tabBox) throw new Error(`${testId} tab has no bounding box after reopening sidebar`);
+    expect(tabBox.width).toBeLessThanOrEqual(48);
+    expect(tabBox.height).toBeLessThanOrEqual(42);
+  }
 });
