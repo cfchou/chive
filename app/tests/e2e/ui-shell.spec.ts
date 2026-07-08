@@ -1,5 +1,42 @@
 import { expect, test } from "@playwright/test";
 
+async function dragTabToRightEdge(page: import("@playwright/test").Page, testId: string) {
+  const tab = page.getByTestId(testId);
+  const box = await tab.boundingBox();
+  if (!box) throw new Error(`${testId} tab has no bounding box`);
+
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(page.viewportSize()!.width - 4, box.y + box.height / 2, { steps: 8 });
+  await page.mouse.up();
+}
+
+async function dragTabToLocator(page: import("@playwright/test").Page, tabTestId: string, targetTestId: string) {
+  const tab = page.getByTestId(tabTestId);
+  const target = page.getByTestId(targetTestId);
+  await expect(tab).toBeVisible();
+  await expect(target).toBeVisible();
+  const viewportWidth = page.viewportSize()!.width;
+  await expect
+    .poll(async () => {
+      const box = await tab.boundingBox();
+      return box ? box.x + box.width / 2 : Number.POSITIVE_INFINITY;
+    })
+    .toBeLessThan(viewportWidth - 4);
+  const tabBox = await tab.boundingBox();
+  const targetBox = await target.boundingBox();
+  if (!tabBox) throw new Error(`${tabTestId} tab has no bounding box`);
+  if (!targetBox) throw new Error(`${targetTestId} target has no bounding box`);
+
+  const sourceX = Math.min(tabBox.x + tabBox.width / 2, viewportWidth - 4);
+  const targetX = Math.min(targetBox.x + targetBox.width / 2, viewportWidth - 4);
+
+  await page.mouse.move(sourceX, tabBox.y + tabBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(targetX, targetBox.y + targetBox.height / 2, { steps: 8 });
+  await page.mouse.up();
+}
+
 test("tab activation updates the active panel", async ({ page }) => {
   await page.goto("/");
 
@@ -56,17 +93,23 @@ test("left sidebar starts wider and can be resized", async ({ page }) => {
 test("tab can be dragged to the right strip", async ({ page }) => {
   await page.goto("/");
 
-  const tab = page.getByTestId("left-tab-bookmarks");
-  const box = await tab.boundingBox();
-  if (!box) throw new Error("Bookmarks tab has no bounding box");
-
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(page.viewportSize()!.width - 4, box.y + box.height / 2, { steps: 8 });
-  await page.mouse.up();
+  await dragTabToRightEdge(page, "left-tab-bookmarks");
 
   await expect(page.getByTestId("right-sidebar")).toBeVisible();
   await expect(page.getByTestId("right-tab-bookmarks")).toHaveAttribute("aria-selected", "true");
+});
+
+test("multiple tabs can be dragged between sidebars in one session", async ({ page }) => {
+  await page.goto("/");
+
+  await dragTabToRightEdge(page, "left-tab-bookmarks");
+  await expect(page.getByTestId("right-tab-bookmarks")).toHaveAttribute("aria-selected", "true");
+
+  await dragTabToLocator(page, "left-tab-annotations", "right-tabstrip");
+  await expect(page.getByTestId("right-tab-annotations")).toHaveAttribute("aria-selected", "true");
+
+  await dragTabToLocator(page, "right-tab-annotations", "left-tabstrip");
+  await expect(page.getByTestId("left-tab-annotations")).toHaveAttribute("aria-selected", "true");
 });
 
 test("sidebars collapse and reopen from the edge", async ({ page }) => {

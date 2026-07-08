@@ -29,12 +29,36 @@
     if (Math.abs(event.clientX - startX) > 4) moved = true;
   }
 
+  function sideFromDropTarget(event: PointerEvent): DockSide | null {
+    for (const candidateSide of ["left", "right"] as const) {
+      const strip = document.querySelector<HTMLElement>(`[data-testid='${candidateSide}-tabstrip']`);
+      const rect = strip?.getBoundingClientRect();
+      if (
+        rect &&
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom
+      ) {
+        return candidateSide;
+      }
+    }
+
+    const dropTarget = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-testid='left-tabstrip'], [data-testid='right-tabstrip']");
+    const testId = dropTarget?.dataset.testid;
+    if (testId === "left-tabstrip") return "left";
+    if (testId === "right-tabstrip") return "right";
+    return null;
+  }
+
   function handlePointerUp(event: PointerEvent) {
     const tab = draggingTab;
     draggingTab = null;
     if (!tab) return;
 
-    let targetSide: DockSide | null = null;
+    let targetSide: DockSide | null = sideFromDropTarget(event);
     if (event.clientX <= EDGE_DOCK_PX) targetSide = "left";
     if (event.clientX >= window.innerWidth - EDGE_DOCK_PX) targetSide = "right";
 
