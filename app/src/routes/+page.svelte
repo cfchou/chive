@@ -23,6 +23,7 @@
     serializeSidebarWidths,
     type SidebarWidths,
   } from "../lib/ui/sidebar-resize";
+  import { tabMeta } from "../lib/ui/tab-meta";
   import { installAppMenu, type AppMenuControls } from "../lib/tauri/menu";
   import { invoke } from "@tauri-apps/api/core";
   import { open, save } from "@tauri-apps/plugin-dialog";
@@ -3776,6 +3777,7 @@
   let dock = $state(createDefaultDockState());
   let draggingTab = $state<SidebarTabId | null>(null);
   let dropTargetSide = $state<SidebarSide | null>(null);
+  let dragGhost = $state<{ x: number; y: number } | null>(null);
   let zoomPercent = $state(100);
 
   // Pointer-drag session bookkeeping; intentionally non-reactive (updated on
@@ -3898,6 +3900,7 @@
     }
     event.preventDefault();
     dropTargetSide = dockSideAtPoint(event.clientX, event.clientY);
+    dragGhost = { x: event.clientX, y: event.clientY };
   }
 
   function handleDragPointerUp(event: PointerEvent) {
@@ -3926,6 +3929,7 @@
     dragSession = null;
     draggingTab = null;
     dropTargetSide = null;
+    dragGhost = null;
     window.removeEventListener("pointermove", handleDragPointerMove);
     window.removeEventListener("pointerup", handleDragPointerUp);
     window.removeEventListener("pointercancel", handleDragPointerCancel);
@@ -4198,6 +4202,21 @@
     </section>
   </main>
 </div>
+
+{#if draggingTab && dragGhost}
+  <div class="tab-drag-ghost" style={`left: ${dragGhost.x}px; top: ${dragGhost.y}px;`} aria-hidden="true">
+    <span class="tab-drag-ghost-chip">
+      <svg viewBox="0 0 24 24">
+        <path d={tabMeta[draggingTab].icon}></path>
+      </svg>
+    </span>
+    <svg class="tab-drag-ghost-hand" viewBox="0 0 24 24">
+      <path
+        d="M18 11V6a2 2 0 0 0-4 0v5M14 10V4a2 2 0 0 0-4 0v2M10 10.5V6a2 2 0 0 0-4 0v8M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"
+      ></path>
+    </svg>
+  </div>
+{/if}
 
 {#each dockSides as side (side)}
   <button
@@ -4476,6 +4495,44 @@
   }
   .edge-reopen.is-visible {
     display: grid;
+  }
+
+  .tab-drag-ghost {
+    position: fixed;
+    z-index: 40;
+    pointer-events: none;
+    transform: translate(-50%, -100%);
+  }
+  .tab-drag-ghost-chip {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 38px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    box-shadow: 0 6px 16px color-mix(in oklab, var(--fg), transparent 82%);
+    transform: rotate(-6deg);
+  }
+  .tab-drag-ghost-chip svg {
+    width: 17px;
+    height: 17px;
+    stroke: var(--fg);
+    stroke-width: 1.8;
+    fill: none;
+  }
+  .tab-drag-ghost-hand {
+    position: absolute;
+    left: 50%;
+    top: 100%;
+    width: 22px;
+    height: 22px;
+    transform: translate(-40%, -60%) rotate(8deg);
+    stroke: var(--fg);
+    stroke-width: 1.8;
+    fill: var(--bg);
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .app-status {

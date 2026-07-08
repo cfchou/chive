@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SidebarSide, SidebarTabId } from "./dock-state";
+  import { tabMeta } from "./tab-meta";
 
   type Props = {
     side: SidebarSide;
@@ -13,12 +14,6 @@
 
   let { side, tabs, activeTab, draggingTab, isDropTarget, onTabClick, onTabPointerDown }: Props =
     $props();
-
-  const tabMeta: Record<SidebarTabId, { label: string; icon: string }> = {
-    outline: { label: "Outline", icon: "M4 6h3M4 12h3M4 18h3M10 6h10M10 12h10M10 18h10" },
-    bookmarks: { label: "Bookmarks", icon: "M7 4h10v16l-5-3-5 3z" },
-    annotations: { label: "Annotations", icon: "M4 20h5l10-10a3 3 0 0 0-5-5L4 15zM13 6l5 5" },
-  };
 </script>
 
 <div

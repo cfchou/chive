@@ -150,6 +150,33 @@ test("right-docked tabs anchor to the outer edge like the left strip does", asyn
   expect(Math.abs(insets.right - insets.left)).toBeLessThanOrEqual(1);
 });
 
+test("dragging a tab shows a hand ghost that follows the pointer and clears on drop", async ({ page }) => {
+  const box = await stableBoundingBox(page, "Bookmarks");
+  if (!box) throw new Error("Bookmarks tab is not visible");
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  const ghost = page.locator(".tab-drag-ghost");
+
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await expect(ghost).toBeHidden();
+
+  await page.mouse.move(startX + 120, startY + 160, { steps: 6 });
+  await expect(ghost).toBeVisible();
+  await expect(ghost.locator("svg")).toHaveCount(2);
+  const nearFirst = await ghost.boundingBox();
+  if (!nearFirst) throw new Error("ghost has no bounding box");
+  expect(Math.hypot(nearFirst.x - (startX + 120), nearFirst.y - (startY + 160))).toBeLessThan(80);
+
+  await page.mouse.move(startX + 240, startY + 120, { steps: 4 });
+  const nearSecond = await ghost.boundingBox();
+  if (!nearSecond) throw new Error("ghost has no bounding box after move");
+  expect(Math.hypot(nearSecond.x - (startX + 240), nearSecond.y - (startY + 120))).toBeLessThan(80);
+
+  await page.mouse.up();
+  await expect(ghost).toBeHidden();
+});
+
 test("dragging a docked tab back before Outline reorders the left strip", async ({ page }) => {
   const viewport = page.viewportSize();
   if (!viewport) throw new Error("viewport unavailable");
