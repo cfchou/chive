@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tauri-apps/api/menu";
+import { FILE_MENU_ITEMS, type FileMenuAction, type FileMenuItemSpec } from "$lib/tauri/menu-model";
 
 type MenuHandlers = {
   openPdf: () => unknown;
@@ -20,57 +21,9 @@ export async function setupAppMenu(handlers: MenuHandlers) {
   }
   installQuitShortcut();
 
-  const openItem = await MenuItem.new({
-    id: "file-open",
-    text: "Open",
-    accelerator: "CmdOrCtrl+O",
-    action: () => void handlers.openPdf(),
-  });
-  saveItem = await MenuItem.new({
-    id: "file-save",
-    text: "Save",
-    accelerator: "CmdOrCtrl+S",
-    enabled: handlers.hasDocument(),
-    action: () => {
-      if (handlers.hasDocument()) void handlers.savePdf();
-    },
-  });
-  saveAsItem = await MenuItem.new({
-    id: "file-save-as",
-    text: "Save As",
-    accelerator: "CmdOrCtrl+Shift+S",
-    enabled: handlers.hasDocument(),
-    action: () => {
-      if (handlers.hasDocument()) void handlers.savePdfAs();
-    },
-  });
-  closeItem = await MenuItem.new({
-    id: "file-close-pdf",
-    text: "Close PDF",
-    enabled: handlers.hasDocument(),
-    action: () => {
-      if (handlers.hasDocument()) void handlers.closePdf();
-    },
-  });
-  const quitItem = await MenuItem.new({
-    id: "file-quit",
-    text: "Quit Chive",
-    accelerator: "CmdOrCtrl+Q",
-    action: () => void invoke("quit_app"),
-  });
-
   const fileMenu = await Submenu.new({
     text: "File",
-    items: [
-      openItem,
-      await PredefinedMenuItem.new({ item: "Separator" }),
-      saveItem,
-      saveAsItem,
-      closeItem,
-      await PredefinedMenuItem.new({ item: "Separator" }),
-      await PredefinedMenuItem.new({ item: "CloseWindow" }),
-      quitItem,
-    ],
+    items: await Promise.all(FILE_MENU_ITEMS.map((item) => createFileMenuItem(item, handlers))),
   });
 
   const editMenu = await Submenu.new({
@@ -88,6 +41,50 @@ export async function setupAppMenu(handlers: MenuHandlers) {
 
   const menu = await Menu.new({ items: [fileMenu, editMenu] });
   await menu.setAsAppMenu();
+}
+
+async function createFileMenuItem(item: FileMenuItemSpec, handlers: MenuHandlers) {
+  if (item.kind === "separator") {
+    return PredefinedMenuItem.new({ item: "Separator" });
+  }
+  if (item.kind === "predefined") {
+    return PredefinedMenuItem.new({ item: item.item });
+  }
+
+  const menuItem = await MenuItem.new({
+    id: item.id,
+    text: item.text,
+    accelerator: item.accelerator,
+    enabled: item.documentScoped ? handlers.hasDocument() : true,
+    action: () => performFileMenuAction(item.action, handlers),
+  });
+
+  if (item.action === "savePdf") saveItem = menuItem;
+  if (item.action === "savePdfAs") saveAsItem = menuItem;
+  if (item.action === "closePdf") closeItem = menuItem;
+  return menuItem;
+}
+
+function performFileMenuAction(action: FileMenuAction, handlers: MenuHandlers) {
+  if (action !== "openPdf" && action !== "quitApp" && !handlers.hasDocument()) return;
+
+  switch (action) {
+    case "openPdf":
+      void handlers.openPdf();
+      break;
+    case "savePdf":
+      void handlers.savePdf();
+      break;
+    case "savePdfAs":
+      void handlers.savePdfAs();
+      break;
+    case "closePdf":
+      void handlers.closePdf();
+      break;
+    case "quitApp":
+      void invoke("quit_app");
+      break;
+  }
 }
 
 function installQuitShortcut() {
