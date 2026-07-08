@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
   import { EDGE_DOCK_PX, TAB_LABELS, type DockSide, type DockTab } from "$lib/ui/dock-state";
+  import Icon from "$lib/ui/Icon.svelte";
 
   export let side: DockSide;
   export let tabs: DockTab[] = [];
@@ -15,12 +16,6 @@
   let startX = 0;
   let moved = false;
   let suppressNextClick = false;
-
-  function iconFor(tab: DockTab): string {
-    if (tab === "outline") return "O";
-    if (tab === "bookmarks") return "B";
-    return "A";
-  }
 
   function handlePointerDown(event: PointerEvent, tab: DockTab) {
     draggingTab = tab;
@@ -81,7 +76,7 @@
       on:pointerup={handlePointerUp}
       on:click={() => handleClick(tab)}
     >
-      <span aria-hidden="true">{iconFor(tab)}</span>
+      <Icon name={tab} />
     </button>
   {/each}
 </div>

@@ -9,6 +9,22 @@ test("tab activation updates the active panel", async ({ page }) => {
   await expect(page.getByRole("tabpanel", { name: "Bookmarks" })).toBeVisible();
 });
 
+test("sidebar tabs and annotation tools render icons instead of placeholder letters", async ({ page }) => {
+  await page.goto("/");
+
+  for (const label of ["Outline", "Bookmarks", "Annotations"]) {
+    const tab = page.getByRole("tab", { name: label });
+    await expect(tab.locator("svg")).toHaveCount(1);
+    await expect(tab).not.toHaveText(/^[OBA]$/);
+  }
+
+  for (const label of ["Highlight", "Free text", "Ink"]) {
+    const button = page.getByRole("button", { name: label, exact: true });
+    await expect(button.locator("svg")).toHaveCount(1);
+    await expect(button).not.toHaveText(/^[HTI]$/);
+  }
+});
+
 test("tab can be dragged to the right strip", async ({ page }) => {
   await page.goto("/");
 

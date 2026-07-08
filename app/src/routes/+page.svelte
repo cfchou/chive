@@ -6,6 +6,7 @@
   import AnnotationsSidebar from "$lib/pdf/AnnotationsSidebar.svelte";
   import BookmarksSidebar from "$lib/pdf/BookmarksSidebar.svelte";
   import OutlineSidebar from "$lib/pdf/OutlineSidebar.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
   import TabStrip from "$lib/ui/TabStrip.svelte";
   import Toast from "$lib/ui/Toast.svelte";
   import * as pdfjsLib from "pdfjs-dist";
@@ -4006,7 +4007,7 @@
           onpointerdown={(event) => handleToolbarModePointerDown("highlight", event)}
           disabled={!pdfDocument || isBusy}
         >
-          H
+          <Icon name="highlight" />
         </button>
         <button
           type="button"
@@ -4016,7 +4017,7 @@
           onpointerdown={(event) => handleToolbarModePointerDown("text", event)}
           disabled={!pdfDocument || isBusy}
         >
-          T
+          <Icon name="text" />
         </button>
         <button
           type="button"
@@ -4026,7 +4027,7 @@
           onpointerdown={(event) => handleToolbarModePointerDown("ink", event)}
           disabled={!pdfDocument || isBusy}
         >
-          I
+          <Icon name="ink" />
         </button>
       </div>
 
