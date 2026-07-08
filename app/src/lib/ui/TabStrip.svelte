@@ -53,7 +53,9 @@
 <style>
   .sidebar-tabs {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(42px, 42px));
+    grid-auto-flow: column;
+    grid-auto-columns: 42px;
+    justify-content: start;
     gap: var(--space-1);
     padding: var(--space-3) 48px 0 var(--space-3);
     background: var(--bg);
@@ -61,6 +63,9 @@
   }
   .sidebar-tabs[data-tab-strip="right"] {
     padding: var(--space-3) var(--space-3) 0 48px;
+    /* Mirror the left strip: tabs anchor to the outer (window) edge, with
+       the 48px collapse-button clearance on the inner side. */
+    justify-content: end;
   }
   .sidebar-tabs.is-drop-target {
     background: color-mix(in oklab, var(--fg), transparent 96%);

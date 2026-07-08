@@ -86,6 +86,29 @@ test("dragging a tab docks it to the right sidebar", async ({ page }) => {
   );
 });
 
+test("right-docked tabs anchor to the outer edge like the left strip does", async ({ page }) => {
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error("viewport unavailable");
+  await dragTabTo(page, "Annotations", viewport.width - 10, 90);
+  await expect(page.locator('[data-tab-strip="right"] [data-tab="annotations"]')).toBeVisible();
+  await stableBoundingBox(page, "Annotations");
+
+  const insets = await page.evaluate(() => {
+    const measure = (side: string) => {
+      const sidebar = document.querySelector(`.sidebar[data-side="${side}"]`);
+      const tab = document.querySelector(`[data-tab-strip="${side}"] [role="tab"]`);
+      if (!sidebar || !tab) throw new Error(`Missing sidebar or tab on ${side}`);
+      const sidebarRect = sidebar.getBoundingClientRect();
+      const tabRect = tab.getBoundingClientRect();
+      return side === "left"
+        ? tabRect.left - sidebarRect.left
+        : sidebarRect.right - tabRect.right;
+    };
+    return { left: measure("left"), right: measure("right") };
+  });
+  expect(Math.abs(insets.right - insets.left)).toBeLessThanOrEqual(1);
+});
+
 test("dragging a docked tab back before Outline reorders the left strip", async ({ page }) => {
   const viewport = page.viewportSize();
   if (!viewport) throw new Error("viewport unavailable");
