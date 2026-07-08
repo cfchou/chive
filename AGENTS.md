@@ -2,20 +2,22 @@
 
 - When using `/teach` skill, put all generated artifacts under `./learning/{topic}`.
 
-- `pdf-annotation-spike/` is the app directory; run repo commands from there.
+- `app/` is the official implementation directory; run official app commands from there.
+
+- `pdf-annotation-spike/` is the reference implementation for de-risking. Leave it intact unless a task explicitly asks for spike work.
 
 - Frontend is a SPA SvelteKit app for Tauri (`ssr = false`, `adapter-static` with SPA fallback), so assume no SSR data-shape and keep route-level assumptions browser-side.
 
 - Use this command sequence when touching UI/type-level code: `npm run check` (must pass) before `npm run build`.
 
 - Install and core commands:
-  - `cd pdf-annotation-spike && npm install`
-  - `npm run dev` (Vite at `http://127.0.0.1:1420/`)
+  - `cd app && npm install`
+  - `npm run dev -- --host 127.0.0.1 --port 1440` (Vite at `http://127.0.0.1:1440/`, HMR pinned to `1441`)
   - `npm run build`
   - `npm run tauri -- dev`
   - `npm run tauri -- build`
 
-- `pdf-annotation-spike/src-tauri/src/lib.rs` owns filesystem IO via Tauri commands (`read_pdf`, `write_pdf_atomic`); writes use a hidden temp file then atomic rename, and keep `*.bak` backup.
+- `app/src-tauri/src/lib.rs` owns filesystem IO via Tauri commands (`read_pdf`, `write_pdf_atomic`); writes use a hidden temp file then atomic rename, and keep `*.bak` backup.
 
 - Regression safety is non-optional for PDF editor behavior:
   - Browser regressions: `npm run test:e2e`.
@@ -28,5 +30,6 @@
    - `docs/adr/0006-test-pdfjs-in-native-tauri-webview-not-only-browser.md`
    - `docs/adr/0007-add-native-wkwebview-smoke-tests-with-wdio-tauri.md`
    - `docs/adr/0008-llm-generated-speculative-coverage-drafting.md`
+   - `docs/adr/0013-transplant-spike-into-official-app.md`
 
 - Do not treat browser tests as final for PDF.js behavior: scanned/image PDFs and text extraction differ in WKWebView, so verify critical annotation/text-flow changes with `npm run test:native` after browser regression.
