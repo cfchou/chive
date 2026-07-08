@@ -43,6 +43,15 @@ async function dragTabTo(page: Page, tabName: string, targetX: number, targetY: 
   await page.mouse.up();
 }
 
+test("left sidebar renders at its default design width", async ({ page }) => {
+  const width = await page.evaluate(() => {
+    const sidebar = document.querySelector('.sidebar[data-side="left"]');
+    if (!sidebar) throw new Error("Missing left sidebar");
+    return getComputedStyle(sidebar).width;
+  });
+  expect(width).toBe("367px");
+});
+
 test("sidebar tabs activate their panels", async ({ page }) => {
   await expect(page.getByRole("tab", { name: "Outline" })).toHaveAttribute(
     "aria-selected",
