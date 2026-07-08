@@ -19,12 +19,18 @@
   let suppressNextClick = false;
   let dropSide: DockSide | null = null;
   let reorderPreviewIndex: number | null = null;
+  let pointerX = 0;
+  let pointerY = 0;
 
   $: showReorderPreview = Boolean(draggingTab && moved && dropSide === side && reorderPreviewIndex !== null);
+  $: showDragPreview = Boolean(draggingTab && moved);
+  $: dragPreviewStyle = `transform: translate(${pointerX + 12}px, ${pointerY + 12}px);`;
 
   function handlePointerDown(event: PointerEvent, tab: DockTab) {
     draggingTab = tab;
     startX = event.clientX;
+    pointerX = event.clientX;
+    pointerY = event.clientY;
     moved = false;
     dropSide = side;
     reorderPreviewIndex = null;
@@ -33,6 +39,8 @@
 
   function handlePointerMove(event: PointerEvent) {
     if (!draggingTab) return;
+    pointerX = event.clientX;
+    pointerY = event.clientY;
     if (Math.abs(event.clientX - startX) > 4) moved = true;
     if (!moved) return;
 
@@ -161,6 +169,16 @@
   {#if showReorderPreview && reorderPreviewIndex === tabs.length}
     <span class="tab-drop-indicator" data-testid="{side}-tab-drop-indicator" aria-hidden="true"></span>
   {/if}
+  {#if showDragPreview && draggingTab}
+    <span
+      class="tab-drag-preview"
+      style={dragPreviewStyle}
+      data-testid="{side}-tab-drag-preview"
+      aria-hidden="true"
+    >
+      <Icon name={draggingTab} />
+    </span>
+  {/if}
 </div>
 
 <style>
@@ -211,6 +229,25 @@
     border-radius: 999px;
     background: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+
+  .tab-drag-preview {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 40;
+    width: 42px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    background: var(--bg);
+    color: var(--fg);
+    box-shadow:
+      0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent),
+      var(--shadow-sm);
+    pointer-events: none;
   }
 
   .sidebar-tab[aria-selected="true"] {

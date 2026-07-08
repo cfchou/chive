@@ -150,7 +150,8 @@
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
   const pdfjsWasmUrl = "/pdfjs-wasm/";
-  const defaultSidebarWidth = 442;
+  const defaultLeftSidebarWidth = 354;
+  const defaultRightSidebarWidth = 442;
   const minSidebarWidth = 320;
   const maxSidebarWidth = 640;
   const bookmarkRootTitle = "My Bookmarks";
@@ -172,8 +173,8 @@
   let activeOutlineEntryId = $state<string | null>(null);
   let navigationTab = $state<NavigationTab>("outline");
   let dockState = $state(createDockState());
-  let leftSidebarWidth = $state(defaultSidebarWidth);
-  let rightSidebarWidth = $state(defaultSidebarWidth);
+  let leftSidebarWidth = $state(defaultLeftSidebarWidth);
+  let rightSidebarWidth = $state(defaultRightSidebarWidth);
   let resizingSide = $state<DockSide | null>(null);
   let toastMessage = $state("");
   let headerColorSlots = $state<AnnotationColorName[]>(["red", "yellow", "green", "blue", "purple"]);

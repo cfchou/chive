@@ -109,14 +109,15 @@ test("document can be closed while the app remains open", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Highlight" })).toBeDisabled();
 });
 
-test("left sidebar starts wider and can be resized", async ({ page }) => {
+test("left sidebar starts narrower and can be resized", async ({ page }) => {
   await page.goto("/");
 
   const sidebar = page.getByTestId("left-sidebar");
   await expect(sidebar).toBeVisible();
   const initialBox = await sidebar.boundingBox();
   if (!initialBox) throw new Error("Left sidebar has no bounding box");
-  expect(initialBox.width).toBeGreaterThanOrEqual(440);
+  expect(initialBox.width).toBeGreaterThanOrEqual(350);
+  expect(initialBox.width).toBeLessThanOrEqual(360);
 
   const resizer = page.getByRole("button", { name: "Resize left sidebar" });
   await expect(resizer).toBeVisible();
@@ -177,6 +178,8 @@ test("dragging a sidebar tab shows drop feedback", async ({ page }) => {
 
   await expect(page.getByTestId("left-tab-annotations")).toHaveAttribute("data-dragging", "true");
   await expect(page.getByTestId("left-tab-drop-indicator")).toBeVisible();
+  await expect(page.getByTestId("left-tab-drag-preview")).toBeVisible();
+  await expect(page.getByTestId("left-tab-drag-preview").locator("svg")).toHaveCount(1);
 
   await page.mouse.up();
 });
