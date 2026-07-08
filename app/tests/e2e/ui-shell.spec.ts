@@ -83,6 +83,14 @@ test("sidebar tabs and annotation tools render icons instead of placeholder lett
   }
 });
 
+test("header shows document title without app name", async ({ page }) => {
+  await page.goto("/");
+
+  const header = page.locator("header.topbar");
+  await expect(header).toContainText("No document open");
+  await expect(header).not.toContainText("Chive");
+});
+
 test("left sidebar starts wider and can be resized", async ({ page }) => {
   await page.goto("/");
 

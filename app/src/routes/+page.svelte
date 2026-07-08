@@ -4075,7 +4075,6 @@
 <main class="app" aria-label="Chive PDF editor">
   <header class="topbar">
     <div class="brand">
-      <h1>Chive</h1>
       <span class="file">{displayFileName}</span>
       {#if isDirty}
         <span class="dirty-dot" aria-label="Unsaved changes" title="Unsaved changes"></span>
@@ -4405,12 +4404,6 @@
     height: 100vh;
   }
 
-  h1 {
-    margin: 0;
-    font-size: 28px;
-    line-height: 1.15;
-  }
-
   button {
     min-height: 34px;
     border: 1px solid #c8d0d9;
@@ -4624,14 +4617,6 @@
     align-items: baseline;
     gap: var(--space-3);
     min-width: 0;
-  }
-
-  .brand h1 {
-    margin: 0;
-    font-family: var(--font-display);
-    font-size: var(--text-xl);
-    line-height: var(--leading-tight);
-    white-space: nowrap;
   }
 
   .brand .file {
