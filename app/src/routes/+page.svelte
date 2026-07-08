@@ -4203,6 +4203,12 @@
   </main>
 </div>
 
+{#each dockSides as side (side)}
+  {#if draggingTab && dropTargetSide === side && (!sideHasTabs(dock, side) || dock.hidden[side])}
+    <div class="edge-dock-cue" data-side={side} aria-hidden="true"></div>
+  {/if}
+{/each}
+
 {#if draggingTab && dragGhost}
   <div class="tab-drag-ghost" style={`left: ${dragGhost.x}px; top: ${dragGhost.y}px;`} aria-hidden="true">
     <span class="tab-drag-ghost-chip">
@@ -4495,6 +4501,27 @@
   }
   .edge-reopen.is-visible {
     display: grid;
+  }
+
+  /* Dock-zone cue for a side whose sidebar is empty or hidden: those render
+     display: none, so the tab strip's is-drop-target tint can never show
+     there; this fixed overlay is the only "release here to dock" signal. */
+  .edge-dock-cue {
+    position: fixed;
+    z-index: 30;
+    top: 0;
+    bottom: 0;
+    width: 38px;
+    pointer-events: none;
+    background: color-mix(in oklab, var(--accent), transparent 88%);
+  }
+  .edge-dock-cue[data-side="left"] {
+    left: 0;
+    border-right: 2px dashed color-mix(in oklab, var(--accent), transparent 40%);
+  }
+  .edge-dock-cue[data-side="right"] {
+    right: 0;
+    border-left: 2px dashed color-mix(in oklab, var(--accent), transparent 40%);
   }
 
   .tab-drag-ghost {

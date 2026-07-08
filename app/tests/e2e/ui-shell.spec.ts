@@ -177,6 +177,33 @@ test("dragging a tab shows a hand ghost that follows the pointer and clears on d
   await expect(ghost).toBeHidden();
 });
 
+test("dragging into an empty side's edge zone shows the dock cue until the pointer leaves", async ({ page }) => {
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error("viewport unavailable");
+  const box = await stableBoundingBox(page, "Annotations");
+  if (!box) throw new Error("Annotations tab is not visible");
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  const cue = page.locator('.edge-dock-cue[data-side="right"]');
+
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(viewport.width / 2, viewport.height / 2, { steps: 4 });
+  await expect(cue).toBeHidden();
+
+  await page.mouse.move(viewport.width - 10, viewport.height / 2, { steps: 4 });
+  await expect(cue).toBeVisible();
+
+  await page.mouse.move(viewport.width / 2, viewport.height / 2, { steps: 4 });
+  await expect(cue).toBeHidden();
+
+  await page.mouse.move(viewport.width - 10, viewport.height / 2, { steps: 4 });
+  await expect(cue).toBeVisible();
+  await page.mouse.up();
+  await expect(cue).toBeHidden();
+  await expect(page.locator('[data-tab-strip="right"] [data-tab="annotations"]')).toBeVisible();
+});
+
 test("dragging a docked tab back before Outline reorders the left strip", async ({ page }) => {
   const viewport = page.viewportSize();
   if (!viewport) throw new Error("viewport unavailable");
