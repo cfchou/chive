@@ -1,8 +1,11 @@
 import { browser, expect } from "@wdio/globals";
 import path from "node:path";
+import { Key } from "webdriverio";
 
 type WdioBrowser = {
   execute: <T, Arg = unknown>(script: (arg: Arg) => T | Promise<T>, arg?: Arg) => Promise<T>;
+  getWindowHandles: () => Promise<string[]>;
+  keys: (value: string | string[]) => Promise<void>;
   setWindowSize: (width: number, height: number) => Promise<void>;
   waitUntil: (
     condition: () => Promise<boolean>,
@@ -586,5 +589,37 @@ describe("native WKWebView PDF smoke", () => {
         return pageRect.bottom > containerRect.top && pageRect.top < containerRect.bottom;
       }),
     ).toBe(true);
+  });
+
+  it("routes Command+Q to the app quit shortcut", async function () {
+    if (process.platform !== "darwin") {
+      this.skip();
+    }
+
+    await waitForPdfSpike();
+    expect((await app.getWindowHandles()).length).toBeGreaterThan(0);
+    await app.execute(() => {
+      const testWindow = window as Window & {
+        __chiveQuitShortcutCount?: number;
+        __chiveSuppressQuitForTest?: boolean;
+      };
+      testWindow.__chiveQuitShortcutCount = 0;
+      testWindow.__chiveSuppressQuitForTest = true;
+    });
+
+    await app.keys([Key.Command, "q"]);
+
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const testWindow = window as Window & { __chiveQuitShortcutCount?: number };
+          return testWindow.__chiveQuitShortcutCount === 1;
+        }),
+      {
+        timeout: 5_000,
+        timeoutMsg: "Command+Q did not reach the app quit shortcut",
+      },
+    );
+    expect((await app.getWindowHandles()).length).toBeGreaterThan(0);
   });
 });

@@ -31,6 +31,11 @@ fn write_pdf_atomic(path: String, bytes: Vec<u8>) -> Result<(), String> {
     })
 }
 
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 fn backup_path(target: &Path) -> PathBuf {
     let extension = target
         .extension()
@@ -51,7 +56,7 @@ pub fn run() {
         .plugin(tauri_plugin_wdio_webdriver::init());
 
     builder
-        .invoke_handler(tauri::generate_handler![read_pdf, write_pdf_atomic])
+        .invoke_handler(tauri::generate_handler![read_pdf, write_pdf_atomic, quit_app])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
