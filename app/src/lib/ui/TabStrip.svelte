@@ -17,17 +17,29 @@
   let startX = 0;
   let moved = false;
   let suppressNextClick = false;
+  let dropSide: DockSide | null = null;
+  let reorderPreviewIndex: number | null = null;
+
+  $: showReorderPreview = Boolean(draggingTab && moved && dropSide === side && reorderPreviewIndex !== null);
 
   function handlePointerDown(event: PointerEvent, tab: DockTab) {
     draggingTab = tab;
     startX = event.clientX;
     moved = false;
+    dropSide = side;
+    reorderPreviewIndex = null;
     event.currentTarget instanceof HTMLElement && event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   function handlePointerMove(event: PointerEvent) {
     if (!draggingTab) return;
     if (Math.abs(event.clientX - startX) > 4) moved = true;
+    if (!moved) return;
+
+    dropSide = sideFromDropTarget(event);
+    if (event.clientX <= EDGE_DOCK_PX) dropSide = "left";
+    if (event.clientX >= window.innerWidth - EDGE_DOCK_PX) dropSide = "right";
+    reorderPreviewIndex = dropSide === side ? reorderIndexForPointer(draggingTab, event) : null;
   }
 
   function sideFromDropTarget(event: PointerEvent): DockSide | null {
@@ -70,31 +82,42 @@
 
   function handlePointerUp(event: PointerEvent) {
     const tab = draggingTab;
-    draggingTab = null;
     if (!tab) return;
 
-    let targetSide: DockSide | null = sideFromDropTarget(event);
+    let targetSide: DockSide | null = dropSide ?? sideFromDropTarget(event);
     if (event.clientX <= EDGE_DOCK_PX) targetSide = "left";
     if (event.clientX >= window.innerWidth - EDGE_DOCK_PX) targetSide = "right";
 
     if (targetSide && targetSide !== side) {
+      clearDragState();
       dispatch("dock", { tab, side: targetSide });
       suppressNextClick = true;
       return;
     }
 
     if (targetSide === side && moved) {
-      dispatch("reorder", { tab, side, targetIndex: reorderIndexForPointer(tab, event) });
+      const targetIndex = reorderPreviewIndex ?? reorderIndexForPointer(tab, event);
+      clearDragState();
+      dispatch("reorder", { tab, side, targetIndex });
       suppressNextClick = true;
       return;
     }
 
     if (!moved) {
+      clearDragState();
       dispatch("activate", { tab });
       suppressNextClick = true;
       return;
     }
+    clearDragState();
     suppressNextClick = true;
+  }
+
+  function clearDragState() {
+    draggingTab = null;
+    moved = false;
+    dropSide = null;
+    reorderPreviewIndex = null;
   }
 
   function handleClick(tab: DockTab) {
@@ -106,34 +129,52 @@
   }
 </script>
 
-<div class="sidebar-tabs" role="tablist" aria-label="{side} sidebar tabs" data-testid="{side}-tabstrip">
-  {#each tabs as tab}
+<div
+  class:is-drag-active={draggingTab && moved}
+  class="sidebar-tabs"
+  role="tablist"
+  aria-label="{side} sidebar tabs"
+  data-testid="{side}-tabstrip"
+>
+  {#each tabs as tab, index}
+    {#if showReorderPreview && reorderPreviewIndex === index}
+      <span class="tab-drop-indicator" data-testid="{side}-tab-drop-indicator" aria-hidden="true"></span>
+    {/if}
     <button
       type="button"
-      class:is-dragging={draggingTab === tab}
+      class:is-dragging={draggingTab === tab && moved}
       class="sidebar-tab"
       role="tab"
       aria-label={TAB_LABELS[tab]}
       aria-selected={active === tab}
+      data-dragging={draggingTab === tab && moved ? "true" : undefined}
       data-testid="{side}-tab-{tab}"
       on:pointerdown={(event) => handlePointerDown(event, tab)}
       on:pointermove={handlePointerMove}
       on:pointerup={handlePointerUp}
+      on:pointercancel={clearDragState}
       on:click={() => handleClick(tab)}
     >
       <Icon name={tab} />
     </button>
   {/each}
+  {#if showReorderPreview && reorderPreviewIndex === tabs.length}
+    <span class="tab-drop-indicator" data-testid="{side}-tab-drop-indicator" aria-hidden="true"></span>
+  {/if}
 </div>
 
 <style>
   .sidebar-tabs {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(42px, 42px));
+    display: flex;
+    align-items: end;
     gap: var(--space-1);
     min-height: 48px;
     padding: var(--space-3) 48px 0 var(--space-3);
     background: var(--bg);
+  }
+
+  .sidebar-tabs.is-drag-active {
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg));
   }
 
   :global(.sidebar[data-side="right"]) .sidebar-tabs {
@@ -141,6 +182,7 @@
   }
 
   .sidebar-tab {
+    flex: 0 0 42px;
     width: 42px;
     min-height: 36px;
     display: grid;
@@ -156,7 +198,19 @@
   }
 
   .sidebar-tab.is-dragging {
-    opacity: 0.45;
+    opacity: 0.72;
+    transform: translateY(-2px);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+    cursor: grabbing;
+  }
+
+  .tab-drop-indicator {
+    flex: 0 0 4px;
+    height: 36px;
+    border-radius: 999px;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
   }
 
   .sidebar-tab[aria-selected="true"] {

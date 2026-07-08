@@ -37,6 +37,21 @@ async function dragTabToLocator(page: import("@playwright/test").Page, tabTestId
   await page.mouse.up();
 }
 
+async function startTabDragToLocator(page: import("@playwright/test").Page, tabTestId: string, targetTestId: string) {
+  const tab = page.getByTestId(tabTestId);
+  const target = page.getByTestId(targetTestId);
+  await expect(tab).toBeVisible();
+  await expect(target).toBeVisible();
+  const tabBox = await tab.boundingBox();
+  const targetBox = await target.boundingBox();
+  if (!tabBox) throw new Error(`${tabTestId} tab has no bounding box`);
+  if (!targetBox) throw new Error(`${targetTestId} target has no bounding box`);
+
+  await page.mouse.move(tabBox.x + tabBox.width / 2, tabBox.y + tabBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(targetBox.x + targetBox.width / 4, targetBox.y + targetBox.height / 2, { steps: 8 });
+}
+
 async function tabLabels(page: import("@playwright/test").Page, stripTestId: string) {
   return page.getByTestId(stripTestId).getByRole("tab").evaluateAll((tabs) =>
     tabs.map((tab) => tab.getAttribute("aria-label")),
@@ -127,6 +142,17 @@ test("tabs can be dragged to reorder within a sidebar", async ({ page }) => {
 
   await expect.poll(() => tabLabels(page, "left-tabstrip")).toEqual(["Annotations", "Outline", "Bookmarks"]);
   await expect(page.getByTestId("left-tab-annotations")).toHaveAttribute("aria-selected", "true");
+});
+
+test("dragging a sidebar tab shows drop feedback", async ({ page }) => {
+  await page.goto("/");
+
+  await startTabDragToLocator(page, "left-tab-annotations", "left-tab-outline");
+
+  await expect(page.getByTestId("left-tab-annotations")).toHaveAttribute("data-dragging", "true");
+  await expect(page.getByTestId("left-tab-drop-indicator")).toBeVisible();
+
+  await page.mouse.up();
 });
 
 test("sidebars collapse and reopen from the edge", async ({ page }) => {
