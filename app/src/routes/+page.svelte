@@ -149,6 +149,9 @@
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
   const pdfjsWasmUrl = "/pdfjs-wasm/";
+  const defaultSidebarWidth = 442;
+  const minSidebarWidth = 320;
+  const maxSidebarWidth = 640;
   const bookmarkRootTitle = "My Bookmarks";
   const bookmarkTitleSnapTolerancePdfPoints = 4;
   const bookmarkTitleLookaheadPdfPoints = 180;
@@ -156,6 +159,7 @@
 
   let containerEl: HTMLDivElement;
   let viewerEl: HTMLDivElement;
+  let workspaceEl: HTMLDivElement;
   let pdfViewer: PDFViewer | null = null;
   let pdfLinkService: PDFLinkService | null = null;
   let pdfDocument = $state<PdfDocument | null>(null);
@@ -167,6 +171,9 @@
   let activeOutlineEntryId = $state<string | null>(null);
   let navigationTab = $state<NavigationTab>("outline");
   let dockState = $state(createDockState());
+  let leftSidebarWidth = $state(defaultSidebarWidth);
+  let rightSidebarWidth = $state(defaultSidebarWidth);
+  let resizingSide = $state<DockSide | null>(null);
   let toastMessage = $state("");
   let headerColorSlots = $state<AnnotationColorName[]>(["red", "yellow", "green", "blue", "purple"]);
   let selectedAnnotationPaletteColor = $state<AnnotationColorName>("yellow");
@@ -285,6 +292,9 @@
 
   let leftVisible = $derived(isSideVisible(dockState, "left"));
   let rightVisible = $derived(isSideVisible(dockState, "right"));
+  let workspaceGridTemplate = $derived(
+    `${leftVisible ? `${leftSidebarWidth}px` : "0"} minmax(0, 1fr) ${rightVisible ? `${rightSidebarWidth}px` : "0"}`,
+  );
   let displayFileName = $derived(currentPath ? currentPath.split(/[\\/]/).pop() || currentPath : "No document open");
 
   onMount(() => {
@@ -402,6 +412,11 @@
       document.removeEventListener("pointerdown", handleToolPopoverDocumentPointerDown, { capture: true });
       document.removeEventListener("pointerdown", handleColorPlateDocumentPointerDown, { capture: true });
       document.removeEventListener("selectionchange", rememberSelection);
+      document.removeEventListener("pointermove", handleWindowSidebarResizePointerMove);
+      document.removeEventListener("pointerup", handleWindowSidebarResizePointerEnd);
+      document.removeEventListener("pointercancel", handleWindowSidebarResizePointerEnd);
+      document.removeEventListener("mousemove", handleWindowSidebarResizeMouseMove);
+      document.removeEventListener("mouseup", handleWindowSidebarResizePointerEnd);
       teardownSpikeDebugApi();
     };
   });
@@ -428,6 +443,69 @@
 
   function reopenSide(side: DockSide) {
     dockState = showSide(dockState, side);
+  }
+
+  function clampSidebarWidth(width: number) {
+    return Math.min(maxSidebarWidth, Math.max(minSidebarWidth, Math.round(width)));
+  }
+
+  function updateSidebarWidthFromClientX(side: DockSide, clientX: number) {
+    const rect = workspaceEl?.getBoundingClientRect();
+    if (!rect) return;
+    const width = side === "left" ? clientX - rect.left : rect.right - clientX;
+    if (side === "left") leftSidebarWidth = clampSidebarWidth(width);
+    else rightSidebarWidth = clampSidebarWidth(width);
+  }
+
+  function handleSidebarResizePointerDown(side: DockSide, event: PointerEvent) {
+    event.preventDefault();
+    resizingSide = side;
+    updateSidebarWidthFromClientX(side, event.clientX);
+    document.addEventListener("pointermove", handleWindowSidebarResizePointerMove);
+    document.addEventListener("pointerup", handleWindowSidebarResizePointerEnd, { once: true });
+    document.addEventListener("pointercancel", handleWindowSidebarResizePointerEnd, { once: true });
+  }
+
+  function handleSidebarResizeMouseDown(side: DockSide, event: MouseEvent) {
+    event.preventDefault();
+    resizingSide = side;
+    updateSidebarWidthFromClientX(side, event.clientX);
+    document.addEventListener("mousemove", handleWindowSidebarResizeMouseMove);
+    document.addEventListener("mouseup", handleWindowSidebarResizePointerEnd, { once: true });
+  }
+
+  function handleWindowSidebarResizePointerMove(event: PointerEvent) {
+    if (!resizingSide) return;
+    updateSidebarWidthFromClientX(resizingSide, event.clientX);
+  }
+
+  function handleWindowSidebarResizeMouseMove(event: MouseEvent) {
+    if (!resizingSide) return;
+    updateSidebarWidthFromClientX(resizingSide, event.clientX);
+  }
+
+  function handleWindowSidebarResizePointerEnd() {
+    document.removeEventListener("pointermove", handleWindowSidebarResizePointerMove);
+    document.removeEventListener("pointerup", handleWindowSidebarResizePointerEnd);
+    document.removeEventListener("pointercancel", handleWindowSidebarResizePointerEnd);
+    document.removeEventListener("mousemove", handleWindowSidebarResizeMouseMove);
+    document.removeEventListener("mouseup", handleWindowSidebarResizePointerEnd);
+    resizingSide = null;
+  }
+
+  function handleSidebarResizeKeydown(side: DockSide, event: KeyboardEvent) {
+    const direction = side === "left" ? 1 : -1;
+    const currentWidth = side === "left" ? leftSidebarWidth : rightSidebarWidth;
+    let nextWidth = currentWidth;
+    if (event.key === "ArrowRight") nextWidth = currentWidth + 16 * direction;
+    else if (event.key === "ArrowLeft") nextWidth = currentWidth - 16 * direction;
+    else if (event.key === "Home") nextWidth = minSidebarWidth;
+    else if (event.key === "End") nextWidth = maxSidebarWidth;
+    else return;
+
+    event.preventDefault();
+    if (side === "left") leftSidebarWidth = clampSidebarWidth(nextWidth);
+    else rightSidebarWidth = clampSidebarWidth(nextWidth);
   }
 
   function activeTabForSide(side: DockSide) {
@@ -4121,7 +4199,13 @@
     </div>
   {/if}
 
-  <div class="workspace" class:has-right={rightVisible} class:no-left={!leftVisible}>
+  <div
+    class="workspace"
+    class:has-right={rightVisible}
+    class:no-left={!leftVisible}
+    bind:this={workspaceEl}
+    style={`grid-template-columns: ${workspaceGridTemplate}`}
+  >
     <aside
       class:is-hidden={!leftVisible}
       class="sidebar"
@@ -4144,6 +4228,14 @@
           {@render navigationPanel(activeTabForSide("left")!)}
         {/if}
       </div>
+      <button
+        type="button"
+        class="sidebar-resizer"
+        aria-label="Resize left sidebar"
+        onpointerdown={(event) => handleSidebarResizePointerDown("left", event)}
+        onmousedown={(event) => handleSidebarResizeMouseDown("left", event)}
+        onkeydown={(event) => handleSidebarResizeKeydown("left", event)}
+      ></button>
     </aside>
 
     <section class="viewer-shell" aria-label="PDF reader">
@@ -4222,6 +4314,14 @@
           {@render navigationPanel(activeTabForSide("right")!)}
         {/if}
       </div>
+      <button
+        type="button"
+        class="sidebar-resizer"
+        aria-label="Resize right sidebar"
+        onpointerdown={(event) => handleSidebarResizePointerDown("right", event)}
+        onmousedown={(event) => handleSidebarResizeMouseDown("right", event)}
+        onkeydown={(event) => handleSidebarResizeKeydown("right", event)}
+      ></button>
     </aside>
   </div>
 
@@ -4669,12 +4769,12 @@
   .workspace {
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(280px, 340px) minmax(0, 1fr) 0;
+    grid-template-columns: var(--left-sidebar-width) minmax(0, 1fr) 0;
     transition: grid-template-columns var(--motion-base) var(--ease-standard);
   }
 
   .workspace.has-right {
-    grid-template-columns: minmax(280px, 340px) minmax(0, 1fr) minmax(280px, 340px);
+    grid-template-columns: var(--left-sidebar-width) minmax(0, 1fr) var(--right-sidebar-width);
   }
 
   .workspace.no-left {
@@ -4682,7 +4782,7 @@
   }
 
   .workspace.no-left.has-right {
-    grid-template-columns: 0 minmax(0, 1fr) minmax(280px, 340px);
+    grid-template-columns: 0 minmax(0, 1fr) var(--right-sidebar-width);
   }
 
   .sidebar,
@@ -4693,6 +4793,7 @@
   .sidebar {
     grid-column: 1;
     position: relative;
+    width: 100%;
     min-width: 0;
     min-height: 0;
     display: grid;
@@ -4734,6 +4835,46 @@
   .sidebar[data-side="right"] .side-collapse {
     right: auto;
     left: var(--space-3);
+  }
+
+  .sidebar-resizer {
+    position: absolute;
+    z-index: 5;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 8px;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    background: transparent;
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  .sidebar[data-side="right"] .sidebar-resizer {
+    right: auto;
+    left: 0;
+  }
+
+  .sidebar-resizer::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 3px;
+    width: 2px;
+    background: transparent;
+  }
+
+  .sidebar-resizer:hover::after,
+  .sidebar-resizer:focus-visible::after {
+    background: var(--accent);
+  }
+
+  .sidebar-resizer:focus-visible {
+    outline: none;
   }
 
   .panel-stack {
