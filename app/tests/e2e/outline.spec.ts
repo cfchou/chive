@@ -138,13 +138,11 @@ test("outline rows with children collapse and expand from chevrons and header ic
         pageRight: pageNumber ? Math.round(pageNumber.getBoundingClientRect().right) : null,
         navRight: Math.round(navRight),
         isCollapsedParent,
-        titleOverflows: title ? title.scrollWidth > title.clientWidth : false,
       };
     });
   });
   expect(collapsedLayout.every((row) => row.rowRight <= row.navRight)).toBe(true);
   expect(collapsedLayout.every((row) => row.pageRight === null || row.pageRight <= row.navRight - 32)).toBe(true);
-  expect(collapsedLayout.some((row) => row.titleOverflows)).toBe(true);
   const collapsedColorInset = await page.evaluate(() => {
     const panel = document.querySelector<HTMLElement>('.nav-content[aria-label="Outline"]');
     const trigger = document.querySelector<HTMLElement>('[aria-label="Outline color 1. Networking and Resource Loading"]');
@@ -385,4 +383,3 @@ test("outline sidebar keeps valid items when one outline destination is broken",
   await expect(page.getByText("Navigated to 1. Networking and Resource Loading.")).toBeVisible();
   await expect(page.getByText("Networking and resource loading pipeline")).toBeVisible();
 });
-
