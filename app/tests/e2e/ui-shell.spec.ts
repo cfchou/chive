@@ -29,12 +29,18 @@ async function dragTabToLocator(page: import("@playwright/test").Page, tabTestId
   if (!targetBox) throw new Error(`${targetTestId} target has no bounding box`);
 
   const sourceX = Math.min(tabBox.x + tabBox.width / 2, viewportWidth - 4);
-  const targetX = Math.min(targetBox.x + targetBox.width / 2, viewportWidth - 4);
+  const targetX = Math.min(targetBox.x + targetBox.width / 4, viewportWidth - 4);
 
   await page.mouse.move(sourceX, tabBox.y + tabBox.height / 2);
   await page.mouse.down();
   await page.mouse.move(targetX, targetBox.y + targetBox.height / 2, { steps: 8 });
   await page.mouse.up();
+}
+
+async function tabLabels(page: import("@playwright/test").Page, stripTestId: string) {
+  return page.getByTestId(stripTestId).getByRole("tab").evaluateAll((tabs) =>
+    tabs.map((tab) => tab.getAttribute("aria-label")),
+  );
 }
 
 test("tab activation updates the active panel", async ({ page }) => {
@@ -109,6 +115,17 @@ test("multiple tabs can be dragged between sidebars in one session", async ({ pa
   await expect(page.getByTestId("right-tab-annotations")).toHaveAttribute("aria-selected", "true");
 
   await dragTabToLocator(page, "right-tab-annotations", "left-tabstrip");
+  await expect(page.getByTestId("left-tab-annotations")).toHaveAttribute("aria-selected", "true");
+});
+
+test("tabs can be dragged to reorder within a sidebar", async ({ page }) => {
+  await page.goto("/");
+
+  await expect.poll(() => tabLabels(page, "left-tabstrip")).toEqual(["Outline", "Bookmarks", "Annotations"]);
+
+  await dragTabToLocator(page, "left-tab-annotations", "left-tab-outline");
+
+  await expect.poll(() => tabLabels(page, "left-tabstrip")).toEqual(["Annotations", "Outline", "Bookmarks"]);
   await expect(page.getByTestId("left-tab-annotations")).toHaveAttribute("aria-selected", "true");
 });
 

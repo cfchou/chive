@@ -112,6 +112,7 @@
     hideSide,
     isSideVisible,
     moveTabToSide,
+    reorderTabWithinSide,
     showSide,
     type DockSide,
     type DockTab,
@@ -435,6 +436,11 @@
     dockState = moveTabToSide(dockState, event.detail.tab, event.detail.side);
     navigationTab = event.detail.tab as ShellTab;
     toastMessage = `${TAB_LABELS[event.detail.tab]} moved ${event.detail.side}`;
+  }
+
+  function handleReorder(event: CustomEvent<{ tab: DockTab; side: DockSide; targetIndex: number }>) {
+    dockState = reorderTabWithinSide(dockState, event.detail.tab, event.detail.side, event.detail.targetIndex);
+    navigationTab = event.detail.tab as ShellTab;
   }
 
   function collapseSide(side: DockSide) {
@@ -4222,6 +4228,7 @@
         active={dockState.activeBySide.left}
         on:activate={handleActivate}
         on:dock={handleDock}
+        on:reorder={handleReorder}
       />
       <div class="panel-stack">
         {#if activeTabForSide("left")}
@@ -4308,6 +4315,7 @@
         active={dockState.activeBySide.right}
         on:activate={handleActivate}
         on:dock={handleDock}
+        on:reorder={handleReorder}
       />
       <div class="panel-stack">
         {#if activeTabForSide("right")}

@@ -6,6 +6,7 @@ import {
   hideSide,
   isSideVisible,
   moveTabToSide,
+  reorderTabWithinSide,
   showSide,
 } from "../../src/lib/ui/dock-state";
 
@@ -37,6 +38,15 @@ describe("dock state", () => {
     assert.deepEqual(state.tabsBySide.right, ["bookmarks"]);
     assert.equal(state.activeBySide.right, "bookmarks");
     assert.equal(state.activeBySide.left, "outline");
+  });
+
+  it("reorders a tab within its current side and makes it active", () => {
+    let state = createDockState();
+
+    state = reorderTabWithinSide(state, "annotations", "left", 0);
+
+    assert.deepEqual(state.tabsBySide.left, ["annotations", "outline", "bookmarks"]);
+    assert.equal(state.activeBySide.left, "annotations");
   });
 
   it("hides and shows sides without losing tab order", () => {

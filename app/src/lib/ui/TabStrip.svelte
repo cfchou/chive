@@ -10,6 +10,7 @@
   const dispatch = createEventDispatcher<{
     activate: { tab: DockTab };
     dock: { tab: DockTab; side: DockSide };
+    reorder: { tab: DockTab; side: DockSide; targetIndex: number };
   }>();
 
   let draggingTab: DockTab | null = null;
@@ -53,6 +54,20 @@
     return null;
   }
 
+  function reorderIndexForPointer(tab: DockTab, event: PointerEvent): number {
+    const remainingTabs = tabs.filter((candidate) => candidate !== tab);
+
+    for (let index = 0; index < remainingTabs.length; index += 1) {
+      const tabElement = document.querySelector<HTMLElement>(`[data-testid='${side}-tab-${remainingTabs[index]}']`);
+      const rect = tabElement?.getBoundingClientRect();
+      if (rect && event.clientX < rect.left + rect.width / 2) {
+        return index;
+      }
+    }
+
+    return remainingTabs.length;
+  }
+
   function handlePointerUp(event: PointerEvent) {
     const tab = draggingTab;
     draggingTab = null;
@@ -64,6 +79,12 @@
 
     if (targetSide && targetSide !== side) {
       dispatch("dock", { tab, side: targetSide });
+      suppressNextClick = true;
+      return;
+    }
+
+    if (targetSide === side && moved) {
+      dispatch("reorder", { tab, side, targetIndex: reorderIndexForPointer(tab, event) });
       suppressNextClick = true;
       return;
     }

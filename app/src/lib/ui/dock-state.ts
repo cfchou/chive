@@ -70,6 +70,31 @@ export function moveTabToSide(state: DockState, tab: DockTab, targetSide: DockSi
   });
 }
 
+export function reorderTabWithinSide(state: DockState, tab: DockTab, side: DockSide, targetIndex: number): DockState {
+  if (!state.tabsBySide[side].includes(tab)) return state;
+
+  const remainingTabs = state.tabsBySide[side].filter((candidate) => candidate !== tab);
+  const clampedIndex = Math.min(Math.max(targetIndex, 0), remainingTabs.length);
+  const reorderedTabs = [
+    ...remainingTabs.slice(0, clampedIndex),
+    tab,
+    ...remainingTabs.slice(clampedIndex),
+  ];
+
+  return ensureActiveTab({
+    ...state,
+    tabsBySide: {
+      ...state.tabsBySide,
+      [side]: reorderedTabs,
+    },
+    activeBySide: {
+      ...state.activeBySide,
+      [side]: tab,
+    },
+    hiddenSides: state.hiddenSides.filter((hiddenSide) => hiddenSide !== side),
+  });
+}
+
 export function hideSide(state: DockState, side: DockSide): DockState {
   if (state.hiddenSides.includes(side)) return state;
   return {
