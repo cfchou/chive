@@ -52,6 +52,47 @@ test("left sidebar renders at its default design width", async ({ page }) => {
   expect(width).toBe("367px");
 });
 
+async function sidebarWidth(page: Page, side: "left" | "right") {
+  return page.evaluate((sideArg) => {
+    const sidebar = document.querySelector(`.sidebar[data-side="${sideArg}"]`);
+    if (!sidebar) throw new Error(`Missing ${sideArg} sidebar`);
+    return Math.round(sidebar.getBoundingClientRect().width);
+  }, side);
+}
+
+test("left sidebar resizer drags the width and persists it across reload", async ({ page }) => {
+  const resizer = page.locator('.sidebar[data-side="left"] .sidebar-resizer');
+  await expect(resizer).toBeVisible();
+  const box = await resizer.boundingBox();
+  if (!box) throw new Error("resizer has no bounding box");
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + 60, startY, { steps: 6 });
+  await page.mouse.up();
+  expect(await sidebarWidth(page, "left")).toBe(427);
+
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "Outline" })).toBeVisible();
+  expect(await sidebarWidth(page, "left")).toBe(427);
+});
+
+test("sidebar resize clamps at the minimum width", async ({ page }) => {
+  const resizer = page.locator('.sidebar[data-side="left"] .sidebar-resizer');
+  const box = await resizer.boundingBox();
+  if (!box) throw new Error("resizer has no bounding box");
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(10, startY, { steps: 6 });
+  await page.mouse.up();
+  expect(await sidebarWidth(page, "left")).toBe(260);
+});
+
 test("sidebar tabs activate their panels", async ({ page }) => {
   await expect(page.getByRole("tab", { name: "Outline" })).toHaveAttribute(
     "aria-selected",

@@ -17,6 +17,12 @@
     type SidebarSide,
     type SidebarTabId,
   } from "../lib/ui/dock-state";
+  import {
+    parseSidebarWidths,
+    resizedSidebarWidth,
+    serializeSidebarWidths,
+    type SidebarWidths,
+  } from "../lib/ui/sidebar-resize";
   import { installAppMenu, type AppMenuControls } from "../lib/tauri/menu";
   import { invoke } from "@tauri-apps/api/core";
   import { open, save } from "@tauri-apps/plugin-dialog";
@@ -3779,6 +3785,53 @@
   let suppressNextTabClick = false;
   let menuControls: AppMenuControls | null = null;
 
+  const SIDEBAR_WIDTHS_STORAGE_KEY = "chive.sidebarWidths";
+  let sidebarWidths = $state<SidebarWidths>(
+    parseSidebarWidths(
+      typeof localStorage === "undefined" ? null : localStorage.getItem(SIDEBAR_WIDTHS_STORAGE_KEY),
+    ),
+  );
+  let resizingSide = $state<SidebarSide | null>(null);
+  let resizeSession: { side: SidebarSide; startX: number; startWidth: number } | null = null;
+
+  const workspaceColumns = $derived(
+    `${isSideOpen(dock, "left") ? `${sidebarWidths.left}px` : "0"} minmax(0, 1fr) ${
+      isSideOpen(dock, "right") ? `${sidebarWidths.right}px` : "0"
+    }`,
+  );
+
+  function handleResizerPointerDown(side: SidebarSide, event: PointerEvent) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    resizeSession = { side, startX: event.clientX, startWidth: sidebarWidths[side] };
+    resizingSide = side;
+    (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
+  }
+
+  function handleResizerPointerMove(event: PointerEvent) {
+    if (!resizeSession) return;
+    sidebarWidths = {
+      ...sidebarWidths,
+      [resizeSession.side]: resizedSidebarWidth(
+        resizeSession.side,
+        resizeSession.startWidth,
+        resizeSession.startX,
+        event.clientX,
+      ),
+    };
+  }
+
+  function handleResizerPointerUp() {
+    if (!resizeSession) return;
+    resizeSession = null;
+    resizingSide = null;
+    try {
+      localStorage.setItem(SIDEBAR_WIDTHS_STORAGE_KEY, serializeSidebarWidths(sidebarWidths));
+    } catch {
+      // Persisting the width is best-effort; resizing still works this session.
+    }
+  }
+
   const fileName = $derived(
     currentPath ? (currentPath.split("/").pop() ?? currentPath) : "No document",
   );
@@ -3998,6 +4051,8 @@
     class="workspace"
     class:no-left={!isSideOpen(dock, "left")}
     class:has-right={isSideOpen(dock, "right")}
+    class:is-resizing={resizingSide !== null}
+    style={`grid-template-columns: ${workspaceColumns};`}
     id="content"
   >
     {#each dockSides as side (side)}
@@ -4015,6 +4070,16 @@
         >
           {side === "left" ? "‹" : "›"}
         </button>
+        <div
+          class="sidebar-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={side === "left" ? "Resize left sidebar" : "Resize right sidebar"}
+          onpointerdown={(event) => handleResizerPointerDown(side, event)}
+          onpointermove={handleResizerPointerMove}
+          onpointerup={handleResizerPointerUp}
+          onpointercancel={handleResizerPointerUp}
+        ></div>
         <TabStrip
           {side}
           tabs={dock.order[side]}
@@ -4294,6 +4359,33 @@
   .sidebar.is-empty,
   .sidebar.is-hidden {
     display: none;
+  }
+  /* Kebab-case on purpose: pdf_viewer.css owns `.sidebarResizer` inside its
+     own `.sidebar` rule and must not style this handle. */
+  .sidebar-resizer {
+    position: absolute;
+    z-index: 5;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    width: 8px;
+    cursor: col-resize;
+    touch-action: none;
+    background: transparent;
+    transition: background var(--motion-fast) var(--ease-standard);
+  }
+  .sidebar[data-side="right"] .sidebar-resizer {
+    right: auto;
+    left: 0;
+  }
+  .sidebar-resizer:hover,
+  .workspace.is-resizing .sidebar-resizer {
+    background: color-mix(in oklab, var(--fg), transparent 86%);
+  }
+  .workspace.is-resizing {
+    transition: none;
+    user-select: none;
+    -webkit-user-select: none;
   }
   .side-collapse {
     position: absolute;
