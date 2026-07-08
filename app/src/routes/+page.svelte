@@ -4257,7 +4257,7 @@
   .workspace {
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(280px, 340px) minmax(0, 1fr) 0;
+    grid-template-columns: minmax(336px, 408px) minmax(0, 1fr) 0;
     transition: grid-template-columns var(--motion-base) var(--ease-standard);
   }
   .workspace > .sidebar,
@@ -4265,18 +4265,19 @@
     grid-row: 1;
   }
   .workspace.has-right {
-    grid-template-columns: minmax(280px, 340px) minmax(0, 1fr) minmax(280px, 340px);
+    grid-template-columns: minmax(336px, 408px) minmax(0, 1fr) minmax(336px, 408px);
   }
   .workspace.no-left {
     grid-template-columns: 0 minmax(0, 1fr) 0;
   }
   .workspace.no-left.has-right {
-    grid-template-columns: 0 minmax(0, 1fr) minmax(280px, 340px);
+    grid-template-columns: 0 minmax(0, 1fr) minmax(336px, 408px);
   }
 
   .sidebar {
     grid-column: 1;
     position: relative;
+    width: 100%;
     min-height: 0;
     min-width: 0;
     overflow: hidden;

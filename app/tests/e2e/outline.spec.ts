@@ -144,7 +144,16 @@ test("outline rows with children collapse and expand from chevrons and header ic
   });
   expect(collapsedLayout.every((row) => row.rowRight <= row.navRight)).toBe(true);
   expect(collapsedLayout.every((row) => row.pageRight === null || row.pageRight <= row.navRight - 32)).toBe(true);
-  expect(collapsedLayout.some((row) => row.titleOverflows)).toBe(true);
+  // A wide sidebar can fit every fixture title without truncating, so this
+  // asserts the truncation mechanism itself (rather than relying on some
+  // row's title happening to overflow at the current sidebar width).
+  const titleTruncationStyle = await page.evaluate(() => {
+    const title = document.querySelector<HTMLElement>(".outline-row-main .outline-title");
+    if (!title) throw new Error("Missing outline title");
+    const style = getComputedStyle(title);
+    return { overflow: style.overflow, textOverflow: style.textOverflow, whiteSpace: style.whiteSpace };
+  });
+  expect(titleTruncationStyle).toEqual({ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
   const collapsedColorInset = await page.evaluate(() => {
     const panel = document.querySelector<HTMLElement>('.nav-content[aria-label="Outline"]');
     const trigger = document.querySelector<HTMLElement>('[aria-label="Outline color 1. Networking and Resource Loading"]');
