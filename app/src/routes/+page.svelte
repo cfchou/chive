@@ -60,6 +60,7 @@
     editorHasValidManagerSignal,
     isUsableAbortSignal,
     managerHasValidSignal,
+    normalizeFreeTextEditorLines,
     selectEditorIgnoringPdfjsSignalBug,
     unselectAllIgnoringPdfjsSignalBug as unselectAllForManagerIgnoringSignalBug,
     type AnnotationEditor,
@@ -221,6 +222,11 @@
   const annotationDetailCache = new Map<string, string>();
   const pendingDeletedPersistedAnnotationKeys = new Set<string>();
   const persistedAnnotationKeyByEditorId = new Map<string, string>();
+  // Last known sidebar sort geometry per persisted annotation. When a live
+  // editor stands in for a persisted annotation (which is then hidden from
+  // the persisted list), measuring the editor DOM instead would shift its
+  // sort position ~30px and reshuffle the sidebar on a pure text edit.
+  const persistedPositionByKey = new Map<string, { top: number; left: number }>();
   const debugHarness = createSpikeDebugHarness({
     getPdfDocument: () => pdfDocument,
     getPdfViewer: () => pdfViewer,
@@ -428,6 +434,15 @@
 
   function handleDocumentPointerDown(event: PointerEvent) {
     const target = event.target;
+    // A pointerdown outside an in-edit free text editor is about to blur it,
+    // and pdf.js commits on blur — repair the DOM shape first so Shift+Enter
+    // lines survive that commit (see normalizeFreeTextEditorLines).
+    const editingFreeText = document.querySelector<HTMLElement>(
+      ".freeTextEditor .internal[contenteditable='true'], .freeTextEditor [contenteditable='true']",
+    );
+    if (editingFreeText && target instanceof Node && !editingFreeText.contains(target)) {
+      normalizeFreeTextEditorLines(editingFreeText);
+    }
     if (
       !(target instanceof Element) ||
       (!annotationFocusBox && !selectedAnnotationEntryId && !selectedPersistedAnnotationKey && !selectedAnnotationKind)
@@ -463,7 +478,7 @@
   }
 
   function handleFreeTextEditorKeydown(event: KeyboardEvent) {
-    if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+    if ((event.key !== "Enter" && event.key !== "Escape") || event.shiftKey || event.isComposing) {
       return;
     }
     const target = event.target;
@@ -476,6 +491,12 @@
     if (!textElement?.isContentEditable) {
       return;
     }
+    if (event.key === "Escape") {
+      // pdf.js commits on Escape itself; just repair the DOM shape first so
+      // its #extractText does not merge Shift+Enter lines (see quirk module).
+      normalizeFreeTextEditorLines(textElement);
+      return;
+    }
     const editorElement = textElement.closest<HTMLElement>(".freeTextEditor");
     if (!editorElement?.id) {
       return;
@@ -486,6 +507,7 @@
     }
     event.preventDefault();
     event.stopImmediatePropagation();
+    normalizeFreeTextEditorLines(textElement);
     editor.commit?.();
     isDirty = true;
     syncSelectedEditorState();
@@ -638,6 +660,12 @@
     }
     try {
       const pdfEntries = await getPdfAnnotationEntries();
+      for (const entry of pdfEntries) {
+        persistedPositionByKey.set(persistedAnnotationKey(entry.page, entry.sourceId), {
+          top: entry.sortTop,
+          left: entry.sortLeft,
+        });
+      }
       const liveEntries = getLiveAnnotationEntries(pdfEntries);
       const merged = [...liveEntries, ...pdfEntries].sort(
         (left, right) =>
@@ -679,8 +707,13 @@
       isUnmodifiedMirrorOfPersistedAnnotation: isUnmodifiedEditorMirrorOfPersistedAnnotation,
       targetIndexForEditor: (pageNumber, kind, editor, fallbackTargetIndex) =>
         targetIndexForEditor(pageNumber, kind, editor.id, fallbackTargetIndex),
-      positionForEditor: (pageNumber, kind, targetIndex, editor) =>
-        annotationTargetPosition(pageNumber, kind, targetIndex, editor.id),
+      positionForEditor: (pageNumber, kind, targetIndex, editor) => {
+        // A stand-in for a persisted annotation keeps the persisted sort
+        // geometry: a text edit must not move the entry in the sidebar.
+        const persistedKey = persistedAnnotationKeyForEditor(editor);
+        const cached = persistedKey ? persistedPositionByKey.get(persistedKey) : undefined;
+        return cached ?? annotationTargetPosition(pageNumber, kind, targetIndex, editor.id);
+      },
       boundsForEditor: (pageNumber, kind, targetIndex, editor) =>
         annotationTargetBounds(pageNumber, kind, targetIndex, editor.id),
       detailForEditor: liveAnnotationDetail,
@@ -866,7 +899,9 @@
   ) {
     const element = annotationTargetElements(pageNumber, kind)[targetIndex];
     if (!element) return "";
-    if (kind === "freetext") return element.textContent?.trim() ?? "";
+    // innerText keeps rendered line breaks (textContent glues multi-line
+    // free text into one word); collapse them to spaces for the snippet.
+    if (kind === "freetext") return (element.innerText ?? element.textContent ?? "").replace(/\s+/g, " ").trim();
     if (kind !== "highlight") return "";
     return textOverlappingElement(element);
   }
@@ -3692,7 +3727,15 @@
       return false;
     }
     textElement.focus();
-    textElement.replaceChildren(document.createTextNode(text));
+    // Match pdf.js #setContent's one-div-per-line DOM; a bare text node with
+    // "\n" in it would get its lines merged by #extractText on commit.
+    textElement.replaceChildren(
+      ...text.split("\n").map((line) => {
+        const lineDiv = document.createElement("div");
+        lineDiv.append(line ? document.createTextNode(line) : document.createElement("br"));
+        return lineDiv;
+      }),
+    );
     textElement.dispatchEvent(
       new InputEvent("input", {
         bubbles: true,
@@ -3749,6 +3792,7 @@
     annotationDetailCache.clear();
     pendingDeletedPersistedAnnotationKeys.clear();
     persistedAnnotationKeyByEditorId.clear();
+    persistedPositionByKey.clear();
     if (annotationRefreshTimer) {
       clearTimeout(annotationRefreshTimer);
       annotationRefreshTimer = null;

@@ -537,6 +537,74 @@ test("free text editing uses Enter to finish and Shift+Enter for a new line", as
     .toEqual({ activeInsideEditor: false, isEditable: false, text: "Line one\nLine two" });
 });
 
+test("shift+enter line added to persisted free text survives commit and save without merging", async ({ page }) => {
+  await createFreeText(page, "PersistedBase");
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-freetext-multiline.pdf");
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+
+  const point = await page.evaluate(() => {
+    const annotations = [...document.querySelectorAll<HTMLElement>(".page[data-page-number='1'] .freeTextAnnotation")];
+    const annotation = annotations.at(-1);
+    if (!annotation) throw new Error("Missing persisted free text annotation");
+    const rect = annotation.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.mouse.dblclick(point.x, point.y);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const internal = document.querySelector<HTMLElement>(".page[data-page-number='1'] .freeTextEditor .internal");
+        return internal?.isContentEditable ?? false;
+      }),
+    )
+    .toBe(true);
+
+  // macOS Chromium's End key scrolls instead of moving the caret, so place
+  // the caret at the end of the existing text explicitly.
+  await page.evaluate(() => {
+    const internal = document.querySelector<HTMLElement>(".page[data-page-number='1'] .freeTextEditor .internal");
+    if (!internal) throw new Error("Missing free text editor content");
+    internal.focus();
+    const range = document.createRange();
+    range.selectNodeContents(internal);
+    range.collapse(false);
+    const selection = getSelection();
+    if (!selection) throw new Error("Missing selection");
+    selection.removeAllRanges();
+    selection.addRange(range);
+  });
+  await page.keyboard.press("Shift+Enter");
+  await page.keyboard.type("AddedLine");
+  await page.keyboard.press("Enter");
+
+  // The committed editor must hold pdf.js's canonical one-div-per-line DOM;
+  // a <br> left inside a line div means #extractText merged the lines.
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const internal = document.querySelector<HTMLElement>(".page[data-page-number='1'] .freeTextEditor .internal");
+        if (!internal) return null;
+        return {
+          childDivs: [...internal.children].filter((child) => child.tagName === "DIV").length,
+          brCount: internal.querySelectorAll("br").length,
+          text: internal.innerText,
+        };
+      }),
+    )
+    .toEqual({ childDivs: 2, brCount: 0, text: "PersistedBase\nAddedLine" });
+
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-freetext-multiline-2.pdf");
+  // pdf.js renders reopened free text with one span per stored content line,
+  // so the span list is the persisted line structure.
+  const reopenedLines = await page.evaluate(() => {
+    const annotations = [...document.querySelectorAll<HTMLElement>(".page[data-page-number='1'] .freeTextAnnotation")];
+    const annotation = annotations.at(-1);
+    if (!annotation) throw new Error("Missing reopened free text annotation");
+    return [...annotation.querySelectorAll(".annotationTextContent span")].map((line) => line.textContent);
+  });
+  expect(reopenedLines).toEqual(["PersistedBase", "AddedLine"]);
+});
+
 test("preselected free-text color applies to newly created text", async ({ page }) => {
   await page.getByRole("radio", { name: "Green" }).click();
   await page.getByRole("button", { name: "Free text", exact: true }).click();

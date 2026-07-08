@@ -122,6 +122,38 @@ export function unselectAllIgnoringPdfjsSignalBug(manager: AnnotationEditorUIMan
   }
 }
 
+// pdf.js FreeTextEditor#extractText assumes the contenteditable holds one
+// <div> child per line and strips every EOL *inside* a child
+// (#getNodeContent does innerText.replaceAll(EOL_PATTERN, "")). But typing
+// Shift+Enter in Chrome/WebKit inserts a <br> inside the current line div
+// instead of splitting it, so on commit pdf.js silently merges those visual
+// lines into one ("line1line2") while the stale <br> DOM keeps *looking*
+// multi-line. Rewriting the DOM into the canonical per-line shape before any
+// commit keeps content and rendering in agreement.
+export function normalizeFreeTextEditorLines(editorDiv: HTMLElement): boolean {
+  const isCanonicalLine = (node: ChildNode) => {
+    if (node.nodeType !== Node.ELEMENT_NODE || (node as Element).tagName !== "DIV") return false;
+    const children = node.childNodes;
+    if (children.length === 0) return true;
+    if (children.length !== 1) return false;
+    const only = children[0];
+    if (only.nodeType === Node.TEXT_NODE) return !/[\r\n]/.test(only.nodeValue ?? "");
+    return only.nodeType === Node.ELEMENT_NODE && (only as Element).tagName === "BR";
+  };
+  const childNodes = [...editorDiv.childNodes];
+  if (childNodes.length === 0 || childNodes.every(isCanonicalLine)) return false;
+  const lines = editorDiv.innerText.replace(/\r\n?/g, "\n").split("\n");
+  const doc = editorDiv.ownerDocument;
+  editorDiv.replaceChildren(
+    ...lines.map((line) => {
+      const div = doc.createElement("div");
+      div.append(line ? doc.createTextNode(line) : doc.createElement("br"));
+      return div;
+    }),
+  );
+  return true;
+}
+
 // Each guard checks the numeric AnnotationEditorType enum *and* a string name
 // because live editors carry the number while editors rebuilt from serialized
 // annotation data carry the serialized name. Taking the enum values as a

@@ -56,6 +56,88 @@ test("annotation sidebar keeps useful highlight snippets after load and click", 
     });
 });
 
+test("text-editing a persisted free text keeps its sidebar sort position", async ({ page }) => {
+  await loadFixture(page);
+
+  const before = await page.evaluate(() => {
+    type Entry = { page: number; kind: string; id: string; sortTop: number };
+    const entries = (window.__pdfSpike!.annotationSidebarSummary() as Entry[]).filter(
+      (entry) => entry.page === 2,
+    );
+    const freetext = entries.find((entry) => entry.kind === "freetext");
+    if (!freetext) throw new Error("Missing persisted free text entry on page 2");
+    return { kinds: entries.map((entry) => entry.kind), sortTop: freetext.sortTop };
+  });
+
+  await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const pageEl = document.querySelector<HTMLElement>('.page[data-page-number="2"]');
+    if (!container || !pageEl) throw new Error("Missing page 2");
+    container.scrollTop = pageEl.offsetTop + 100;
+  });
+  await page.waitForTimeout(400);
+  await page.evaluate(() => {
+    const annotation = document.querySelector<HTMLElement>('.page[data-page-number="2"] .freeTextAnnotation');
+    if (!annotation) throw new Error("Missing persisted free text annotation on page 2");
+    annotation.scrollIntoView({ block: "center" });
+  });
+  await page.waitForTimeout(400);
+  const point = await page.evaluate(() => {
+    const annotation = document.querySelector<HTMLElement>('.page[data-page-number="2"] .freeTextAnnotation');
+    if (!annotation) throw new Error("Missing persisted free text annotation on page 2");
+    const rect = annotation.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.mouse.dblclick(point.x, point.y);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const internal = document.querySelector<HTMLElement>('.page[data-page-number="2"] .freeTextEditor .internal');
+        return internal?.isContentEditable ?? false;
+      }),
+    )
+    .toBe(true);
+
+  // macOS Chromium's End key scrolls instead of moving the caret, so place
+  // the caret at the end of the existing text explicitly.
+  await page.evaluate(() => {
+    const internal = document.querySelector<HTMLElement>('.page[data-page-number="2"] .freeTextEditor .internal');
+    if (!internal) throw new Error("Missing free text editor content");
+    internal.focus();
+    const range = document.createRange();
+    range.selectNodeContents(internal);
+    range.collapse(false);
+    const selection = getSelection();
+    if (!selection) throw new Error("Missing selection");
+    selection.removeAllRanges();
+    selection.addRange(range);
+  });
+  await page.keyboard.type("X");
+  await page.keyboard.press("Enter");
+
+  // A pure text edit must not move the annotation in the sidebar: once the
+  // live stand-in replaces the persisted entry, it has to keep the persisted
+  // entry's sort geometry.
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        type Entry = { page: number; kind: string; id: string; sortTop: number };
+        const entries = (window.__pdfSpike!.annotationSidebarSummary() as Entry[]).filter(
+          (entry) => entry.page === 2,
+        );
+        const freetext = entries.find((entry) => entry.kind === "freetext");
+        return freetext
+          ? {
+              isLive: freetext.id.startsWith("live:"),
+              kinds: entries.map((entry) => entry.kind),
+              sortTop: Math.round(freetext.sortTop),
+            }
+          : null;
+      }),
+    )
+    .toEqual({ isLive: true, kinds: before.kinds, sortTop: Math.round(before.sortTop) });
+});
+
 test("annotation sidebar locate focus clears on blank PDF click and Escape", async ({ page }) => {
   await loadFixture(page);
 
