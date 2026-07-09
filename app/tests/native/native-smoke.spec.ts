@@ -1,8 +1,10 @@
 import { browser, expect } from "@wdio/globals";
 import path from "node:path";
+import { Key } from "webdriverio";
 
 type WdioBrowser = {
   execute: <T, Arg = unknown>(script: (arg: Arg) => T | Promise<T>, arg?: Arg) => Promise<T>;
+  keys: (value: string | string[]) => Promise<void>;
   setWindowSize: (width: number, height: number) => Promise<void>;
   waitUntil: (
     condition: () => Promise<boolean>,
@@ -101,6 +103,55 @@ describe("native WKWebView PDF smoke", () => {
     expect(annotationState.freeTextCount).toBeGreaterThan(0);
     expect(annotationState.inkCount).toBeGreaterThan(0);
     expect(annotationState.usefulHighlight).toBe(true);
+  });
+
+  it("closes the Active Document Tab with Cmd+W and keeps the window open", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+
+    const opened = await app.execute(
+      async ({ firstPath, secondPath }) => {
+        const first = await window.__pdfSpike!.tabs.open(firstPath);
+        const second = await window.__pdfSpike!.tabs.open(secondPath);
+        return { first, second };
+      },
+      { firstPath: samplePdfPath, secondPath: noOutlinePdfPath },
+    );
+
+    await app.waitUntil(
+      async () =>
+        app.execute(({ first, second }) => {
+          const tabs = window.__pdfSpike!.tabs.list();
+          return (
+            tabs.length === 2 &&
+            tabs.some((tab) => tab.id === first && !tab.active) &&
+            tabs.some((tab) => tab.id === second && tab.active)
+          );
+        }, opened),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native Document Tabs did not open before Cmd+W",
+      },
+    );
+
+    await app.keys([Key.Ctrl, "w"]);
+
+    await app.waitUntil(
+      async () =>
+        app.execute(({ first, second }) => {
+          const tabs = window.__pdfSpike!.tabs.list();
+          return (
+            tabs.length === 1 &&
+            tabs[0]?.id === first &&
+            tabs[0]?.active === true &&
+            !tabs.some((tab) => tab.id === second)
+          );
+        }, opened),
+      {
+        timeout: 10_000,
+        timeoutMsg: "Cmd+W did not close only the Active Document Tab",
+      },
+    );
   });
 
   it("locates persisted ink rows independently after adjacent ink clicks", async () => {
