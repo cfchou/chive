@@ -60,6 +60,10 @@ _Avoid_: file tab, window tab, sidebar tab
 The Document Tab whose viewer is shown and which receives tool, menu, and keyboard actions; exactly one is active when any PDF is open.
 _Avoid_: current tab, focused tab, selected tab
 
+**Document Tab Bar**:
+The strip of Document Tabs in the window's titlebar area (sharing the frame with the macOS traffic lights), plus the button that opens another PDF. Hidden in macOS fullscreen.
+_Avoid_: tab strip (that is the sidebar TabStrip), titlebar tabs, tab row
+
 **Document Session**:
 The per-tab runtime unit backing a Document Tab: its live pdf.js viewer/document/editor-manager, viewer DOM, annotation caches, and — while inactive — a snapshot of its scalar UI state. Inactive sessions stay alive so their editor undo history survives a tab switch.
 _Avoid_: viewer instance, document state, tab model

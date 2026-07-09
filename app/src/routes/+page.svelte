@@ -2,6 +2,7 @@
   // ---- Official-app shell imports (dock, tokens, native menu) ----
   import "../lib/ui/tokens.css";
   import TabStrip from "../lib/ui/TabStrip.svelte";
+  import DocumentTabBar from "../lib/ui/DocumentTabBar.svelte";
   import Toolbar from "../lib/ui/Toolbar.svelte";
   import ColorPlate from "../lib/ui/ColorPlate.svelte";
   import ToolPopover from "../lib/ui/ToolPopover.svelte";
@@ -189,6 +190,24 @@
   const activeSession = $derived(
     activeSessionId ? (documentSessions.find((session) => session.id === activeSessionId) ?? null) : null,
   );
+
+  // Document Tab Bar view-model + titlebar state. In fullscreen the traffic
+  // lights auto-hide and (D10) the whole bar hides; keyboard switching still
+  // works. In the browser build there is no window frame, so no inset/hiding.
+  const documentTabs = $derived(
+    documentSessions.map((session) => ({
+      id: session.id,
+      label: session.label,
+      path: session.path,
+      dirty: tabDirtyState(session),
+      active: session.id === activeSessionId,
+    })),
+  );
+  const isMacRuntime =
+    typeof navigator !== "undefined" && /Mac/i.test(navigator.platform || navigator.userAgent);
+  let isWindowFullscreen = $state(false);
+  const showDocumentTabBar = $derived(!(isTauriRuntime() && isWindowFullscreen));
+  const trafficLightInset = $derived(isTauriRuntime() && isMacRuntime && !isWindowFullscreen);
 
   // Scoped element lookup for pdf.js editor/annotation ids. Those ids restart at
   // 0 per AnnotationEditorUIManager and PDF annotation refs are per-document, so
@@ -434,7 +453,25 @@
       menuControls = controls;
       void controls?.setSaveEnabled(Boolean(pdfDocument));
     });
+    // Track macOS fullscreen so the Document Tab Bar can hide (D10). Best-effort:
+    // if the window API/permission is unavailable the bar simply stays visible.
+    let unlistenResize: (() => void) | null = null;
+    if (isTauriRuntime()) {
+      const appWindow = getCurrentWindow();
+      const syncFullscreen = () => {
+        void appWindow
+          .isFullscreen()
+          .then((value) => (isWindowFullscreen = value))
+          .catch(() => {});
+      };
+      syncFullscreen();
+      void appWindow
+        .onResized(() => syncFullscreen())
+        .then((unlisten) => (unlistenResize = unlisten))
+        .catch(() => {});
+    }
     return () => {
+      unlistenResize?.();
       containerResizeObserver.disconnect();
       pdfStageEl?.removeEventListener("mouseleave", clearRailHoverCue);
       pdfStageEl?.removeEventListener("mousemove", handlePdfContainerMouseMove);
@@ -4228,7 +4265,11 @@
   }
 
   const fileName = $derived(
-    currentPath ? (currentPath.split("/").pop() ?? currentPath) : "No document",
+    currentPath
+      ? (currentPath.split("/").pop() ?? currentPath)
+      : activeSession
+        ? (activeSession.label.split(/[\\/]/).pop() ?? activeSession.label)
+        : "No document",
   );
 
   $effect(() => {
@@ -4416,7 +4457,16 @@
   }
 </script>
 
-<div class="app">
+<div class="app" class:has-tabbar={showDocumentTabBar}>
+  {#if showDocumentTabBar}
+    <DocumentTabBar
+      tabs={documentTabs}
+      {trafficLightInset}
+      onSelect={(id) => void switchToTab(id)}
+      onClose={(id) => void closeTab(id)}
+      onNew={() => void openPdf()}
+    />
+  {/if}
   <header class="topbar">
     <div class="brand">
       <span class="file">{fileName}</span>
@@ -4665,6 +4715,10 @@
     display: grid;
     grid-template-rows: auto 1fr;
     background: var(--surface);
+  }
+  /* With the Document Tab Bar present, insert its row above the topbar. */
+  .app.has-tabbar {
+    grid-template-rows: auto auto 1fr;
   }
   .topbar {
     height: 48px;
