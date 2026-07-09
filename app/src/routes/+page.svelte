@@ -1094,6 +1094,25 @@
     documentTabsState = moveDocumentTabState(documentTabsState, from, to);
   }
 
+  function isPdfDropFile(file: File) {
+    return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+  }
+
+  function handleDocumentFileDragOver(event: DragEvent) {
+    if (!event.dataTransfer?.types.includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  async function handleDocumentFileDrop(event: DragEvent) {
+    const files = [...(event.dataTransfer?.files ?? [])].filter(isPdfDropFile);
+    if (files.length === 0) return;
+    event.preventDefault();
+    for (const file of files) {
+      await openDocumentTabBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+    }
+  }
+
   function handleDocumentTabClose(id: DocumentTabId) {
     void closeDocumentTab(id);
   }
@@ -4888,7 +4907,13 @@
   }
 </script>
 
-<div class="app" class:is-native-fullscreen={isNativeFullscreen}>
+<!-- svelte-ignore a11y_no_static_element_interactions: whole app is a file drop target; keyboard open remains Cmd+O/+ button. -->
+<div
+  class="app"
+  class:is-native-fullscreen={isNativeFullscreen}
+  ondragover={handleDocumentFileDragOver}
+  ondrop={(event) => void handleDocumentFileDrop(event)}
+>
   <DocumentTabBar
     tabs={documentTabSummaries}
     onActivate={(id) => void activateDocumentTab(id)}

@@ -142,6 +142,27 @@ test("Document Tab Bar reorders tabs by dragging", async ({ page }) => {
     .toEqual(["drag-b.pdf", "drag-c.pdf", "drag-a.pdf"]);
 });
 
+test("dropping a PDF file opens a path-less Document Tab in browser mode", async ({ page }) => {
+  await page.waitForFunction(() => Boolean(window.__pdfSpike?.tabs));
+
+  await page.evaluate(async () => {
+    const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
+    const file = new File([bytes], "dropped-browser.pdf", { type: "application/pdf" });
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(file);
+    const app = document.querySelector(".app");
+    if (!app) throw new Error("App shell not found");
+    app.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer }));
+    app.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer }));
+  });
+  await waitForPageReady(page);
+
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toMatchObject([
+    { label: "dropped-browser.pdf", path: null, active: true },
+  ]);
+  await expect(page.getByRole("tab", { name: "dropped-browser.pdf" })).toBeVisible();
+});
+
 test("Cmd+W closes the Active Document Tab and activates the neighbor", async ({ page }) => {
   const [firstId, secondId] = await page.evaluate(async () => {
     const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
