@@ -132,6 +132,7 @@
   import { DocumentSession } from "$lib/tabs/document-session.svelte";
   import DocumentTabBar from "$lib/ui/DocumentTabBar.svelte";
   import UnsavedChangesModal from "$lib/ui/UnsavedChangesModal.svelte";
+  import { createLocalAppPersistence } from "$lib/persistence/app-persistence";
   import {
     addTab as addDocTab,
     removeTab as removeDocTab,
@@ -4184,11 +4185,13 @@
   let menuControls: AppMenuControls | null = null;
 
   const SIDEBAR_WIDTHS_STORAGE_KEY = "chive.sidebarWidths";
-  let sidebarWidths = $state<SidebarWidths>(
-    parseSidebarWidths(
-      typeof localStorage === "undefined" ? null : localStorage.getItem(SIDEBAR_WIDTHS_STORAGE_KEY),
-    ),
-  );
+  const appPersistence = createLocalAppPersistence();
+  let sidebarWidths = $state<SidebarWidths>({ left: 367, right: 367 });
+
+  // Load persisted sidebar widths via AppPersistence abstraction.
+  void appPersistence.getJson<string>(SIDEBAR_WIDTHS_STORAGE_KEY).then((raw) => {
+    if (raw) sidebarWidths = parseSidebarWidths(raw);
+  });
   let resizingSide = $state<SidebarSide | null>(null);
   let resizeSession: { side: SidebarSide; startX: number; startWidth: number } | null = null;
 
@@ -4223,11 +4226,7 @@
     if (!resizeSession) return;
     resizeSession = null;
     resizingSide = null;
-    try {
-      localStorage.setItem(SIDEBAR_WIDTHS_STORAGE_KEY, serializeSidebarWidths(sidebarWidths));
-    } catch {
-      // Persisting the width is best-effort; resizing still works this session.
-    }
+    void appPersistence.setJson(SIDEBAR_WIDTHS_STORAGE_KEY, serializeSidebarWidths(sidebarWidths));
   }
 
   const fileName = $derived(
@@ -4425,6 +4424,7 @@
     onactivate={(id: string) => switchToTab(id)}
     onclose={(id: string) => closeTabFromUI(id)}
     onopen={openPdf}
+    onreorder={(from: number, to: number) => { tabsState = moveDocTab(tabsState, from, to); }}
     isTauri={isTauriRuntime()}
     {isFullscreen}
   />

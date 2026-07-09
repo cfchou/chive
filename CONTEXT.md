@@ -51,3 +51,19 @@ _Avoid_: app theme color, custom palette override
 **Outline Destination**:
 The target location a Document Outline Entry (or bookmark) points to; if unresolved, the target is not reliably navigable.
 _Avoid_: URL, link target
+
+**Document Tab**:
+One open PDF held in the Document Tab Bar; each tab owns its own live pdf.js viewer and Document Session.
+_Avoid_: file tab, window tab
+
+**Document Tab Bar**:
+The titlebar-area strip of Document Tabs rendered via Tauri overlay; hidden in macOS fullscreen.
+_Avoid_: tab strip (that names the sidebar `TabStrip`), titlebar tabs
+
+**Active Document Tab**:
+The tab whose Document Session is rendered and receives tool/menu/keyboard actions.
+_Avoid_: current tab, focused tab
+
+**Document Session**:
+The per-tab runtime unit: pdf.js instances, per-document reactive state, viewer DOM, and caches.
+_Avoid_: viewer instance, document state

@@ -9,11 +9,14 @@
     active: boolean;
   };
 
+  const DRAG_START_PX = 4;
+
   let {
-    tabs = [],
+    tabs,
     onactivate,
     onclose,
     onopen,
+    onreorder,
     isTauri = false,
     isFullscreen = false,
   }: {
@@ -21,24 +24,69 @@
     onactivate: (id: string) => void;
     onclose: (id: string) => void;
     onopen: () => void;
+    onreorder: (from: number, to: number) => void;
     isTauri: boolean;
     isFullscreen: boolean;
   } = $props();
+
+  let dragState = $state<{
+    fromIndex: number;
+    startX: number;
+    started: boolean;
+    overIndex: number;
+  } | null>(null);
+
+  function handlePointerDown(index: number, event: PointerEvent) {
+    if (event.button !== 0) return;
+    dragState = { fromIndex: index, startX: event.clientX, started: false, overIndex: index };
+  }
+
+  function handlePointerMove(event: PointerEvent) {
+    if (!dragState) return;
+    if (!dragState.started) {
+      if (Math.abs(event.clientX - dragState.startX) < DRAG_START_PX) return;
+      dragState.started = true;
+    }
+    // Find the tab under the pointer.
+    const scrollEl = document.querySelector(".tab-scroll");
+    if (!scrollEl) return;
+    const tabEls = [...scrollEl.querySelectorAll<HTMLElement>(".doc-tab")];
+    for (let i = 0; i < tabEls.length; i++) {
+      const rect = tabEls[i].getBoundingClientRect();
+      if (event.clientX >= rect.left && event.clientX <= rect.right) {
+        dragState.overIndex = i;
+        break;
+      }
+    }
+  }
+
+  function handlePointerUp() {
+    if (!dragState) return;
+    if (dragState.started && dragState.overIndex !== dragState.fromIndex) {
+      onreorder(dragState.fromIndex, dragState.overIndex);
+    }
+    dragState = null;
+  }
 </script>
+
+<svelte:window onpointermove={handlePointerMove} onpointerup={handlePointerUp} />
 
 {#if !isFullscreen}
   <div class="document-tab-bar" data-tauri-drag-region={isTauri ? "" : undefined}>
     <div class="traffic-light-spacer" data-tauri-drag-region={isTauri ? "" : undefined}></div>
     <div class="tab-scroll" role="tablist" aria-label="Open documents">
-      {#each tabs as tab (tab.id)}
+      {#each tabs as tab, index (tab.id)}
         <button
           id={`doc-tab-${tab.id}`}
           role="tab"
           aria-selected={tab.active}
           class="doc-tab"
           class:active={tab.active}
+          class:drag-over={dragState?.started && dragState.overIndex === index && dragState.fromIndex !== index}
+          class:dragging={dragState?.started && dragState.fromIndex === index}
           title={tab.path ?? tab.label}
-          onclick={() => onactivate(tab.id)}
+          onclick={() => { if (!dragState?.started) onactivate(tab.id); }}
+          onpointerdown={(e) => handlePointerDown(index, e)}
         >
           <span class="doc-tab-label">{tab.label}</span>
           {#if tab.dirty}
@@ -120,6 +168,12 @@
     background: var(--surface, #fff);
     box-shadow: 0 -1px 0 0 var(--border, #ccc) inset;
   }
+  .doc-tab.dragging {
+    opacity: 0.5;
+  }
+  .doc-tab.drag-over {
+    border-left: 2px solid var(--accent, #007aff);
+  }
 
   .doc-tab-label {
     overflow: hidden;
@@ -178,7 +232,6 @@
     background: var(--surface, #e8e8e8);
   }
 
-  /* Browser build: no traffic-light spacer */
   :global(.browser-build) .traffic-light-spacer {
     display: none;
   }
