@@ -37,3 +37,27 @@ test("debug API opens and switches Document Tabs", async ({ page }) => {
   ]);
   await expect(page.locator(".file")).toHaveText("alpha.pdf");
 });
+
+test("Document Tabs restore their own zoom when activated", async ({ page }) => {
+  const [firstId, secondId] = await page.evaluate(async () => {
+    const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
+    const first = await window.__pdfSpike!.tabs.openBytes(bytes, "zoom-a.pdf");
+    const second = await window.__pdfSpike!.tabs.openBytes(bytes, "zoom-b.pdf");
+    return [first, second];
+  });
+  await waitForPageReady(page);
+
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  const secondZoom = await page.locator(".zoom-value").textContent();
+
+  await page.evaluate((id) => window.__pdfSpike!.tabs.activate(id), firstId);
+  await waitForPageReady(page);
+  await page.getByRole("button", { name: "Zoom out" }).click();
+  const firstZoom = await page.locator(".zoom-value").textContent();
+  expect(firstZoom).not.toBe(secondZoom);
+
+  await page.evaluate((id) => window.__pdfSpike!.tabs.activate(id), secondId);
+  await waitForPageReady(page);
+  await expect(page.locator(".zoom-value")).toHaveText(secondZoom ?? "");
+});

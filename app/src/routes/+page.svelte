@@ -147,9 +147,16 @@
   type PdfPage = Awaited<ReturnType<PdfDocument["getPage"]>>;
   type NavigationTab = "outline" | "bookmarks" | "annotations";
   type SelectedAnnotationKind = "highlight" | "freetext" | "ink" | null;
+  type DocumentTabViewState = {
+    currentPageNumber: number | null;
+    scale: number | null;
+    scaleLabel: string;
+    scrollTop: number;
+  };
   type DocumentTabDraft = {
     bytes: Uint8Array;
     dirty: boolean;
+    view: DocumentTabViewState;
   };
   type PdfOutlineRaw = {
     title?: string;
@@ -558,6 +565,15 @@
     return path.split("/").pop() || path;
   }
 
+  function currentDocumentTabViewState(): DocumentTabViewState {
+    return {
+      currentPageNumber: pdfViewer?.currentPageNumber ?? null,
+      scale: pdfViewer?.currentScale ?? null,
+      scaleLabel,
+      scrollTop: containerEl?.scrollTop ?? 0,
+    };
+  }
+
   function syncActiveDocumentTab(bytes: Uint8Array, label: string, path: string | null) {
     const id = documentTabsState.activeId ?? nextDocumentTabId();
     const displayLabel = path ? labelFromPath(path) : labelFromPath(label);
@@ -566,7 +582,7 @@
       path,
       label: displayLabel,
     });
-    documentTabDrafts.set(id, { bytes: bytes.slice(), dirty: isDirty });
+    documentTabDrafts.set(id, { bytes: bytes.slice(), dirty: isDirty, view: currentDocumentTabViewState() });
   }
 
   function updateActiveDocumentTabPath(path: string | null, label = path ?? currentPath) {
@@ -586,7 +602,7 @@
     const id = documentTabsState.activeId;
     if (!id || !pdfDocument) return;
     const bytes = await savePdfDocumentBytes();
-    documentTabDrafts.set(id, { bytes, dirty: isDirty });
+    documentTabDrafts.set(id, { bytes, dirty: isDirty, view: currentDocumentTabViewState() });
   }
 
   function listDocumentTabs() {
@@ -627,7 +643,7 @@
       path,
       label: path ? labelFromPath(path) : labelFromPath(label),
     });
-    documentTabDrafts.set(id, { bytes: bytes.slice(), dirty: false });
+    documentTabDrafts.set(id, { bytes: bytes.slice(), dirty: false, view: currentDocumentTabViewState() });
     currentPath = path ?? label;
     isDirty = false;
     activeTool = "none";
@@ -642,7 +658,10 @@
     if (!draft) throw new Error(`No draft bytes stored for Document Tab ${id}`);
     const tab = documentTabsState.tabs[id];
     documentTabsState = activateDocumentTabState(documentTabsState, id);
-    await loadPdfBytes(draft.bytes.slice(), tab.path ?? tab.label, { syncDocumentTab: false });
+    await loadPdfBytes(draft.bytes.slice(), tab.path ?? tab.label, {
+      syncDocumentTab: false,
+      viewState: draft.view,
+    });
     currentPath = tab.path ?? tab.label;
     isDirty = draft.dirty;
     activeTool = "none";
@@ -718,7 +737,7 @@
   async function loadPdfBytes(
     bytes: Uint8Array,
     label: string,
-    options: { syncDocumentTab?: boolean } = {},
+    options: { syncDocumentTab?: boolean; viewState?: DocumentTabViewState } = {},
   ) {
     const draftBytes = bytes.slice();
     const loadingTask = pdfjsLib.getDocument({ data: bytes.slice(), wasmUrl: pdfjsWasmUrl });
@@ -756,14 +775,24 @@
 
     eventBus.on("pagesinit", () => {
       if (!pdfViewer) return;
-      pdfViewer.currentScaleValue = "page-width";
+      if (options.viewState?.scale) {
+        pdfViewer.currentScale = options.viewState.scale;
+      } else {
+        pdfViewer.currentScaleValue = "page-width";
+      }
+      if (options.viewState?.currentPageNumber) {
+        pdfViewer.currentPageNumber = options.viewState.currentPageNumber;
+      }
       pdfViewer.update();
       pdfViewer.forceRendering(undefined);
       requestAnimationFrame(() => {
+        if (options.viewState) {
+          containerEl.scrollTop = options.viewState.scrollTop;
+        }
         pdfViewer?.update();
         pdfViewer?.forceRendering(undefined);
       });
-      scaleLabel = "Fit Width";
+      scaleLabel = options.viewState?.scaleLabel ?? "Fit Width";
       status = `Rendered ${label}`;
       refreshBookmarkRailLayout();
       queueAnnotationSidebarRefresh(0);
