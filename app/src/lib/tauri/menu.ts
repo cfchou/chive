@@ -17,6 +17,9 @@ export type AppMenuHandlers = {
   openPdf: () => void | Promise<void>;
   savePdf: () => void | Promise<void>;
   savePdfAs: () => void | Promise<void>;
+  closeActiveTab: () => void | Promise<void>;
+  showNextTab: () => void;
+  showPreviousTab: () => void;
 };
 
 export function isTauriRuntime(): boolean {
@@ -89,7 +92,24 @@ export async function installAppMenu(handlers: AppMenuHandlers): Promise<AppMenu
       await PredefinedMenuItem.new({ item: "Minimize" }),
       await PredefinedMenuItem.new({ item: "Maximize" }),
       await PredefinedMenuItem.new({ item: "Separator" }),
-      await PredefinedMenuItem.new({ item: "CloseWindow" }),
+      await MenuItem.new({
+        id: "window-close-tab",
+        text: "Close Tab",
+        accelerator: "CmdOrCtrl+W",
+        action: () => void handlers.closeActiveTab(),
+      }),
+      await MenuItem.new({
+        id: "window-previous-tab",
+        text: "Show Previous Tab",
+        accelerator: "CmdOrCtrl+Shift+[",
+        action: () => handlers.showPreviousTab(),
+      }),
+      await MenuItem.new({
+        id: "window-next-tab",
+        text: "Show Next Tab",
+        accelerator: "CmdOrCtrl+Shift+]",
+        action: () => handlers.showNextTab(),
+      }),
     ],
   });
 

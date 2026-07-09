@@ -131,6 +131,7 @@
   import { createSpikeDebugHarness } from "$lib/debug/spike-harness";
   import { DocumentSession } from "$lib/tabs/document-session.svelte";
   import DocumentTabBar from "$lib/ui/DocumentTabBar.svelte";
+  import UnsavedChangesModal from "$lib/ui/UnsavedChangesModal.svelte";
   import {
     addTab as addDocTab,
     removeTab as removeDocTab,
@@ -213,6 +214,15 @@
 
   let isFullscreen = $state(false);
 
+  // UnsavedChangesModal state
+  let unsavedModal = $state<{
+    tabId: string;
+    label: string;
+    resolve: (action: "save" | "discard" | "cancel") => void;
+  } | null>(null);
+
+  let windowCloseInProgress = false;
+
   async function detectFullscreen() {
     if (!isTauriRuntime()) return;
     try {
@@ -224,7 +234,56 @@
   }
 
   async function closeTabFromUI(id: string) {
-    // Phase C: no modal yet — close directly (D3/D9 land in Phase D).
+    const session = sessions.get(id);
+    const tab = tabsState.tabs[id];
+
+    // D3: If dirty, show the unsaved changes modal.
+    if (session?.isDirty) {
+      const action = await promptUnsaved(tab?.label ?? "this document", id);
+      if (action === "cancel") return;
+      if (action === "save") {
+        const saved = await saveTab(id);
+        if (!saved) return; // D9: save failure aborts the close
+      }
+      // "discard" → proceed to close
+    }
+
+    await doCloseTab(id);
+  }
+
+  function promptUnsaved(label: string, tabId: string): Promise<"save" | "discard" | "cancel"> {
+    return new Promise((resolve) => {
+      unsavedModal = { tabId, label, resolve };
+    });
+  }
+
+  function resolveUnsavedModal(action: "save" | "discard" | "cancel") {
+    const modal = unsavedModal;
+    unsavedModal = null;
+    modal?.resolve(action);
+  }
+
+  async function saveTab(id: string): Promise<boolean> {
+    const session = sessions.get(id);
+    const tab = tabsState.tabs[id];
+    if (!session) return false;
+
+    try {
+      if (tab?.path) {
+        await persistPdf(tab.path);
+      } else {
+        await savePdfAs();
+      }
+      session.isDirty = false;
+      return true;
+    } catch (error) {
+      // D9: save failure aborts the close, keeps the tab dirty, surfaces error.
+      session.status = `Save failed: ${formatError(error)}`;
+      return false;
+    }
+  }
+
+  async function doCloseTab(id: string) {
     const session = sessions.get(id);
     if (session) {
       teardownSessionViewer(session);
@@ -238,6 +297,54 @@
         active.pdfViewer.update();
         active.pdfViewer.forceRendering(undefined);
       }
+    }
+  }
+
+  async function closeActiveTab() {
+    if (!tabsState.activeId) {
+      // D6: Cmd+W with zero tabs closes the window.
+      if (isTauriRuntime()) {
+        try {
+          const { getCurrentWindow } = await import("@tauri-apps/api/window");
+          await getCurrentWindow().close();
+        } catch { /* ignore */ }
+      }
+      return;
+    }
+    await closeTabFromUI(tabsState.activeId);
+  }
+
+  function showNextTab() {
+    const nextId = nextTabId(tabsState);
+    if (nextId) void switchToTab(nextId);
+  }
+
+  function showPreviousTab() {
+    const prevId = previousTabId(tabsState);
+    if (prevId) void switchToTab(prevId);
+  }
+
+  async function handleWindowCloseRequested(event: { preventDefault: () => void }) {
+    // Walk all dirty tabs in strip order; Cancel or failed Save aborts everything.
+    const dirtyTabs = tabsState.order.filter((id) => sessions.get(id)?.isDirty);
+    if (dirtyTabs.length === 0) return; // allow close
+
+    event.preventDefault();
+    for (const id of dirtyTabs) {
+      const tab = tabsState.tabs[id];
+      const action = await promptUnsaved(tab?.label ?? "this document", id);
+      if (action === "cancel") return; // abort entire close
+      if (action === "save") {
+        const saved = await saveTab(id);
+        if (!saved) return; // D9: save failure aborts everything
+      }
+    }
+    // All dirty tabs resolved — allow the close.
+    if (isTauriRuntime()) {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().destroy();
+      } catch { /* ignore */ }
     }
   }
   let navigationTab = $state<NavigationTab>("outline");
@@ -338,6 +445,7 @@
     document.addEventListener("keydown", handleAnnotationEscapeKey, { capture: true });
     document.addEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
     document.addEventListener("keydown", handleFreeTextEditorKeydown, { capture: true });
+    document.addEventListener("keydown", handleTabSwitchKeydown, { capture: true });
     activeSession.containerEl?.addEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
     activeSession.containerEl?.addEventListener("pointerdown", handlePdfPointerDown, { capture: true });
     activeSession.containerEl?.addEventListener("dblclick", handlePdfDoubleClick, { capture: true });
@@ -462,10 +570,26 @@
     const onWindowResize = () => { void detectFullscreen(); };
     window.addEventListener("resize", onWindowResize);
     void detectFullscreen();
-    void installAppMenu({ openPdf, savePdf, savePdfAs }).then((controls) => {
+    void installAppMenu({
+      openPdf,
+      savePdf,
+      savePdfAs,
+      closeActiveTab,
+      showNextTab,
+      showPreviousTab,
+    } as Parameters<typeof installAppMenu>[0]).then((controls) => {
       menuControls = controls;
       void controls?.setSaveEnabled(Boolean(activeSession.pdfDocument));
     });
+
+    // D9: intercept window close when dirty tabs remain.
+    if (isTauriRuntime()) {
+      void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+        getCurrentWindow().onCloseRequested((event) => {
+          void handleWindowCloseRequested(event);
+        });
+      });
+    }
     return () => {
       containerResizeObserver.disconnect();
       window.removeEventListener("resize", onWindowResize);
@@ -478,6 +602,7 @@
       activeSession.containerEl?.removeEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
       if (activeOutlineFrame) cancelAnimationFrame(activeOutlineFrame);
       document.removeEventListener("keydown", handleFreeTextEditorKeydown, { capture: true });
+      document.removeEventListener("keydown", handleTabSwitchKeydown, { capture: true });
       document.removeEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
       document.removeEventListener("keydown", handleAnnotationEscapeKey, { capture: true });
       document.removeEventListener("pointerdown", handleDocumentPointerDown, { capture: true });
@@ -564,6 +689,15 @@
     if (!(target instanceof HTMLElement)) return false;
     if (target.isContentEditable) return true;
     return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+  }
+
+  function handleTabSwitchKeydown(event: KeyboardEvent) {
+    // Ctrl+Tab / Ctrl+Shift+Tab for tab switching (menu accelerators on Tab are unreliable on macOS).
+    if (event.key === "Tab" && event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      if (event.shiftKey) showPreviousTab();
+      else showNextTab();
+    }
   }
 
   function handleFreeTextEditorKeydown(event: KeyboardEvent) {
@@ -4528,6 +4662,14 @@
 />
 
 <div class="app-status" role="status" aria-live="polite">{activeSession.status}</div>
+
+<UnsavedChangesModal
+  open={unsavedModal !== null}
+  label={unsavedModal?.label ?? ""}
+  onSave={() => resolveUnsavedModal("save")}
+  onDiscard={() => resolveUnsavedModal("discard")}
+  onCancel={() => resolveUnsavedModal("cancel")}
+/>
 
 <style>
   /* ---- Official-app shell (topbar, workspace, sidebars, reader host) ---- */
