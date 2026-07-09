@@ -25,8 +25,10 @@
   } from "../lib/ui/sidebar-resize";
   import { tabMeta } from "../lib/ui/tab-meta";
   import { DocumentSession } from "$lib/tabs/document-session";
-  import { installAppMenu, type AppMenuControls } from "../lib/tauri/menu";
+  import { activeIdAfterClose, findTabIdByPath, moveTab } from "$lib/tabs/tab-state";
+  import { installAppMenu, isTauriRuntime, type AppMenuControls } from "../lib/tauri/menu";
   import { invoke } from "@tauri-apps/api/core";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { onMount, tick } from "svelte";
   import AnnotationsSidebar from "$lib/pdf/AnnotationsSidebar.svelte";
@@ -166,8 +168,14 @@
   const bookmarkTitleLookaheadPdfPoints = 180;
   const bookmarkTitleWordCount = 4;
 
-  let containerEl: HTMLDivElement;
-  let viewerEl: HTMLDivElement;
+  // Persistent stage wrapping the per-tab containers; container-level listeners
+  // attach here once (delegating to whichever tab is active) so switching tabs
+  // never re-homes them. containerEl/viewerEl point at the *active* session's
+  // DOM and are reassigned on load/switch (the actual nodes are bound per tab in
+  // the {#each} over documentSessions).
+  let pdfStageEl!: HTMLDivElement;
+  let containerEl!: HTMLDivElement;
+  let viewerEl!: HTMLDivElement;
   let pdfViewer: PDFViewer | null = null;
   let pdfLinkService: PDFLinkService | null = null;
   let pdfDocument = $state<PdfDocument | null>(null);
@@ -181,6 +189,14 @@
   const activeSession = $derived(
     activeSessionId ? (documentSessions.find((session) => session.id === activeSessionId) ?? null) : null,
   );
+
+  // Scoped element lookup for pdf.js editor/annotation ids. Those ids restart at
+  // 0 per AnnotationEditorUIManager and PDF annotation refs are per-document, so
+  // ids collide across tabs — a global getElementById could match the wrong
+  // (hidden) tab's node. Always resolve within the active tab's container.
+  function activeElementById(id: string): HTMLElement | null {
+    return containerEl?.querySelector<HTMLElement>(`[id="${id}"]`) ?? null;
+  }
   let outlineEntries = $state<OutlineEntry[]>([]);
   let outlineStatus = $state("Open a PDF to inspect its outline.");
   let outlineColorMenuId = $state<string | null>(null);
@@ -229,14 +245,17 @@
   let rememberedSelectionText = "";
   let rememberedSelectionRanges: Range[] = [];
   let annotationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-  const annotationDetailCache = new Map<string, string>();
-  const pendingDeletedPersistedAnnotationKeys = new Set<string>();
-  const persistedAnnotationKeyByEditorId = new Map<string, string>();
+  // These caches are per-tab: on load/switch they are re-pointed at the active
+  // DocumentSession's own Maps/Set (declared `let`, not `const`, so they can be
+  // reassigned) so two open documents never share annotation bookkeeping.
+  let annotationDetailCache = new Map<string, string>();
+  let pendingDeletedPersistedAnnotationKeys = new Set<string>();
+  let persistedAnnotationKeyByEditorId = new Map<string, string>();
   // Last known sidebar sort geometry per persisted annotation. When a live
   // editor stands in for a persisted annotation (which is then hidden from
   // the persisted list), measuring the editor DOM instead would shift its
   // sort position ~30px and reshuffle the sidebar on a pure text edit.
-  const persistedPositionByKey = new Map<string, { top: number; left: number }>();
+  let persistedPositionByKey = new Map<string, { top: number; left: number }>();
   const debugHarness = createSpikeDebugHarness({
     getPdfDocument: () => activeSession?.pdfDocument ?? pdfDocument,
     getPdfViewer: () => activeSession?.pdfViewer ?? pdfViewer,
@@ -327,9 +346,13 @@
     document.addEventListener("keydown", handleAnnotationEscapeKey, { capture: true });
     document.addEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
     document.addEventListener("keydown", handleFreeTextEditorKeydown, { capture: true });
-    containerEl?.addEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
-    containerEl?.addEventListener("pointerdown", handlePdfPointerDown, { capture: true });
-    containerEl?.addEventListener("dblclick", handlePdfDoubleClick, { capture: true });
+    // Container-level listeners live on the persistent stage and delegate to
+    // whichever tab is active (its container is the only visible one; the
+    // handlers read the active `containerEl`). scroll does not bubble, so it is
+    // captured. This means switching tabs never re-homes these listeners.
+    pdfStageEl.addEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
+    pdfStageEl.addEventListener("pointerdown", handlePdfPointerDown, { capture: true });
+    pdfStageEl.addEventListener("dblclick", handlePdfDoubleClick, { capture: true });
     let activeOutlineFrame = 0;
     const handlePdfScroll = () => {
       if (activeOutlineFrame) return;
@@ -340,10 +363,10 @@
     };
     const handleRailClick = (event: MouseEvent) => void handlePdfContainerClick(event);
     const clearRailHoverCue = () => (bookmarkRailHoverCue = null);
-    containerEl?.addEventListener("click", handleRailClick);
-    containerEl?.addEventListener("scroll", handlePdfScroll);
-    containerEl?.addEventListener("mousemove", handlePdfContainerMouseMove);
-    containerEl?.addEventListener("mouseleave", clearRailHoverCue);
+    pdfStageEl.addEventListener("click", handleRailClick);
+    pdfStageEl.addEventListener("scroll", handlePdfScroll, { capture: true });
+    pdfStageEl.addEventListener("mousemove", handlePdfContainerMouseMove);
+    pdfStageEl.addEventListener("mouseleave", clearRailHoverCue);
     const teardownSpikeDebugApi = installSpikeDebugApi(window, {
       annotationSummary: debugHarness.annotationSummary,
       annotationSidebarSummary: () => annotationEntries,
@@ -374,6 +397,29 @@
       debugSavedBytes: debugHarness.debugSavedBytes,
       stats: debugHarness.stats,
       setTool,
+      undo: () => (annotationEditorUIManager as { undo?: () => void } | null)?.undo?.(),
+      redo: () => (annotationEditorUIManager as { redo?: () => void } | null)?.redo?.(),
+      tabs: {
+        list: () =>
+          documentSessions.map((session) => ({
+            id: session.id,
+            label: session.label,
+            path: session.path,
+            dirty: tabDirtyState(session),
+            active: session.id === activeSessionId,
+          })),
+        open: async (path: string) => {
+          const rawBytes = await invoke<number[]>("read_pdf", { path });
+          return openDocumentInNewTab(new Uint8Array(rawBytes), path, path);
+        },
+        openBytes: (bytes, label, path = null) =>
+          openDocumentInNewTab(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes), label, path),
+        activate: async (id: string) => {
+          await switchToTab(id);
+        },
+        close: async (id: string) => closeTab(id),
+        reorder: (from: number, to: number) => reorderTabs(from, to),
+      },
     });
     // Official-app additions: collapsible/dockable sidebars resize the viewer
     // container mid-session (the spike never did), so the viewer and the
@@ -383,20 +429,20 @@
       pdfViewer.update();
       refreshBookmarkRailLayout();
     });
-    if (containerEl) containerResizeObserver.observe(containerEl);
+    if (pdfStageEl) containerResizeObserver.observe(pdfStageEl);
     void installAppMenu({ openPdf, savePdf, savePdfAs }).then((controls) => {
       menuControls = controls;
       void controls?.setSaveEnabled(Boolean(pdfDocument));
     });
     return () => {
       containerResizeObserver.disconnect();
-      containerEl?.removeEventListener("mouseleave", clearRailHoverCue);
-      containerEl?.removeEventListener("mousemove", handlePdfContainerMouseMove);
-      containerEl?.removeEventListener("scroll", handlePdfScroll);
-      containerEl?.removeEventListener("click", handleRailClick);
-      containerEl?.removeEventListener("dblclick", handlePdfDoubleClick, { capture: true });
-      containerEl?.removeEventListener("pointerdown", handlePdfPointerDown, { capture: true });
-      containerEl?.removeEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
+      pdfStageEl?.removeEventListener("mouseleave", clearRailHoverCue);
+      pdfStageEl?.removeEventListener("mousemove", handlePdfContainerMouseMove);
+      pdfStageEl?.removeEventListener("scroll", handlePdfScroll, { capture: true });
+      pdfStageEl?.removeEventListener("click", handleRailClick);
+      pdfStageEl?.removeEventListener("dblclick", handlePdfDoubleClick, { capture: true });
+      pdfStageEl?.removeEventListener("pointerdown", handlePdfPointerDown, { capture: true });
+      pdfStageEl?.removeEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
       if (activeOutlineFrame) cancelAnimationFrame(activeOutlineFrame);
       document.removeEventListener("keydown", handleFreeTextEditorKeydown, { capture: true });
       document.removeEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
@@ -447,7 +493,7 @@
     // A pointerdown outside an in-edit free text editor is about to blur it,
     // and pdf.js commits on blur — repair the DOM shape first so Shift+Enter
     // lines survive that commit (see normalizeFreeTextEditorLines).
-    const editingFreeText = document.querySelector<HTMLElement>(
+    const editingFreeText = containerEl.querySelector<HTMLElement>(
       ".freeTextEditor .internal[contenteditable='true'], .freeTextEditor [contenteditable='true']",
     );
     if (editingFreeText && target instanceof Node && !editingFreeText.contains(target)) {
@@ -534,15 +580,37 @@
 
     if (!selected || Array.isArray(selected)) return;
 
-    await loadPdf(selected);
+    // Cmd+O opens the file in a new Document Tab, or focuses the tab that
+    // already has this path open (D4 dedupe).
+    const existing = findTabIdByPath(documentSessions, selected);
+    if (existing) {
+      await switchToTab(existing);
+      return;
+    }
+    isBusy = true;
+    status = "Loading PDF...";
+    try {
+      const rawBytes = await invoke<number[]>("read_pdf", { path: selected });
+      await loadPdfBytes(new Uint8Array(rawBytes), selected, { newTab: true, path: selected });
+      currentPath = selected;
+      isDirty = false;
+      activeTool = "none";
+      status = `Loaded ${selected}`;
+    } catch (error) {
+      status = `Open failed: ${formatError(error)}`;
+    } finally {
+      isBusy = false;
+    }
   }
 
+  // Replace the active tab's document in place (harness reload / D8). Distinct
+  // from openPdf, which opens a new tab.
   async function loadPdf(path: string) {
     isBusy = true;
     status = "Loading PDF...";
     try {
       const rawBytes = await invoke<number[]>("read_pdf", { path });
-      await loadPdfBytes(new Uint8Array(rawBytes), path);
+      await loadPdfBytes(new Uint8Array(rawBytes), path, { newTab: false, path });
       currentPath = path;
       isDirty = false;
       activeTool = "none";
@@ -574,30 +642,260 @@
     }
   }
 
-  async function loadPdfBytes(bytes: Uint8Array, label: string) {
+  // ---- Document tab management (multi-PDF) ----
+
+  // The shell's scalar/derived per-document `$state` for the *active* tab. On
+  // switch we capture the outgoing tab's values into its session and apply the
+  // incoming tab's snapshot; live pdf.js refs and caches are re-pointed, not
+  // copied, so each tab keeps its own viewer alive (undo survives, D2).
+  function snapshotActiveState() {
+    return {
+      currentPath,
+      isDirty,
+      status,
+      activeTool,
+      zoomPercent,
+      scaleLabel,
+      outlineEntries,
+      outlineStatus,
+      outlineColorMenuId,
+      collapsedOutlineIds,
+      activeOutlineEntryId,
+      lastActivatedOutlineEntry,
+      bookmarkEntries,
+      bookmarkStatus,
+      editingBookmarkId,
+      activeBookmarkId,
+      bookmarkColorMenuId,
+      hoveredBookmarkId,
+      bookmarkRailHoverCue,
+      bookmarkRailLayoutVersion,
+      pendingBookmarkRailMarkerRects,
+      annotationEntries,
+      annotationStatus,
+      selectedAnnotationEntryId,
+      selectedPersistedAnnotationKey,
+      annotationFocusBox,
+      lastAnnotationPointerClick,
+      selectedAnnotationKind,
+      selectedAnnotationColor,
+      hasSelectedHighlight,
+      selectedHighlightColor,
+      rememberedSelectionText,
+      rememberedSelectionRanges,
+    };
+  }
+  type ActiveSnapshot = ReturnType<typeof snapshotActiveState>;
+
+  function applyActiveSnapshot(snap: ActiveSnapshot) {
+    currentPath = snap.currentPath;
+    isDirty = snap.isDirty;
+    status = snap.status;
+    activeTool = snap.activeTool;
+    zoomPercent = snap.zoomPercent;
+    scaleLabel = snap.scaleLabel;
+    outlineEntries = snap.outlineEntries;
+    outlineStatus = snap.outlineStatus;
+    outlineColorMenuId = snap.outlineColorMenuId;
+    collapsedOutlineIds = snap.collapsedOutlineIds;
+    activeOutlineEntryId = snap.activeOutlineEntryId;
+    lastActivatedOutlineEntry = snap.lastActivatedOutlineEntry;
+    bookmarkEntries = snap.bookmarkEntries;
+    bookmarkStatus = snap.bookmarkStatus;
+    editingBookmarkId = snap.editingBookmarkId;
+    activeBookmarkId = snap.activeBookmarkId;
+    bookmarkColorMenuId = snap.bookmarkColorMenuId;
+    hoveredBookmarkId = snap.hoveredBookmarkId;
+    bookmarkRailHoverCue = snap.bookmarkRailHoverCue;
+    bookmarkRailLayoutVersion = snap.bookmarkRailLayoutVersion;
+    pendingBookmarkRailMarkerRects = snap.pendingBookmarkRailMarkerRects;
+    annotationEntries = snap.annotationEntries;
+    annotationStatus = snap.annotationStatus;
+    selectedAnnotationEntryId = snap.selectedAnnotationEntryId;
+    selectedPersistedAnnotationKey = snap.selectedPersistedAnnotationKey;
+    annotationFocusBox = snap.annotationFocusBox;
+    lastAnnotationPointerClick = snap.lastAnnotationPointerClick;
+    selectedAnnotationKind = snap.selectedAnnotationKind;
+    selectedAnnotationColor = snap.selectedAnnotationColor;
+    hasSelectedHighlight = snap.hasSelectedHighlight;
+    selectedHighlightColor = snap.selectedHighlightColor;
+    rememberedSelectionText = snap.rememberedSelectionText;
+    rememberedSelectionRanges = snap.rememberedSelectionRanges;
+  }
+
+  function captureActiveSession() {
+    const session = activeSession;
+    if (!session) return;
+    session.savedScrollTop = containerEl?.scrollTop ?? session.savedScrollTop;
+    session.snapshot = snapshotActiveState();
+  }
+
+  function pointActiveRefsTo(session: DocumentSession) {
+    pdfViewer = session.pdfViewer;
+    pdfLinkService = session.pdfLinkService;
+    pdfDocument = session.pdfDocument;
+    annotationEditorUIManager = session.annotationEditorUIManager;
+    if (session.containerEl) containerEl = session.containerEl;
+    if (session.viewerEl) viewerEl = session.viewerEl;
+    annotationDetailCache = session.annotationDetailCache;
+    pendingDeletedPersistedAnnotationKeys = session.pendingDeletedPersistedAnnotationKeys;
+    persistedAnnotationKeyByEditorId = session.persistedAnnotationKeyByEditorId;
+    persistedPositionByKey = session.persistedPositionByKey;
+  }
+
+  function syncWindowTitle() {
+    if (!isTauriRuntime()) return;
+    const label = activeSession?.label ?? "";
+    const title = (label.split(/[\\/]/).pop() || label) || "Chive";
+    void getCurrentWindow()
+      .setTitle(title)
+      .catch(() => {});
+  }
+
+  async function switchToTab(id: string) {
+    if (id === activeSessionId) return;
+    const next = documentSessions.find((session) => session.id === id);
+    if (!next) return;
+    // Defensive: drop any editor selection on the outgoing manager before we
+    // re-point refs (pdfjs-quirks stale-signal guard).
+    unselectAllIgnoringPdfjsSignalBug();
+    captureActiveSession();
+    if (annotationRefreshTimer) {
+      clearTimeout(annotationRefreshTimer);
+      annotationRefreshTimer = null;
+    }
+    activeSessionId = id;
+    pointActiveRefsTo(next);
+    if (next.snapshot) applyActiveSnapshot(next.snapshot as ActiveSnapshot);
+    await tick(); // let the incoming container become visible before measuring
+    if (pdfViewer && containerEl) {
+      containerEl.scrollTop = next.savedScrollTop;
+      pdfViewer.update();
+      pdfViewer.forceRendering(undefined);
+    }
+    syncWindowTitle();
+    void menuControls?.setSaveEnabled(Boolean(pdfDocument));
+  }
+
+  function tabDirtyState(session: DocumentSession): boolean {
+    if (session.id === activeSessionId) return isDirty;
+    return Boolean((session.snapshot as ActiveSnapshot | null)?.isDirty);
+  }
+
+  async function openDocumentInNewTab(bytes: Uint8Array, label: string, path: string | null = null) {
+    if (path) {
+      const existing = findTabIdByPath(documentSessions, path);
+      if (existing) {
+        await switchToTab(existing);
+        return existing;
+      }
+    }
+    await loadPdfBytes(bytes, label, { newTab: true, path });
+    currentPath = path ?? "";
+    isDirty = false;
+    activeTool = "none";
+    return activeSessionId ?? "";
+  }
+
+  async function closeTab(id: string): Promise<"closed"> {
+    const session = documentSessions.find((entry) => entry.id === id);
+    if (!session) return "closed";
+    const nextActiveId = activeIdAfterClose(
+      documentSessions.map((entry) => entry.id),
+      id,
+      activeSessionId,
+    );
+    const wasActive = id === activeSessionId;
+    teardownSessionViewer(session);
+    documentSessions = documentSessions.filter((entry) => entry.id !== id);
+    if (wasActive) {
+      activeSessionId = nextActiveId;
+      const next = nextActiveId ? documentSessions.find((entry) => entry.id === nextActiveId) : null;
+      if (next) {
+        pointActiveRefsTo(next);
+        if (next.snapshot) applyActiveSnapshot(next.snapshot as ActiveSnapshot);
+        await tick();
+        if (pdfViewer && containerEl) {
+          containerEl.scrollTop = next.savedScrollTop;
+          pdfViewer.update();
+          pdfViewer.forceRendering(undefined);
+        }
+      } else {
+        resetActiveDocumentState();
+      }
+      syncWindowTitle();
+      void menuControls?.setSaveEnabled(Boolean(pdfDocument));
+    }
+    return "closed";
+  }
+
+  function reorderTabs(from: number, to: number) {
+    const order = moveTab(
+      documentSessions.map((entry) => entry.id),
+      from,
+      to,
+    );
+    documentSessions = order.map((id) => documentSessions.find((entry) => entry.id === id)!);
+  }
+
+  async function loadPdfBytes(
+    bytes: Uint8Array,
+    label: string,
+    options: { newTab?: boolean; path?: string | null } = {},
+  ) {
+    const { newTab = false, path = null } = options;
     const loadingTask = pdfjsLib.getDocument({ data: bytes, wasmUrl: pdfjsWasmUrl });
     const nextDocument = await loadingTask.promise;
 
-    teardownViewer();
+    const openInNewTab = newTab && documentSessions.length > 0;
+    if (openInNewTab) {
+      // Keep the current tab alive; preserve its UI state for a later return.
+      captureActiveSession();
+    } else if (activeSession) {
+      // Replace the active tab's document in place (D8: sample/harness reloads).
+      teardownSessionViewer(activeSession);
+    }
+    resetActiveDocumentState();
     rememberedSelectionText = "";
     rememberedSelectionRanges = [];
+
+    const session = new DocumentSession(crypto.randomUUID(), path, label);
+    annotationDetailCache = session.annotationDetailCache;
+    pendingDeletedPersistedAnnotationKeys = session.pendingDeletedPersistedAnnotationKeys;
+    persistedAnnotationKeyByEditorId = session.persistedAnnotationKeyByEditorId;
+    persistedPositionByKey = session.persistedPositionByKey;
+
+    if (openInNewTab) {
+      documentSessions = [...documentSessions, session];
+    } else if (activeSessionId) {
+      const index = documentSessions.findIndex((entry) => entry.id === activeSessionId);
+      const nextSessions = [...documentSessions];
+      if (index >= 0) nextSessions[index] = session;
+      else nextSessions.push(session);
+      documentSessions = nextSessions;
+    } else {
+      documentSessions = [session];
+    }
+    activeSessionId = session.id;
+    await tick(); // bind session.containerEl / session.viewerEl from the {#each}
+
+    containerEl = session.containerEl!;
+    viewerEl = session.viewerEl!;
 
     const eventBus = new EventBus();
     const linkService = new PDFLinkService({ eventBus });
     pdfLinkService = linkService;
-    const session = new DocumentSession(crypto.randomUUID(), null, label);
     session.eventBus = eventBus;
     session.pdfLinkService = linkService;
-    documentSessions = [session];
-    activeSessionId = session.id;
+    const isActive = () => activeSessionId === session.id;
     eventBus.on("annotationeditoruimanager", (event: { uiManager: AnnotationEditorUIManager }) => {
-      annotationEditorUIManager = event.uiManager;
       session.annotationEditorUIManager = event.uiManager;
+      if (isActive()) annotationEditorUIManager = event.uiManager;
     });
 
     pdfViewer = new PDFViewer({
-      container: containerEl,
-      viewer: viewerEl,
+      container: session.containerEl!,
+      viewer: session.viewerEl!,
       eventBus,
       linkService,
       annotationEditorMode: editorModes.none,
@@ -607,22 +905,22 @@
     } as ConstructorParameters<typeof PDFViewer>[0] & { enableHighlightFloatingButton: boolean });
     linkService.setViewer(pdfViewer);
     session.pdfViewer = pdfViewer;
-    session.containerEl = containerEl;
-    session.viewerEl = viewerEl;
     pdfViewer.setDocument(nextDocument);
     linkService.setDocument(nextDocument, null);
     pdfDocument = nextDocument;
     session.pdfDocument = nextDocument;
     void loadOutline(nextDocument);
+    syncWindowTitle();
 
     eventBus.on("pagesinit", () => {
-      if (!pdfViewer) return;
-      pdfViewer.currentScaleValue = "page-width";
-      pdfViewer.update();
-      pdfViewer.forceRendering(undefined);
+      const viewer = session.pdfViewer;
+      if (!viewer || !isActive()) return;
+      viewer.currentScaleValue = "page-width";
+      viewer.update();
+      viewer.forceRendering(undefined);
       requestAnimationFrame(() => {
-        pdfViewer?.update();
-        pdfViewer?.forceRendering(undefined);
+        viewer.update();
+        viewer.forceRendering(undefined);
       });
       scaleLabel = "Fit Width";
       status = `Rendered ${label}`;
@@ -638,14 +936,19 @@
       "annotationeditorlayerrendered",
     ]) {
       eventBus.on(eventName, () => {
+        if (!isActive()) return;
         refreshBookmarkRailLayout();
         scheduleAnnotationSidebarRefresh(120);
       });
     }
-    eventBus.on("editingstateschanged", () => syncSelectedEditorState());
-    eventBus.on("annotationeditorparamschanged", () => syncSelectedEditorState());
+    eventBus.on("editingstateschanged", () => {
+      if (isActive()) syncSelectedEditorState();
+    });
+    eventBus.on("annotationeditorparamschanged", () => {
+      if (isActive()) syncSelectedEditorState();
+    });
     eventBus.on("scalechanging", (event: { scale: number }) => {
-      zoomPercent = Math.round(event.scale * 100);
+      if (isActive()) zoomPercent = Math.round(event.scale * 100);
     });
   }
 
@@ -1297,7 +1600,7 @@
 
   function bookmarkRailActionDmzHit(candidateRects: BookmarkRailRect[]) {
     const markerRects = [
-      ...[...document.querySelectorAll<HTMLElement>(".bookmark-page-marker")].map((marker) => {
+      ...[...containerEl.querySelectorAll<HTMLElement>(".bookmark-page-marker")].map((marker) => {
         const rect = marker.getBoundingClientRect();
         return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
       }),
@@ -1728,7 +2031,7 @@
   }
 
   async function scrollToPage(pageNumber: number) {
-    const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const pageElement = containerEl.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
     if (pageElement) {
       containerEl.scrollTop = Math.max(pageElement.offsetTop - 20, 0);
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -1757,7 +2060,7 @@
     selectedPersistedAnnotationKey = null;
     for (let attempt = 0; attempt < 12; attempt += 1) {
       if (entry.kind === "ink" && activeTool !== "none") {
-        const exactElement = document.getElementById(pdfAnnotationElementId(entry.sourceId));
+        const exactElement = activeElementById(pdfAnnotationElementId(entry.sourceId));
         if (!isUsableAnnotationElement(exactElement, entry)) {
           setPdfjsEditorMode("none");
           await new Promise((resolve) => setTimeout(resolve, 150));
@@ -1851,7 +2154,7 @@
 
   function renderedAnnotationShapeFocusBox(entry: AnnotationEntry): FocusBox | null {
     if (!isInkHighlightEntry(entry) || !containerEl) return null;
-    const element = document.getElementById(pdfAnnotationElementId(entry.sourceId));
+    const element = activeElementById(pdfAnnotationElementId(entry.sourceId));
     if (!(element instanceof HTMLElement)) return null;
     const shapeRects = [...element.querySelectorAll("path, polyline, polygon, line, rect, circle, ellipse")]
       .map((shape) => shape.getBoundingClientRect())
@@ -1875,10 +2178,10 @@
   function clearLocateOnlyEditorSelection() {
     unselectAllIgnoringPdfjsSignalBug();
     setPdfjsEditorMode(activeTool);
-    document.querySelectorAll<HTMLElement>(".editToolbar:not(.hidden)").forEach((toolbar) => {
+    containerEl.querySelectorAll<HTMLElement>(".editToolbar:not(.hidden)").forEach((toolbar) => {
       toolbar.classList.add("hidden");
     });
-    document.querySelectorAll<HTMLElement>(".selectedEditor").forEach((editor) => {
+    containerEl.querySelectorAll<HTMLElement>(".selectedEditor").forEach((editor) => {
       editor.classList.remove("selectedEditor");
     });
   }
@@ -1981,7 +2284,7 @@
 
   function annotationTargetElementForEntry(entry: AnnotationEntry) {
     const exactElement =
-      entry.source === "pdf" ? document.getElementById(pdfAnnotationElementId(entry.sourceId)) : null;
+      entry.source === "pdf" ? activeElementById(pdfAnnotationElementId(entry.sourceId)) : null;
     if (isUsableAnnotationElement(exactElement, entry)) {
       return exactElement;
     }
@@ -2032,7 +2335,7 @@
         : kind === "freetext"
           ? `.page[data-page-number="${pageNumber}"] .freeTextAnnotation, .page[data-page-number="${pageNumber}"] .freeTextEditor`
           : `.page[data-page-number="${pageNumber}"] .inkAnnotation, .page[data-page-number="${pageNumber}"] .inkEditor`;
-    return [...document.querySelectorAll<HTMLElement>(selector)]
+    return [...containerEl.querySelectorAll<HTMLElement>(selector)]
       .filter((element) => {
         const rect = element.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
@@ -2129,7 +2432,7 @@
     editorId: string,
     options: { scrollIntoView?: boolean; showFocusBox?: boolean } = {},
   ) {
-    const element = document.getElementById(editorId);
+    const element = activeElementById(editorId);
     if (element instanceof HTMLElement) {
       await focusAnnotationElement(element, options);
     }
@@ -2252,7 +2555,7 @@
       return directElement;
     }
     const editorId = findEditorElementIdAtPoint(selector, clientX, clientY);
-    const editorElement = editorId ? document.getElementById(editorId) : null;
+    const editorElement = editorId ? activeElementById(editorId) : null;
     return editorElement instanceof HTMLElement ? editorElement : null;
   }
 
@@ -2496,7 +2799,7 @@
   }
 
   function findEditorElementIdAtPoint(selector: string, clientX: number, clientY: number) {
-    const matchingEditors = [...document.querySelectorAll<HTMLElement>(selector)]
+    const matchingEditors = [...containerEl.querySelectorAll<HTMLElement>(selector)]
       .map((element) => ({
         element,
         rect: element.getBoundingClientRect(),
@@ -2539,8 +2842,8 @@
       .map((entry) => {
         const element =
           entry.source === "live"
-            ? document.getElementById(entry.sourceId)
-            : document.getElementById(pdfAnnotationElementId(entry.sourceId));
+            ? activeElementById(entry.sourceId)
+            : activeElementById(pdfAnnotationElementId(entry.sourceId));
         const shapeRects = [...(element?.querySelectorAll("path, polyline, polygon, line, rect, circle, ellipse") ?? [])]
           .map((shape) => shape.getBoundingClientRect())
           .filter((rect) => rect.width > 0 || rect.height > 0);
@@ -2569,7 +2872,7 @@
     const boundsMatches = annotationEntries
       .filter((entry) => entry.kind === "ink" && predicate(entry) && entry.bounds)
       .map((entry) => {
-        const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
+        const pageElement = containerEl.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
         if (!pageElement || !entry.bounds) return null;
         const rect = pageElement.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return null;
@@ -2592,7 +2895,7 @@
     const matches = annotationEntries
       .filter((entry) => entry.kind !== "ink" && entry.bounds)
       .map((entry) => {
-        const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
+        const pageElement = containerEl.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
         if (!pageElement || !entry.bounds) return null;
         const rect = pageElement.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return null;
@@ -3190,7 +3493,7 @@
   }
 
   function syncInkEditorHitAreas() {
-    document.querySelectorAll(".ink-hit-area").forEach((element) => element.remove());
+    containerEl?.querySelectorAll(".ink-hit-area").forEach((element) => element.remove());
     if (!annotationEditorUIManager || !pdfDocument) return;
     for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
       for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
@@ -3202,7 +3505,7 @@
   }
 
   function addInkEditorHitArea(editor: AnnotationEditor) {
-    const editorElement = document.getElementById(editor.id);
+    const editorElement = activeElementById(editor.id);
     if (!(editorElement instanceof HTMLElement)) return;
     const serialized = editor.serialize?.(false);
     const rect = numbersFromUnknown(serialized?.rect);
@@ -3594,7 +3897,7 @@
   }
 
   function selectFirstText() {
-    const spans = [...document.querySelectorAll<HTMLElement>(".textLayer span")];
+    const spans = [...containerEl.querySelectorAll<HTMLElement>(".textLayer span")];
     const child = spans
       .flatMap((node) => [...node.childNodes])
       .find((node) => node.nodeType === Node.TEXT_NODE && (node.textContent?.trim().length ?? 0) > 8);
@@ -3705,12 +4008,12 @@
       pdfjsLib.AnnotationEditorParamsType.FREETEXT_COLOR,
       freeTextColors[defaultFreeTextColor],
     );
-    const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const pageElement = containerEl.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
     if (pageElement) {
       containerEl.scrollTop = Math.max(pageElement.offsetTop - 20, 0);
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
-    const layerElement = document.querySelector<HTMLElement>(
+    const layerElement = containerEl.querySelector<HTMLElement>(
       `.page[data-page-number="${pageNumber}"] .annotationEditorLayer`,
     );
     if (!layerElement) {
@@ -3723,7 +4026,7 @@
     }
     const createdEditor = layer.createAndAddNewEditor({ offsetX: 160, offsetY: 220 }, false);
     await new Promise((resolve) => setTimeout(resolve, 100));
-    const editor = document.querySelector<HTMLElement>(
+    const editor = containerEl.querySelector<HTMLElement>(
       `.page[data-page-number="${pageNumber}"] .freeTextEditor [contenteditable="true"], .page[data-page-number="${pageNumber}"] .freeTextEditor .internal`,
     );
     if (!editor) {
@@ -3760,7 +4063,7 @@
     }
     editor.enterInEditMode?.();
     await new Promise((resolve) => setTimeout(resolve, 100));
-    const editorElement = document.getElementById(editor.id);
+    const editorElement = activeElementById(editor.id);
     const textElement = editorElement?.querySelector<HTMLElement>(".internal, [contenteditable='true']");
     if (!textElement) {
       status = "Could not find selected free-text editor content.";
@@ -3802,10 +4105,21 @@
     return true;
   }
 
-  function teardownViewer() {
-    unselectAllIgnoringPdfjsSignalBug();
-    pdfViewer?.setDocument(null as never);
-    (pdfDocument as { destroy?: () => void } | null)?.destroy?.();
+  // Tear down one tab's live pdf.js viewer (on replace-in-place or tab close).
+  // Destroys that session's document and empties its viewer DOM; does not touch
+  // the shell's scalar state or the documentSessions list.
+  function teardownSessionViewer(session: DocumentSession) {
+    unselectAllIgnoringPdfjsSignalBug(session.annotationEditorUIManager);
+    session.pdfViewer?.setDocument(null as never);
+    (session.pdfDocument as { destroy?: () => void } | null)?.destroy?.();
+    session.viewerEl?.replaceChildren();
+    session.close();
+  }
+
+  // Reset the shell's per-document scalar state to the empty-document baseline.
+  // Caches are re-pointed at the incoming session on load, so they are not
+  // cleared here; the outgoing session's caches are cleared by its close().
+  function resetActiveDocumentState() {
     pdfViewer = null;
     pdfLinkService = null;
     pdfDocument = null;
@@ -3829,18 +4143,10 @@
     activeTool = "none";
     lastActivatedOutlineEntry = null;
     annotationFocusBox = null;
-    annotationDetailCache.clear();
-    pendingDeletedPersistedAnnotationKeys.clear();
-    persistedAnnotationKeyByEditorId.clear();
-    persistedPositionByKey.clear();
     if (annotationRefreshTimer) {
       clearTimeout(annotationRefreshTimer);
       annotationRefreshTimer = null;
     }
-    for (const session of documentSessions) session.close();
-    documentSessions = [];
-    activeSessionId = null;
-    viewerEl.replaceChildren();
   }
 
   function defaultSavePath() {
@@ -4235,13 +4541,17 @@
       {#if !pdfDocument}
         <div class="reader-empty">Open a PDF to start reading (⌘O).</div>
       {/if}
-    <div
-      class="pdf-container"
-      class:annotation-tool-active={isAnnotationCreationMode()}
-      bind:this={containerEl}
-      role="region"
-      aria-label="PDF pages"
-    >
+    <div class="pdf-stage" bind:this={pdfStageEl}>
+      {#each documentSessions as session (session.id)}
+      <div
+        class="pdf-container"
+        class:annotation-tool-active={session.id === activeSessionId && isAnnotationCreationMode()}
+        style:display={session.id === activeSessionId ? undefined : "none"}
+        bind:this={session.containerEl}
+        role="region"
+        aria-label="PDF pages"
+      >
+      {#if session.id === activeSessionId}
       {#if annotationFocusBox}
         <div
           class="annotation-focus-box"
@@ -4284,7 +4594,10 @@
           +
         </div>
       {/if}
-      <div class="pdfViewer" bind:this={viewerEl}></div>
+      {/if}
+        <div class="pdfViewer" bind:this={session.viewerEl}></div>
+      </div>
+      {/each}
     </div>
     </section>
   </main>
@@ -4693,6 +5006,10 @@
     clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 72%, 0 100%);
   }
 
+  .pdf-stage {
+    position: absolute;
+    inset: 0;
+  }
   .pdf-container {
     position: absolute;
     inset: 0;
