@@ -41,6 +41,7 @@ type SpikeDebugHarnessDeps = {
   getPdfDocument: () => DebugPdfDocument | null;
   getPdfViewer: () => DebugPdfViewer | null;
   getAnnotationEditorUIManager: () => AnnotationEditorUIManager | null;
+  getContainerEl: () => HTMLElement | null;
   getDomDocument: () => Document;
   getWindow: () => Window;
   getStatsSnapshot: () => DebugStatsSnapshot;
@@ -163,7 +164,7 @@ export function createSpikeDebugHarness(deps: SpikeDebugHarnessDeps): SpikeDebug
     if (!annotationEditorUIManager || !pdfDocument) {
       return [];
     }
-    const selectedEditorId = deps.getDomDocument().querySelector<HTMLElement>(".selectedEditor")?.id ?? null;
+    const selectedEditorId = deps.getContainerEl()?.querySelector<HTMLElement>(".selectedEditor")?.id ?? null;
     const entries: Record<string, unknown>[] = [];
     for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
       for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
@@ -189,6 +190,8 @@ export function createSpikeDebugHarness(deps: SpikeDebugHarnessDeps): SpikeDebug
     const storage = pdfDocument?.annotationStorage;
     const selectedEditor = deps.getAnnotationEditorUIManager()?.firstSelectedEditor;
     const document = deps.getDomDocument();
+    const container = deps.getContainerEl();
+    const queryAll = (selector: string) => (container ? container.querySelectorAll(selector) : document.querySelectorAll(selector));
     return {
       pages: pdfDocument?.numPages ?? 0,
       currentPageNumber: deps.getPdfViewer()?.currentPageNumber ?? null,
@@ -196,13 +199,13 @@ export function createSpikeDebugHarness(deps: SpikeDebugHarnessDeps): SpikeDebug
       selectedEditorType: selectedEditor?.editorType ?? null,
       selectedEditorColor: selectedEditor?.color ?? null,
       selectedText: document.getSelection()?.toString() ?? "",
-      canvases: document.querySelectorAll(".page canvas").length,
-      textLayerSpans: document.querySelectorAll(".textLayer span").length,
-      annotationEditorLayers: document.querySelectorAll(".annotationEditorLayer").length,
-      highlightEditors: document.querySelectorAll(".highlightEditor").length,
-      freeTextEditors: document.querySelectorAll(".freeTextEditor").length,
-      inkEditors: document.querySelectorAll(".inkEditor").length,
-      visibleEditorToolbars: document.querySelectorAll(".editToolbar:not(.hidden)").length,
+      canvases: queryAll(".page canvas").length,
+      textLayerSpans: queryAll(".textLayer span").length,
+      annotationEditorLayers: queryAll(".annotationEditorLayer").length,
+      highlightEditors: queryAll(".highlightEditor").length,
+      freeTextEditors: queryAll(".freeTextEditor").length,
+      inkEditors: queryAll(".inkEditor").length,
+      visibleEditorToolbars: queryAll(".editToolbar:not(.hidden)").length,
       annotationStorageSize: storage?.size ?? 0,
       annotationStorageKeys: storage?.serializable?.map ? [...storage.serializable.map.keys()] : [],
     };

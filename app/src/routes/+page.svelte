@@ -129,6 +129,7 @@
     type BookmarkRailRect,
   } from "$lib/pdf/bookmark-rail-geometry";
   import { createSpikeDebugHarness } from "$lib/debug/spike-harness";
+  import { DocumentSession } from "$lib/tabs/document-session.svelte";
 
   if (import.meta.env.VITE_WDIO_TAURI === "1" && typeof window !== "undefined") {
     void import("@wdio/tauri-plugin");
@@ -165,102 +166,49 @@
   const bookmarkTitleLookaheadPdfPoints = 180;
   const bookmarkTitleWordCount = 4;
 
-  let containerEl: HTMLDivElement;
-  let viewerEl: HTMLDivElement;
-  let pdfViewer: PDFViewer | null = null;
-  let pdfLinkService: PDFLinkService | null = null;
-  let pdfDocument = $state<PdfDocument | null>(null);
-  let annotationEditorUIManager: AnnotationEditorUIManager | null = null;
-  let outlineEntries = $state<OutlineEntry[]>([]);
-  let outlineStatus = $state("Open a PDF to inspect its outline.");
-  let outlineColorMenuId = $state<string | null>(null);
-  let collapsedOutlineIds = $state<string[]>([]);
-  let activeOutlineEntryId = $state<string | null>(null);
+  const activeSession = new DocumentSession();
   let navigationTab = $state<NavigationTab>("outline");
-  let bookmarkEntries = $state<BookmarkEntry[]>([]);
-  let bookmarkStatus = $state("Open a PDF to inspect bookmarks.");
-  let editingBookmarkId = $state<string | null>(null);
-  let activeBookmarkId = $state<string | null>(null);
-  let bookmarkColorMenuId = $state<string | null>(null);
-  let pendingBookmarkRailMarkerRects: BookmarkRailRect[] = [];
-  let bookmarkRailHoverCue = $state<{
-    pageNumber: number;
-    focusLeft: number;
-    focusTop: number;
-    hintLeft: number;
-    hintTop: number;
-  } | null>(null);
-  let hoveredBookmarkId = $state<string | null>(null);
-  let bookmarkRailLayoutVersion = $state(0);
-  let annotationEntries = $state<AnnotationEntry[]>([]);
-  let annotationStatus = $state("Open a PDF to inspect annotations.");
-  let selectedAnnotationEntryId = $state<string | null>(null);
-  let selectedPersistedAnnotationKey: string | null = null;
-  let annotationFocusBox = $state<FocusBox | null>(null);
-  let lastAnnotationPointerClick:
-    | { entryId: string; timeStamp: number; clientX: number; clientY: number }
-    | null = null;
-  let currentPath = $state("");
-  let status = $state("Open a PDF, add highlight/text/ink annotations, then save.");
-  let activeTool = $state<EditorTool>("none");
   let defaultHighlightColor = $state<HighlightColorName>("yellow");
   let defaultFreeTextColor = $state<FreeTextColorName>("yellow");
   let defaultInkColor = $state<InkColorName>("red");
   let defaultInkThickness = $state(3);
   let defaultInkOpacity = $state(1);
-  let selectedAnnotationKind = $state<SelectedAnnotationKind>(null);
-  let selectedAnnotationColor = $state<string | null>(null);
-  let lastActivatedOutlineEntry: OutlineEntry | null = null;
-  let hasSelectedHighlight = $state(false);
-  let selectedHighlightColor = $state<HighlightColorName | null>(null);
-  let scaleLabel = $state("Fit Width");
-  let isBusy = $state(false);
-  let isDirty = $state(false);
-  let rememberedSelectionText = "";
-  let rememberedSelectionRanges: Range[] = [];
-  let annotationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-  const annotationDetailCache = new Map<string, string>();
-  const pendingDeletedPersistedAnnotationKeys = new Set<string>();
-  const persistedAnnotationKeyByEditorId = new Map<string, string>();
-  // Last known sidebar sort geometry per persisted annotation. When a live
-  // editor stands in for a persisted annotation (which is then hidden from
-  // the persisted list), measuring the editor DOM instead would shift its
-  // sort position ~30px and reshuffle the sidebar on a pure text edit.
-  const persistedPositionByKey = new Map<string, { top: number; left: number }>();
+
   const debugHarness = createSpikeDebugHarness({
-    getPdfDocument: () => pdfDocument,
-    getPdfViewer: () => pdfViewer,
-    getAnnotationEditorUIManager: () => annotationEditorUIManager,
+    getPdfDocument: () => activeSession.pdfDocument,
+    getPdfViewer: () => activeSession.pdfViewer,
+    getAnnotationEditorUIManager: () => activeSession.annotationEditorUIManager,
+    getContainerEl: () => activeSession.containerEl,
     getDomDocument: () => document,
     getWindow: () => window,
     getStatsSnapshot: () => ({
-      status,
-      outlineStatus,
-      activeTool,
+      status: activeSession.status,
+      outlineStatus: activeSession.outlineStatus,
+      activeTool: activeSession.activeTool,
       defaultHighlightColor,
       defaultFreeTextColor,
       defaultInkColor,
       defaultInkThickness,
       defaultInkOpacity,
       defaultFreeTextFontSize,
-      selectedAnnotationKind,
-      selectedPersistedAnnotationKey,
-      pendingDeletedPersistedAnnotationKeys: [...pendingDeletedPersistedAnnotationKeys],
-      selectedAnnotationColor,
-      hasSelectedHighlight,
-      selectedHighlightColor,
-      annotationFocusBox,
+      selectedAnnotationKind: activeSession.selectedAnnotationKind,
+      selectedPersistedAnnotationKey: activeSession.selectedPersistedAnnotationKey,
+      pendingDeletedPersistedAnnotationKeys: [...activeSession.pendingDeletedPersistedAnnotationKeys],
+      selectedAnnotationColor: activeSession.selectedAnnotationColor,
+      hasSelectedHighlight: activeSession.hasSelectedHighlight,
+      selectedHighlightColor: activeSession.selectedHighlightColor,
+      annotationFocusBox: activeSession.annotationFocusBox,
     }),
     persistPdf,
     loadPdf,
     loadPdfBytes,
     savePdfDocumentBytes,
     refreshAnnotationSidebar,
-    setCurrentPath: (path) => (currentPath = path),
-    setDirty: (dirty) => (isDirty = dirty),
-    setBusy: (busy) => (isBusy = busy),
-    setActiveTool: (tool) => (activeTool = tool),
-    setStatus: (nextStatus) => (status = nextStatus),
+    setCurrentPath: (path) => (activeSession.currentPath = path),
+    setDirty: (dirty) => (activeSession.isDirty = dirty),
+    setBusy: (busy) => (activeSession.isBusy = busy),
+    setActiveTool: (tool) => (activeSession.activeTool = tool),
+    setStatus: (nextStatus) => (activeSession.status = nextStatus),
   });
 
   const inkThicknesses = [1, 3, 8, 14] as const;
@@ -307,8 +255,8 @@
       if (!anchorElement?.closest(".textLayer")) {
         return;
       }
-      rememberedSelectionText = selectionText;
-      rememberedSelectionRanges = Array.from({ length: selection.rangeCount }, (_, index) =>
+      activeSession.rememberedSelectionText = selectionText;
+      activeSession.rememberedSelectionRanges = Array.from({ length: selection.rangeCount }, (_, index) =>
         selection.getRangeAt(index).cloneRange(),
       );
     };
@@ -317,9 +265,9 @@
     document.addEventListener("keydown", handleAnnotationEscapeKey, { capture: true });
     document.addEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
     document.addEventListener("keydown", handleFreeTextEditorKeydown, { capture: true });
-    containerEl?.addEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
-    containerEl?.addEventListener("pointerdown", handlePdfPointerDown, { capture: true });
-    containerEl?.addEventListener("dblclick", handlePdfDoubleClick, { capture: true });
+    activeSession.containerEl?.addEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
+    activeSession.containerEl?.addEventListener("pointerdown", handlePdfPointerDown, { capture: true });
+    activeSession.containerEl?.addEventListener("dblclick", handlePdfDoubleClick, { capture: true });
     let activeOutlineFrame = 0;
     const handlePdfScroll = () => {
       if (activeOutlineFrame) return;
@@ -329,16 +277,16 @@
       });
     };
     const handleRailClick = (event: MouseEvent) => void handlePdfContainerClick(event);
-    const clearRailHoverCue = () => (bookmarkRailHoverCue = null);
-    containerEl?.addEventListener("click", handleRailClick);
-    containerEl?.addEventListener("scroll", handlePdfScroll);
-    containerEl?.addEventListener("mousemove", handlePdfContainerMouseMove);
-    containerEl?.addEventListener("mouseleave", clearRailHoverCue);
+    const clearRailHoverCue = () => (activeSession.bookmarkRailHoverCue = null);
+    activeSession.containerEl?.addEventListener("click", handleRailClick);
+    activeSession.containerEl?.addEventListener("scroll", handlePdfScroll);
+    activeSession.containerEl?.addEventListener("mousemove", handlePdfContainerMouseMove);
+    activeSession.containerEl?.addEventListener("mouseleave", clearRailHoverCue);
     const teardownSpikeDebugApi = installSpikeDebugApi(window, {
       annotationSummary: debugHarness.annotationSummary,
-      annotationSidebarSummary: () => annotationEntries,
-      bookmarkSummary: () => bookmarkEntries,
-      outlineSummary: () => outlineEntries,
+      annotationSidebarSummary: () => activeSession.annotationEntries,
+      bookmarkSummary: () => activeSession.bookmarkEntries,
+      outlineSummary: () => activeSession.outlineEntries,
       activateFirstOutlineItem,
       activateFirstAnnotationItem,
       activateAnnotationBySourceId,
@@ -369,24 +317,24 @@
     // container mid-session (the spike never did), so the viewer and the
     // bookmark-rail geometry must be re-synced on container resize.
     const containerResizeObserver = new ResizeObserver(() => {
-      if (!pdfViewer) return;
-      pdfViewer.update();
+      if (!activeSession.pdfViewer) return;
+      activeSession.pdfViewer.update();
       refreshBookmarkRailLayout();
     });
-    if (containerEl) containerResizeObserver.observe(containerEl);
+    if (activeSession.containerEl) containerResizeObserver.observe(activeSession.containerEl);
     void installAppMenu({ openPdf, savePdf, savePdfAs }).then((controls) => {
       menuControls = controls;
-      void controls?.setSaveEnabled(Boolean(pdfDocument));
+      void controls?.setSaveEnabled(Boolean(activeSession.pdfDocument));
     });
     return () => {
       containerResizeObserver.disconnect();
-      containerEl?.removeEventListener("mouseleave", clearRailHoverCue);
-      containerEl?.removeEventListener("mousemove", handlePdfContainerMouseMove);
-      containerEl?.removeEventListener("scroll", handlePdfScroll);
-      containerEl?.removeEventListener("click", handleRailClick);
-      containerEl?.removeEventListener("dblclick", handlePdfDoubleClick, { capture: true });
-      containerEl?.removeEventListener("pointerdown", handlePdfPointerDown, { capture: true });
-      containerEl?.removeEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
+      activeSession.containerEl?.removeEventListener("mouseleave", clearRailHoverCue);
+      activeSession.containerEl?.removeEventListener("mousemove", handlePdfContainerMouseMove);
+      activeSession.containerEl?.removeEventListener("scroll", handlePdfScroll);
+      activeSession.containerEl?.removeEventListener("click", handleRailClick);
+      activeSession.containerEl?.removeEventListener("dblclick", handlePdfDoubleClick, { capture: true });
+      activeSession.containerEl?.removeEventListener("pointerdown", handlePdfPointerDown, { capture: true });
+      activeSession.containerEl?.removeEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
       if (activeOutlineFrame) cancelAnimationFrame(activeOutlineFrame);
       document.removeEventListener("keydown", handleFreeTextEditorKeydown, { capture: true });
       document.removeEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
@@ -398,18 +346,18 @@
   });
 
   function clearAnnotationFocusSelection(resetTool = false) {
-    if (resetTool && activeTool !== "none") {
+    if (resetTool && activeSession.activeTool !== "none") {
       setTool("none");
     }
-    annotationFocusBox = null;
-    selectedAnnotationEntryId = null;
-    selectedPersistedAnnotationKey = null;
-    selectedAnnotationKind = null;
-    selectedAnnotationColor = null;
-    hasSelectedHighlight = false;
-    selectedHighlightColor = null;
+    activeSession.annotationFocusBox = null;
+    activeSession.selectedAnnotationEntryId = null;
+    activeSession.selectedPersistedAnnotationKey = null;
+    activeSession.selectedAnnotationKind = null;
+    activeSession.selectedAnnotationColor = null;
+    activeSession.hasSelectedHighlight = false;
+    activeSession.selectedHighlightColor = null;
     unselectAllIgnoringPdfjsSignalBug();
-    setPdfjsEditorMode(activeTool);
+    setPdfjsEditorMode(activeSession.activeTool);
   }
 
   function blurFocusedAnnotationRow() {
@@ -423,7 +371,7 @@
     if (event.repeat || event.key !== "Escape" || isEditableKeyboardTarget(event.target)) {
       return;
     }
-    if (!annotationFocusBox && !selectedAnnotationEntryId && !selectedPersistedAnnotationKey && !selectedAnnotationKind) {
+    if (!activeSession.annotationFocusBox && !activeSession.selectedAnnotationEntryId && !activeSession.selectedPersistedAnnotationKey && !activeSession.selectedAnnotationKind) {
       return;
     }
     clearAnnotationFocusSelection(true);
@@ -437,7 +385,7 @@
     // A pointerdown outside an in-edit free text editor is about to blur it,
     // and pdf.js commits on blur — repair the DOM shape first so Shift+Enter
     // lines survive that commit (see normalizeFreeTextEditorLines).
-    const editingFreeText = document.querySelector<HTMLElement>(
+    const editingFreeText = activeSession.containerEl.querySelector<HTMLElement>(
       ".freeTextEditor .internal[contenteditable='true'], .freeTextEditor [contenteditable='true']",
     );
     if (editingFreeText && target instanceof Node && !editingFreeText.contains(target)) {
@@ -445,7 +393,7 @@
     }
     if (
       !(target instanceof Element) ||
-      (!annotationFocusBox && !selectedAnnotationEntryId && !selectedPersistedAnnotationKey && !selectedAnnotationKind)
+      (!activeSession.annotationFocusBox && !activeSession.selectedAnnotationEntryId && !activeSession.selectedPersistedAnnotationKey && !activeSession.selectedAnnotationKind)
     ) {
       return;
     }
@@ -462,7 +410,7 @@
     if (event.repeat || (event.key !== "Delete" && event.key !== "Backspace")) {
       return;
     }
-    if (!selectedAnnotationKind || isEditableKeyboardTarget(event.target)) {
+    if (!activeSession.selectedAnnotationKind || isEditableKeyboardTarget(event.target)) {
       return;
     }
     if (deleteSelectedAnnotation()) {
@@ -509,11 +457,11 @@
     event.stopImmediatePropagation();
     normalizeFreeTextEditorLines(textElement);
     editor.commit?.();
-    isDirty = true;
+    activeSession.isDirty = true;
     syncSelectedEditorState();
     void refreshAnnotationSidebar();
     queueEditorStateRefresh(150, 500);
-    status = "Edited selected free text. Save to persist it into the PDF.";
+    activeSession.status = "Edited selected free text. Save to persist it into the PDF.";
   }
 
   async function openPdf() {
@@ -528,39 +476,39 @@
   }
 
   async function loadPdf(path: string) {
-    isBusy = true;
-    status = "Loading PDF...";
+    activeSession.isBusy = true;
+    activeSession.status = "Loading PDF...";
     try {
       const rawBytes = await invoke<number[]>("read_pdf", { path });
       await loadPdfBytes(new Uint8Array(rawBytes), path);
-      currentPath = path;
-      isDirty = false;
-      activeTool = "none";
-      status = `Loaded ${path}`;
+      activeSession.currentPath = path;
+      activeSession.isDirty = false;
+      activeSession.activeTool = "none";
+      activeSession.status = `Loaded ${path}`;
     } catch (error) {
-      status = `Open failed: ${formatError(error)}`;
+      activeSession.status = `Open failed: ${formatError(error)}`;
     } finally {
-      isBusy = false;
+      activeSession.isBusy = false;
     }
   }
 
   async function loadSamplePdf() {
-    isBusy = true;
-    status = "Loading bundled sample PDF...";
+    activeSession.isBusy = true;
+    activeSession.status = "Loading bundled sample PDF...";
     try {
       const response = await fetch("/sample.pdf");
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       await loadPdfBytes(new Uint8Array(await response.arrayBuffer()), "sample.pdf");
-      currentPath = "sample.pdf";
-      isDirty = false;
-      activeTool = "none";
-      rememberedSelectionText = "";
-      rememberedSelectionRanges = [];
-      status = "Loaded bundled sample PDF.";
+      activeSession.currentPath = "sample.pdf";
+      activeSession.isDirty = false;
+      activeSession.activeTool = "none";
+      activeSession.rememberedSelectionText = "";
+      activeSession.rememberedSelectionRanges = [];
+      activeSession.status = "Loaded bundled sample PDF.";
     } catch (error) {
-      status = `Sample load failed: ${formatError(error)}`;
+      activeSession.status = `Sample load failed: ${formatError(error)}`;
     } finally {
-      isBusy = false;
+      activeSession.isBusy = false;
     }
   }
 
@@ -569,19 +517,19 @@
     const nextDocument = await loadingTask.promise;
 
     teardownViewer();
-    rememberedSelectionText = "";
-    rememberedSelectionRanges = [];
+    activeSession.rememberedSelectionText = "";
+    activeSession.rememberedSelectionRanges = [];
 
     const eventBus = new EventBus();
     const linkService = new PDFLinkService({ eventBus });
-    pdfLinkService = linkService;
+    activeSession.pdfLinkService = linkService;
     eventBus.on("annotationeditoruimanager", (event: { uiManager: AnnotationEditorUIManager }) => {
-      annotationEditorUIManager = event.uiManager;
+      activeSession.annotationEditorUIManager = event.uiManager;
     });
 
-    pdfViewer = new PDFViewer({
-      container: containerEl,
-      viewer: viewerEl,
+    activeSession.pdfViewer = new PDFViewer({
+      container: activeSession.containerEl,
+      viewer: activeSession.viewerEl,
       eventBus,
       linkService,
       annotationEditorMode: editorModes.none,
@@ -589,23 +537,23 @@
       annotationEditorHighlightColors:
         "red=#ffb3ab,orange=#ffd1a1,yellow=#fff35c,green=#7cf2aa,cyan=#a5ecf2,blue=#8ecbff,purple=#d7bfff,rose=#ffb6de",
     } as ConstructorParameters<typeof PDFViewer>[0] & { enableHighlightFloatingButton: boolean });
-    linkService.setViewer(pdfViewer);
-    pdfViewer.setDocument(nextDocument);
+    linkService.setViewer(activeSession.pdfViewer);
+    activeSession.pdfViewer.setDocument(nextDocument);
     linkService.setDocument(nextDocument, null);
-    pdfDocument = nextDocument;
+    activeSession.pdfDocument = nextDocument;
     void loadOutline(nextDocument);
 
     eventBus.on("pagesinit", () => {
-      if (!pdfViewer) return;
-      pdfViewer.currentScaleValue = "page-width";
-      pdfViewer.update();
-      pdfViewer.forceRendering(undefined);
+      if (!activeSession.pdfViewer) return;
+      activeSession.pdfViewer.currentScaleValue = "page-width";
+      activeSession.pdfViewer.update();
+      activeSession.pdfViewer.forceRendering(undefined);
       requestAnimationFrame(() => {
-        pdfViewer?.update();
-        pdfViewer?.forceRendering(undefined);
+        activeSession.pdfViewer?.update();
+        activeSession.pdfViewer?.forceRendering(undefined);
       });
-      scaleLabel = "Fit Width";
-      status = `Rendered ${label}`;
+      activeSession.scaleLabel = "Fit Width";
+      activeSession.status = `Rendered ${label}`;
       refreshBookmarkRailLayout();
       queueAnnotationSidebarRefresh(0);
       queueAnnotationSidebarRefresh(300);
@@ -625,16 +573,16 @@
     eventBus.on("editingstateschanged", () => syncSelectedEditorState());
     eventBus.on("annotationeditorparamschanged", () => syncSelectedEditorState());
     eventBus.on("scalechanging", (event: { scale: number }) => {
-      zoomPercent = Math.round(event.scale * 100);
+      activeSession.zoomPercent = Math.round(event.scale * 100);
     });
   }
 
   function scheduleAnnotationSidebarRefresh(delay = 120) {
-    if (annotationRefreshTimer) {
-      clearTimeout(annotationRefreshTimer);
+    if (activeSession.annotationRefreshTimer) {
+      clearTimeout(activeSession.annotationRefreshTimer);
     }
-    annotationRefreshTimer = setTimeout(() => {
-      annotationRefreshTimer = null;
+    activeSession.annotationRefreshTimer = setTimeout(() => {
+      activeSession.annotationRefreshTimer = null;
       void refreshAnnotationSidebar();
     }, delay);
   }
@@ -653,15 +601,15 @@
   }
 
   async function refreshAnnotationSidebar() {
-    if (!pdfDocument) {
-      annotationEntries = [];
-      annotationStatus = "Open a PDF to inspect annotations.";
+    if (!activeSession.pdfDocument) {
+      activeSession.annotationEntries = [];
+      activeSession.annotationStatus = "Open a PDF to inspect annotations.";
       return;
     }
     try {
       const pdfEntries = await getPdfAnnotationEntries();
       for (const entry of pdfEntries) {
-        persistedPositionByKey.set(persistedAnnotationKey(entry.page, entry.sourceId), {
+        activeSession.persistedPositionByKey.set(persistedAnnotationKey(entry.page, entry.sourceId), {
           top: entry.sortTop,
           left: entry.sortLeft,
         });
@@ -674,19 +622,19 @@
           left.sortLeft - right.sortLeft ||
           left.label.localeCompare(right.label),
       );
-      annotationEntries = merged;
-      annotationStatus = annotationCountLabel(merged.length);
+      activeSession.annotationEntries = merged;
+      activeSession.annotationStatus = annotationCountLabel(merged.length);
     } catch (error) {
-      annotationStatus = `Annotation scan failed: ${formatError(error)}`;
+      activeSession.annotationStatus = `Annotation scan failed: ${formatError(error)}`;
     }
   }
 
   async function getPdfAnnotationEntries() {
     const pages = await debugHarness.annotationSummary();
     return buildPdfAnnotationEntries({
-      pdfDocument,
+      pdfDocument: activeSession.pdfDocument,
       pages,
-      detailCache: annotationDetailCache,
+      detailCache: activeSession.annotationDetailCache,
       isHidden: isPersistedAnnotationHidden,
       fallbackText: textForAnnotationDom,
       fallbackPosition: annotationTargetPosition,
@@ -694,12 +642,12 @@
   }
 
   function getLiveAnnotationEntries(persistedEntries: AnnotationEntry[]) {
-    if (!annotationEditorUIManager || !pdfDocument) return [];
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfDocument) return [];
     return buildLiveAnnotationEntries({
-      pageCount: pdfDocument.numPages,
+      pageCount: activeSession.pdfDocument.numPages,
       persistedEntries,
-      detailCache: annotationDetailCache,
-      getEditors: (pageIndex) => annotationEditorUIManager?.getEditors(pageIndex) ?? [],
+      detailCache: activeSession.annotationDetailCache,
+      getEditors: (pageIndex) => activeSession.annotationEditorUIManager?.getEditors(pageIndex) ?? [],
       editorId: (editor) => editor.id,
       editorColor: (editor) => editor.color ?? null,
       isDeleted: (editor) => Boolean(editor.deleted),
@@ -711,7 +659,7 @@
         // A stand-in for a persisted annotation keeps the persisted sort
         // geometry: a text edit must not move the entry in the sidebar.
         const persistedKey = persistedAnnotationKeyForEditor(editor);
-        const cached = persistedKey ? persistedPositionByKey.get(persistedKey) : undefined;
+        const cached = persistedKey ? activeSession.persistedPositionByKey.get(persistedKey) : undefined;
         return cached ?? annotationTargetPosition(pageNumber, kind, targetIndex, editor.id);
       },
       boundsForEditor: (pageNumber, kind, targetIndex, editor) =>
@@ -722,25 +670,25 @@
 
   function isPersistedAnnotationHidden(pageNumber: number, sourceId: string) {
     return (
-      pendingDeletedPersistedAnnotationKeys.has(persistedAnnotationKey(pageNumber, sourceId)) ||
+      activeSession.pendingDeletedPersistedAnnotationKeys.has(persistedAnnotationKey(pageNumber, sourceId)) ||
       isPersistedAnnotationDeleted(sourceId) ||
       isPersistedAnnotationModified(pageNumber, sourceId)
     );
   }
 
   function isPersistedAnnotationDeleted(sourceId: string) {
-    if (!annotationEditorUIManager?.isDeletedAnnotationElement) return false;
+    if (!activeSession.annotationEditorUIManager?.isDeletedAnnotationElement) return false;
     const annotationElementId = pdfAnnotationElementId(sourceId);
     return (
-      annotationEditorUIManager.isDeletedAnnotationElement(annotationElementId) ||
-      annotationEditorUIManager.isDeletedAnnotationElement(sourceId)
+      activeSession.annotationEditorUIManager.isDeletedAnnotationElement(annotationElementId) ||
+      activeSession.annotationEditorUIManager.isDeletedAnnotationElement(sourceId)
     );
   }
 
   function isPersistedAnnotationModified(pageNumber: number, sourceId: string) {
-    if (!annotationEditorUIManager || !pdfDocument) return false;
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfDocument) return false;
     const pageIndex = pageNumber - 1;
-    for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+    for (const editor of activeSession.annotationEditorUIManager.getEditors(pageIndex)) {
       if (persistedSourceIdForEditor(editor) === sourceId && editorChangedExistingAnnotation(editor)) {
         return true;
       }
@@ -754,7 +702,7 @@
     const pageIndex = pageIndexForEditor(editor);
     return sourceId && pageIndex !== null
       ? persistedAnnotationKey(pageIndex + 1, sourceId)
-      : persistedAnnotationKeyByEditorId.get(editor.id) ?? null;
+      : activeSession.persistedAnnotationKeyByEditorId.get(editor.id) ?? null;
   }
 
   function isUnmodifiedEditorMirrorOfPersistedAnnotation(
@@ -786,7 +734,7 @@
   }
 
   function persistedAnnotationEntry(pageNumber: number, sourceId: string) {
-    return annotationEntries.find(
+    return activeSession.annotationEntries.find(
       (entry) => entry.source === "pdf" && entry.page === pageNumber && entry.sourceId === sourceId,
     );
   }
@@ -818,21 +766,21 @@
   function annotationEntryForEditorId(editorId: string | null) {
     if (!editorId) return null;
     return (
-      annotationEntries.find((entry) => entry.source === "live" && entry.sourceId === editorId) ??
+      activeSession.annotationEntries.find((entry) => entry.source === "live" && entry.sourceId === editorId) ??
       persistedAnnotationEntryForEditorId(editorId)
     );
   }
 
   function annotationEntryMatchesCurrentSelection(entry: AnnotationEntry) {
     if (entry.source === "live") {
-      return selectedAnnotationEntryId === entry.id;
+      return activeSession.selectedAnnotationEntryId === entry.id;
     }
-    return selectedPersistedAnnotationKey === persistedAnnotationKey(entry.page, entry.sourceId);
+    return activeSession.selectedPersistedAnnotationKey === persistedAnnotationKey(entry.page, entry.sourceId);
   }
 
   function isRepeatedAnnotationPointerClick(entry: AnnotationEntry, event: PointerEvent) {
-    const previous = lastAnnotationPointerClick;
-    lastAnnotationPointerClick = {
+    const previous = activeSession.lastAnnotationPointerClick;
+    activeSession.lastAnnotationPointerClick = {
       entryId: entry.id,
       timeStamp: event.timeStamp,
       clientX: event.clientX,
@@ -855,8 +803,8 @@
     const sourceId = sourceIdFromPdfAnnotationElementId(element.id);
     const pageNumber = pageNumberForAnnotationElement(element);
     if (!sourceId || !pageNumber) return null;
-    selectedPersistedAnnotationKey = persistedAnnotationKey(pageNumber, sourceId);
-    return selectedPersistedAnnotationKey;
+    activeSession.selectedPersistedAnnotationKey = persistedAnnotationKey(pageNumber, sourceId);
+    return activeSession.selectedPersistedAnnotationKey;
   }
 
   function editorChangedExistingAnnotation(editor: AnnotationEditor) {
@@ -869,11 +817,11 @@
     if (Number.isInteger(editor.pageIndex)) {
       return editor.pageIndex as number;
     }
-    if (!annotationEditorUIManager || !pdfDocument) {
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfDocument) {
       return null;
     }
-    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
-      for (const candidate of annotationEditorUIManager.getEditors(pageIndex)) {
+    for (let pageIndex = 0; pageIndex < activeSession.pdfDocument.numPages; pageIndex += 1) {
+      for (const candidate of activeSession.annotationEditorUIManager.getEditors(pageIndex)) {
         if (candidate.id === editor.id) {
           return pageIndex;
         }
@@ -956,11 +904,11 @@
   }
 
   async function loadOutline(document: PdfDocument) {
-    outlineEntries = [];
-    outlineStatus = "Loading outline...";
-    activeOutlineEntryId = null;
-    bookmarkEntries = [];
-    bookmarkStatus = "Loading bookmarks...";
+    activeSession.outlineEntries = [];
+    activeSession.outlineStatus = "Loading outline...";
+    activeSession.activeOutlineEntryId = null;
+    activeSession.bookmarkEntries = [];
+    activeSession.bookmarkStatus = "Loading bookmarks...";
     try {
       const documentWithOutline = document as PdfDocument & {
         getDestination: (id: string) => Promise<unknown[] | null>;
@@ -969,8 +917,8 @@
       };
       const rawOutline = await documentWithOutline.getOutline();
       if (!rawOutline || rawOutline.length === 0) {
-        outlineStatus = "This PDF has no outline.";
-        bookmarkStatus = bookmarkCountLabel(0);
+        activeSession.outlineStatus = "This PDF has no outline.";
+        activeSession.bookmarkStatus = bookmarkCountLabel(0);
         return;
       }
       const bookmarkRoot = rawOutline.find((item) => item.title?.trim() === bookmarkRootTitle);
@@ -981,28 +929,28 @@
             normalizeBookmarkEntry(documentWithOutline, item, `${index + 1}`),
           ),
         );
-        bookmarkEntries = sortBookmarkEntries(
+        activeSession.bookmarkEntries = sortBookmarkEntries(
           normalizedBookmarks.filter((entry): entry is BookmarkEntry => Boolean(entry)),
         );
       }
-      bookmarkStatus = bookmarkCountLabel(bookmarkEntries.length);
+      activeSession.bookmarkStatus = bookmarkCountLabel(activeSession.bookmarkEntries.length);
       if (documentOutline.length === 0) {
-        outlineStatus = "This PDF has no outline.";
+        activeSession.outlineStatus = "This PDF has no outline.";
         return;
       }
-      outlineEntries = await Promise.all(
+      activeSession.outlineEntries = await Promise.all(
         documentOutline.map((item, index) => normalizeOutlineEntry(documentWithOutline, item, `${index + 1}`)),
       );
-      collapsedOutlineIds = [];
-      const count = countOutlineEntries(outlineEntries);
-      const unavailableCount = countUnavailableOutlineEntries(outlineEntries);
-      outlineStatus =
+      activeSession.collapsedOutlineIds = [];
+      const count = countOutlineEntries(activeSession.outlineEntries);
+      const unavailableCount = countUnavailableOutlineEntries(activeSession.outlineEntries);
+      activeSession.outlineStatus =
         unavailableCount > 0
           ? `${count} outline ${count === 1 ? "item" : "items"}; ${unavailableCount} not navigable`
           : `${count} outline ${count === 1 ? "item" : "items"}`;
       requestAnimationFrame(refreshActiveOutlineFromScroll);
     } catch (error) {
-      outlineStatus = `Outline failed: ${formatError(error)}`;
+      activeSession.outlineStatus = `Outline failed: ${formatError(error)}`;
     }
   }
 
@@ -1072,45 +1020,45 @@
   }
 
   function updateOutlineColor(id: string, color: string | null) {
-    outlineEntries = updateOutlineEntryColor(outlineEntries, id, color);
-    outlineColorMenuId = null;
-    isDirty = true;
+    activeSession.outlineEntries = updateOutlineEntryColor(activeSession.outlineEntries, id, color);
+    activeSession.outlineColorMenuId = null;
+    activeSession.isDirty = true;
   }
 
   function isOutlineCollapsed(id: string) {
-    return collapsedOutlineIds.includes(id);
+    return activeSession.collapsedOutlineIds.includes(id);
   }
 
   function toggleOutlineCollapsed(id: string) {
-    collapsedOutlineIds = isOutlineCollapsed(id)
-      ? collapsedOutlineIds.filter((candidate) => candidate !== id)
-      : [...collapsedOutlineIds, id];
-    outlineColorMenuId = null;
+    activeSession.collapsedOutlineIds = isOutlineCollapsed(id)
+      ? activeSession.collapsedOutlineIds.filter((candidate) => candidate !== id)
+      : [...activeSession.collapsedOutlineIds, id];
+    activeSession.outlineColorMenuId = null;
   }
 
   function collapseAllOutlineItems() {
-    collapsedOutlineIds = flattenOutlineEntries(outlineEntries)
+    activeSession.collapsedOutlineIds = flattenOutlineEntries(activeSession.outlineEntries)
       .filter((entry) => entry.items.length > 0)
       .map((entry) => entry.id);
-    outlineColorMenuId = null;
+    activeSession.outlineColorMenuId = null;
   }
 
   function expandAllOutlineItems() {
-    collapsedOutlineIds = [];
-    outlineColorMenuId = null;
+    activeSession.collapsedOutlineIds = [];
+    activeSession.outlineColorMenuId = null;
   }
 
   function isActiveOutlineRow(id: string) {
-    return visibleActiveOutlineEntryId(outlineEntries, activeOutlineEntryId, isOutlineCollapsed) === id;
+    return visibleActiveOutlineEntryId(activeSession.outlineEntries, activeSession.activeOutlineEntryId, isOutlineCollapsed) === id;
   }
 
   function refreshActiveOutlineFromScroll() {
-    if (!containerEl || outlineEntries.length === 0) {
-      activeOutlineEntryId = null;
+    if (!activeSession.containerEl || activeSession.outlineEntries.length === 0) {
+      activeSession.activeOutlineEntryId = null;
       return;
     }
-    const anchorTop = containerEl.scrollTop + 96;
-    const pageElements = [...(viewerEl?.querySelectorAll<HTMLElement>(".page[data-page-number]") ?? [])]
+    const anchorTop = activeSession.containerEl.scrollTop + 96;
+    const pageElements = [...(activeSession.viewerEl?.querySelectorAll<HTMLElement>(".page[data-page-number]") ?? [])]
       .map((element) => ({ element, pageNumber: Number(element.dataset.pageNumber) }))
       .filter((entry) => Number.isInteger(entry.pageNumber) && entry.pageNumber > 0)
       .sort((left, right) => left.element.offsetTop - right.element.offsetTop);
@@ -1121,10 +1069,10 @@
       pageElements.filter(({ element }) => element.offsetTop <= anchorTop).at(-1) ??
       pageElements[0];
     if (!visiblePage) {
-      activeOutlineEntryId = null;
+      activeSession.activeOutlineEntryId = null;
       return;
     }
-    const flatEntries = flattenOutlineEntries(outlineEntries).filter((entry) => entry.pageNumber);
+    const flatEntries = flattenOutlineEntries(activeSession.outlineEntries).filter((entry) => entry.pageNumber);
     const pageHeight =
       flatEntries.find((entry) => entry.pageNumber === visiblePage.pageNumber)?.pageHeight ??
       visiblePage.element.offsetHeight;
@@ -1147,7 +1095,7 @@
         return (right.targetY ?? right.pageHeight ?? pageHeight) - (left.targetY ?? left.pageHeight ?? pageHeight);
       });
     const active = candidates.at(-1) ?? flatEntries[0] ?? null;
-    activeOutlineEntryId = active?.id ?? null;
+    activeSession.activeOutlineEntryId = active?.id ?? null;
   }
 
   async function resolveOutlinePageNumber(
@@ -1197,18 +1145,18 @@
   }
 
   async function createBookmarkForCurrentPage(editAfterCreate = false) {
-    if (!pdfDocument || !pdfViewer) {
-      status = "Open a PDF before creating bookmarks.";
+    if (!activeSession.pdfDocument || !activeSession.pdfViewer) {
+      activeSession.status = "Open a PDF before creating bookmarks.";
       return;
     }
-    const pageNumber = pdfViewer.currentPageNumber || 1;
+    const pageNumber = activeSession.pdfViewer.currentPageNumber || 1;
     const pageTarget = await bookmarkPageTarget(pageNumber);
     await createBookmarkFromTarget(pageTarget, editAfterCreate);
   }
 
   async function handlePdfContainerClick(event: MouseEvent) {
     if ((event.target as Element | null)?.closest("button, input")) return;
-    editingBookmarkId = null;
+    activeSession.editingBookmarkId = null;
     const cueHit = bookmarkRailHoverCueHitAtPoint(event.clientX, event.clientY);
     if (cueHit) {
       await createBookmarkAtPageRailPoint(cueHit.clientY, cueHit.pageNumber);
@@ -1217,7 +1165,7 @@
     const hit = bookmarkRailHitAtPoint(event.clientX, event.clientY);
     if (!hit) return;
     if (bookmarkRailPointConflicts(hit.pageElement, event.clientY)) {
-      bookmarkRailHoverCue = null;
+      activeSession.bookmarkRailHoverCue = null;
       return;
     }
     await createBookmarkAtPageRailPoint(event.clientY, hit.pageNumber);
@@ -1228,19 +1176,19 @@
       return;
     }
     const hit = bookmarkRailHitAtPoint(event.clientX, event.clientY);
-    if (!hit || !containerEl) {
-      bookmarkRailHoverCue = null;
+    if (!hit || !activeSession.containerEl) {
+      activeSession.bookmarkRailHoverCue = null;
       return;
     }
     if (bookmarkRailPointConflicts(hit.pageElement, event.clientY)) {
-      bookmarkRailHoverCue = null;
+      activeSession.bookmarkRailHoverCue = null;
       return;
     }
-    const containerRect = containerEl.getBoundingClientRect();
-    const pointerLeft = containerEl.scrollLeft + event.clientX - containerRect.left;
-    const pointerTop = containerEl.scrollTop + event.clientY - containerRect.top;
+    const containerRect = activeSession.containerEl.getBoundingClientRect();
+    const pointerLeft = activeSession.containerEl.scrollLeft + event.clientX - containerRect.left;
+    const pointerTop = activeSession.containerEl.scrollTop + event.clientY - containerRect.top;
     const pagePosition = pagePositionInContainer(hit.pageElement);
-    bookmarkRailHoverCue = {
+    activeSession.bookmarkRailHoverCue = {
       pageNumber: hit.pageNumber,
       focusLeft: pagePosition.left,
       focusTop: pointerTop,
@@ -1250,20 +1198,20 @@
   }
 
   function bookmarkRailHoverCueHitAtPoint(clientX: number, clientY: number) {
-    if (!bookmarkRailHoverCue || !containerEl) return null;
-    const containerRect = containerEl.getBoundingClientRect();
+    if (!activeSession.bookmarkRailHoverCue || !activeSession.containerEl) return null;
+    const containerRect = activeSession.containerEl.getBoundingClientRect();
     const focusCenter = {
-      x: containerRect.left + bookmarkRailHoverCue.focusLeft - containerEl.scrollLeft,
-      y: containerRect.top + bookmarkRailHoverCue.focusTop - containerEl.scrollTop,
+      x: containerRect.left + activeSession.bookmarkRailHoverCue.focusLeft - activeSession.containerEl.scrollLeft,
+      y: containerRect.top + activeSession.bookmarkRailHoverCue.focusTop - activeSession.containerEl.scrollTop,
     };
     const addCenter = {
-      x: containerRect.left + bookmarkRailHoverCue.hintLeft - containerEl.scrollLeft,
-      y: containerRect.top + bookmarkRailHoverCue.hintTop - containerEl.scrollTop,
+      x: containerRect.left + activeSession.bookmarkRailHoverCue.hintLeft - activeSession.containerEl.scrollLeft,
+      y: containerRect.top + activeSession.bookmarkRailHoverCue.hintTop - activeSession.containerEl.scrollTop,
     };
     const withinFocusCue = withinSquareCue(clientX, clientY, focusCenter.x, focusCenter.y, bookmarkRailFocusCueSizePx);
     const withinAddCue = withinSquareCue(clientX, clientY, addCenter.x, addCenter.y, bookmarkRailAddCueSizePx);
     return withinFocusCue || withinAddCue
-      ? { pageNumber: bookmarkRailHoverCue.pageNumber, clientY: focusCenter.y }
+      ? { pageNumber: activeSession.bookmarkRailHoverCue.pageNumber, clientY: focusCenter.y }
       : null;
   }
 
@@ -1277,11 +1225,11 @@
 
   function bookmarkRailActionDmzHit(candidateRects: BookmarkRailRect[]) {
     const markerRects = [
-      ...[...document.querySelectorAll<HTMLElement>(".bookmark-page-marker")].map((marker) => {
+      ...[...activeSession.containerEl.querySelectorAll<HTMLElement>(".bookmark-page-marker")].map((marker) => {
         const rect = marker.getBoundingClientRect();
         return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
       }),
-      ...pendingBookmarkRailMarkerRects,
+      ...activeSession.pendingBookmarkRailMarkerRects,
     ];
     return markerRects.some((markerRect) =>
       candidateRects.some((candidateRect) => bookmarkRailRectsConflict(candidateRect, markerRect)),
@@ -1293,21 +1241,21 @@
       return true;
     }
     const candidateRect = bookmarkRailMarkerContentRectAtPoint(pageElement, clientY);
-    return bookmarkEntries.some((entry) => {
+    return activeSession.bookmarkEntries.some((entry) => {
       const markerRect = bookmarkRailMarkerContentRect(entry.pageNumber, entry.targetY, entry.pageHeight);
       return markerRect ? bookmarkRailRectsConflict(candidateRect, markerRect) : false;
     });
   }
 
   function reserveBookmarkRailMarkerRect(rect: BookmarkRailRect) {
-    pendingBookmarkRailMarkerRects = [...pendingBookmarkRailMarkerRects, rect];
+    activeSession.pendingBookmarkRailMarkerRects = [...activeSession.pendingBookmarkRailMarkerRects, rect];
     return () => {
-      pendingBookmarkRailMarkerRects = pendingBookmarkRailMarkerRects.filter((pendingRect) => pendingRect !== rect);
+      activeSession.pendingBookmarkRailMarkerRects = activeSession.pendingBookmarkRailMarkerRects.filter((pendingRect) => pendingRect !== rect);
     };
   }
 
   function bookmarkRailHitAtPoint(clientX: number, clientY: number) {
-    const pageElements = [...(viewerEl?.querySelectorAll<HTMLElement>(".page[data-page-number]") ?? [])];
+    const pageElements = [...(activeSession.viewerEl?.querySelectorAll<HTMLElement>(".page[data-page-number]") ?? [])];
     // Pointer events carry integer client coordinates while page rects can sit
     // at half-pixel offsets (the reader centers pages, so the gutter is often
     // fractional). Allow 1px so a click on the rail's outer edge still counts.
@@ -1325,20 +1273,20 @@
   }
 
   async function createBookmarkAtPageRailPoint(clientY: number, pageNumber: number) {
-    if (!pdfDocument) {
-      status = "Open a PDF before creating bookmarks.";
+    if (!activeSession.pdfDocument) {
+      activeSession.status = "Open a PDF before creating bookmarks.";
       return;
     }
-    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const pageElement = activeSession.viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
     if (!pageElement) {
-      status = "Could not resolve page rail for bookmark.";
+      activeSession.status = "Could not resolve page rail for bookmark.";
       return;
     }
     const pageRect = pageElement.getBoundingClientRect();
     const offsetIntoPage = Math.max(0, Math.min(pageRect.height, clientY - pageRect.top));
     const markerRect = bookmarkRailMarkerRectAtPoint(pageElement, clientY);
     if (bookmarkRailPointConflicts(pageElement, clientY)) {
-      bookmarkRailHoverCue = null;
+      activeSession.bookmarkRailHoverCue = null;
       return;
     }
     const releaseRailMarkerReservation = reserveBookmarkRailMarkerRect(markerRect);
@@ -1356,12 +1304,12 @@
     editAfterCreate = false,
   ) {
     if (!pageTarget) {
-      status = "Could not resolve current page for bookmark.";
+      activeSession.status = "Could not resolve current page for bookmark.";
       return;
     }
     if (bookmarkTargetConflictsWithExistingBookmarks(pageTarget)) {
-      bookmarkRailHoverCue = null;
-      status = "Bookmark too close to existing bookmark.";
+      activeSession.bookmarkRailHoverCue = null;
+      activeSession.status = "Bookmark too close to existing bookmark.";
       return;
     }
     const pageNumber = pageTarget.pageNumber;
@@ -1376,29 +1324,29 @@
       destinationY: bookmarkDestinationY(pageNumber, pageTarget.targetY, pageTarget.pageHeight),
       color: defaultBookmarkColor,
     };
-    bookmarkEntries = sortBookmarkEntries([...bookmarkEntries, entry]);
-    bookmarkStatus = bookmarkCountLabel(bookmarkEntries.length);
+    activeSession.bookmarkEntries = sortBookmarkEntries([...activeSession.bookmarkEntries, entry]);
+    activeSession.bookmarkStatus = bookmarkCountLabel(activeSession.bookmarkEntries.length);
     navigationTab = "bookmarks";
     activateDockTab("bookmarks");
-    editingBookmarkId = editAfterCreate ? entry.id : null;
-    bookmarkColorMenuId = null;
-    hoveredBookmarkId = null;
-    bookmarkRailHoverCue = null;
-    isDirty = true;
-    status = `Added bookmark ${title}.`;
+    activeSession.editingBookmarkId = editAfterCreate ? entry.id : null;
+    activeSession.bookmarkColorMenuId = null;
+    activeSession.hoveredBookmarkId = null;
+    activeSession.bookmarkRailHoverCue = null;
+    activeSession.isDirty = true;
+    activeSession.status = `Added bookmark ${title}.`;
   }
 
   function bookmarkTargetConflictsWithExistingBookmarks(pageTarget: NonNullable<Awaited<ReturnType<typeof bookmarkPageTarget>>>) {
     const candidateRect = bookmarkRailMarkerContentRect(pageTarget.pageNumber, pageTarget.targetY, pageTarget.pageHeight);
     if (!candidateRect) return false;
-    return bookmarkEntries.some((entry) => {
+    return activeSession.bookmarkEntries.some((entry) => {
       const markerRect = bookmarkRailMarkerContentRect(entry.pageNumber, entry.targetY, entry.pageHeight);
       return markerRect ? bookmarkRailRectsConflict(candidateRect, markerRect) : false;
     });
   }
 
   function bookmarkRailMarkerContentRect(pageNumber: number, targetY: number, pageHeight: number) {
-    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const pageElement = activeSession.viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
     if (!pageElement || pageHeight <= 0) return null;
     const offsetIntoPage = offsetIntoPageForTargetY(targetY, pageHeight, pageElement.offsetHeight);
     return bookmarkRailMarkerContentRectFromOffset(pageElement, offsetIntoPage);
@@ -1415,51 +1363,51 @@
   }
 
   function updateBookmarkTitle(id: string, title: string) {
-    bookmarkEntries = bookmarkEntries.map((entry) =>
+    activeSession.bookmarkEntries = activeSession.bookmarkEntries.map((entry) =>
       entry.id === id ? { ...entry, title: title.trim() || `Page ${entry.pageNumber}` } : entry,
     );
-    isDirty = true;
+    activeSession.isDirty = true;
   }
 
   function startEditingBookmark(id: string) {
-    editingBookmarkId = id;
-    bookmarkColorMenuId = null;
-    hoveredBookmarkId = null;
+    activeSession.editingBookmarkId = id;
+    activeSession.bookmarkColorMenuId = null;
+    activeSession.hoveredBookmarkId = null;
   }
 
   function updateBookmarkColor(id: string, color: string | null) {
-    bookmarkEntries = bookmarkEntries.map((entry) => (entry.id === id ? { ...entry, color } : entry));
-    bookmarkColorMenuId = null;
-    isDirty = true;
+    activeSession.bookmarkEntries = activeSession.bookmarkEntries.map((entry) => (entry.id === id ? { ...entry, color } : entry));
+    activeSession.bookmarkColorMenuId = null;
+    activeSession.isDirty = true;
   }
 
   function handleBookmarkTitleKey(event: KeyboardEvent) {
     if (event.key === "Enter") {
-      editingBookmarkId = null;
-      bookmarkColorMenuId = null;
-      hoveredBookmarkId = null;
+      activeSession.editingBookmarkId = null;
+      activeSession.bookmarkColorMenuId = null;
+      activeSession.hoveredBookmarkId = null;
       event.preventDefault();
     }
     if (event.key === "Escape") {
-      editingBookmarkId = null;
-      bookmarkColorMenuId = null;
-      hoveredBookmarkId = null;
+      activeSession.editingBookmarkId = null;
+      activeSession.bookmarkColorMenuId = null;
+      activeSession.hoveredBookmarkId = null;
       event.preventDefault();
     }
   }
 
   function deleteBookmark(id: string) {
-    const removed = bookmarkEntries.find((entry) => entry.id === id);
-    bookmarkEntries = bookmarkEntries.filter((entry) => entry.id !== id);
-    bookmarkStatus = bookmarkCountLabel(bookmarkEntries.length);
-    if (editingBookmarkId === id) {
-      editingBookmarkId = null;
+    const removed = activeSession.bookmarkEntries.find((entry) => entry.id === id);
+    activeSession.bookmarkEntries = activeSession.bookmarkEntries.filter((entry) => entry.id !== id);
+    activeSession.bookmarkStatus = bookmarkCountLabel(activeSession.bookmarkEntries.length);
+    if (activeSession.editingBookmarkId === id) {
+      activeSession.editingBookmarkId = null;
     }
-    if (bookmarkColorMenuId === id) {
-      bookmarkColorMenuId = null;
+    if (activeSession.bookmarkColorMenuId === id) {
+      activeSession.bookmarkColorMenuId = null;
     }
-    isDirty = true;
-    status = removed ? `Deleted bookmark ${removed.title}.` : "Deleted bookmark.";
+    activeSession.isDirty = true;
+    activeSession.status = removed ? `Deleted bookmark ${removed.title}.` : "Deleted bookmark.";
   }
 
   function defaultBookmarkTitle(pageNumber: number, targetY: number, pageHeight: number) {
@@ -1467,7 +1415,7 @@
   }
 
   function textLineBookmarkTitle(pageNumber: number, targetY: number, pageHeight: number) {
-    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const pageElement = activeSession.viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
     const textLayer = pageElement?.querySelector<HTMLElement>(".textLayer");
     if (!pageElement || !textLayer || pageHeight <= 0) return null;
 
@@ -1509,7 +1457,7 @@
 
 
   function outlineBookmarkTitle(pageNumber: number, targetY: number) {
-    const candidates = flattenOutlineEntries(outlineEntries).filter(
+    const candidates = flattenOutlineEntries(activeSession.outlineEntries).filter(
       (entry) => entry.pageNumber !== null && entry.pageNumber <= pageNumber,
     );
     const samePageCandidates = candidates.filter(
@@ -1534,15 +1482,15 @@
   }
 
   async function bookmarkPageTarget(pageNumber: number, offsetIntoPage?: number) {
-    if (!pdfDocument) return null;
-    const page = await pdfDocument.getPage(pageNumber);
+    if (!activeSession.pdfDocument) return null;
+    const page = await activeSession.pdfDocument.getPage(pageNumber);
     const ref = (page as unknown as { ref?: { num: number; gen?: number } }).ref;
     const view = (page as unknown as { view?: number[] }).view;
     const viewport = page.getViewport({ scale: 1 });
     const pageRef =
       pdfRefString(ref) ??
-      (lastActivatedOutlineEntry?.pageNumber === pageNumber
-        ? pdfRefString(explicitDestinationRef(lastActivatedOutlineEntry.dest))
+      (activeSession.lastActivatedOutlineEntry?.pageNumber === pageNumber
+        ? pdfRefString(explicitDestinationRef(activeSession.lastActivatedOutlineEntry.dest))
         : null);
     if (!pageRef) return null;
     return {
@@ -1554,14 +1502,14 @@
   }
 
   function bookmarkTargetYForPage(pageNumber: number, pageHeight: number, explicitOffsetIntoPage?: number) {
-    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
-    if (!containerEl || !pageElement) return pageHeight;
-    const offsetIntoPage = explicitOffsetIntoPage ?? Math.max(0, containerEl.scrollTop - pageElement.offsetTop);
+    const pageElement = activeSession.viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    if (!activeSession.containerEl || !pageElement) return pageHeight;
+    const offsetIntoPage = explicitOffsetIntoPage ?? Math.max(0, activeSession.containerEl.scrollTop - pageElement.offsetTop);
     return targetYForOffsetIntoPage(offsetIntoPage, renderedPageScale(pageElement.offsetHeight, pageHeight), pageHeight);
   }
 
   function bookmarkAnchorInsetPdfPoints(pageNumber: number, pageHeight: number) {
-    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const pageElement = activeSession.viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
     return bookmarkAnchorInsetForScale(renderedPageScale(pageElement?.offsetHeight ?? 0, pageHeight));
   }
 
@@ -1575,17 +1523,17 @@
 
 
   async function goToBookmarkEntry(entry: BookmarkEntry) {
-    editingBookmarkId = null;
-    activeBookmarkId = entry.id;
+    activeSession.editingBookmarkId = null;
+    activeSession.activeBookmarkId = entry.id;
     await scrollToBookmarkTarget(entry);
-    status = `Navigated to ${entry.title}.`;
+    activeSession.status = `Navigated to ${entry.title}.`;
   }
 
   async function editBookmarkAndGoToEntry(entry: BookmarkEntry) {
-    activeBookmarkId = entry.id;
+    activeSession.activeBookmarkId = entry.id;
     startEditingBookmark(entry.id);
     await scrollToBookmarkTarget(entry);
-    status = `Navigated to ${entry.title}.`;
+    activeSession.status = `Navigated to ${entry.title}.`;
   }
 
   async function scrollToBookmarkTarget(entry: BookmarkEntry) {
@@ -1596,17 +1544,17 @@
   }
 
   function scrollBookmarkTargetIntoView(entry: BookmarkEntry) {
-    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.pageNumber}"]`);
-    if (!pageElement || !containerEl) return false;
+    const pageElement = activeSession.viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.pageNumber}"]`);
+    if (!pageElement || !activeSession.containerEl) return false;
     const offsetIntoPage = offsetIntoPageForTargetY(entry.targetY, entry.pageHeight, pageElement.offsetHeight);
     const pagePosition = pagePositionInContainer(pageElement);
-    containerEl.scrollTop = Math.max(0, pagePosition.top + offsetIntoPage - bookmarkRailAnchorHeightPx);
+    activeSession.containerEl.scrollTop = Math.max(0, pagePosition.top + offsetIntoPage - bookmarkRailAnchorHeightPx);
     return true;
   }
 
   function bookmarkMarkerStyle(entry: BookmarkEntry) {
-    bookmarkRailLayoutVersion;
-    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.pageNumber}"]`);
+    activeSession.bookmarkRailLayoutVersion;
+    const pageElement = activeSession.viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.pageNumber}"]`);
     const colorStyle = `--bookmark-color: ${entry.color ?? defaultBookmarkColor}`;
     if (!pageElement || entry.pageHeight <= 0) {
       return `left: 12px; top: 18px; ${colorStyle}`;
@@ -1619,14 +1567,14 @@
   }
 
   function pagePositionInContainer(pageElement: HTMLElement) {
-    if (!containerEl) {
+    if (!activeSession.containerEl) {
       return { left: pageElement.offsetLeft, top: pageElement.offsetTop };
     }
-    const containerRect = containerEl.getBoundingClientRect();
+    const containerRect = activeSession.containerEl.getBoundingClientRect();
     const pageRect = pageElement.getBoundingClientRect();
     return {
-      left: containerEl.scrollLeft + pageRect.left - containerRect.left,
-      top: containerEl.scrollTop + pageRect.top - containerRect.top,
+      left: activeSession.containerEl.scrollLeft + pageRect.left - containerRect.left,
+      top: activeSession.containerEl.scrollTop + pageRect.top - containerRect.top,
     };
   }
 
@@ -1635,58 +1583,58 @@
   }
 
   function refreshBookmarkRailLayout() {
-    bookmarkRailLayoutVersion += 1;
+    activeSession.bookmarkRailLayoutVersion += 1;
   }
 
   async function goToOutlineEntry(entry: OutlineEntry) {
     if (entry.url) {
-      status = "External outline links are not opened in this spike.";
+      activeSession.status = "External outline links are not opened in this spike.";
       return false;
     }
-    if (!entry.dest || !entry.pageNumber || !pdfLinkService) {
-      status = "Outline item has no navigable PDF destination.";
+    if (!entry.dest || !entry.pageNumber || !activeSession.pdfLinkService) {
+      activeSession.status = "Outline item has no navigable PDF destination.";
       return false;
     }
-    activeOutlineEntryId = entry.id;
+    activeSession.activeOutlineEntryId = entry.id;
     try {
-      await pdfLinkService.goToDestination(entry.dest as string | unknown[]);
+      await activeSession.pdfLinkService.goToDestination(entry.dest as string | unknown[]);
       await new Promise((resolve) => setTimeout(resolve, 100));
-      if (pdfViewer && entry.pageNumber && pdfViewer.currentPageNumber !== entry.pageNumber) {
+      if (activeSession.pdfViewer && entry.pageNumber && activeSession.pdfViewer.currentPageNumber !== entry.pageNumber) {
         await scrollToPage(entry.pageNumber);
       }
-      lastActivatedOutlineEntry = entry;
+      activeSession.lastActivatedOutlineEntry = entry;
       requestAnimationFrame(refreshActiveOutlineFromScroll);
-      status = `Navigated to ${entry.title}.`;
+      activeSession.status = `Navigated to ${entry.title}.`;
       return true;
     } catch (error) {
-      status = `Outline navigation failed: ${formatError(error)}`;
+      activeSession.status = `Outline navigation failed: ${formatError(error)}`;
       return false;
     }
   }
 
   async function activateFirstOutlineItem() {
-    const first = outlineEntries[0];
+    const first = activeSession.outlineEntries[0];
     if (!first) return false;
     return goToOutlineEntry(first);
   }
 
   async function activateFirstAnnotationItem() {
     await refreshAnnotationSidebar();
-    const first = annotationEntries[0];
+    const first = activeSession.annotationEntries[0];
     if (!first) return false;
     return locateAnnotationEntry(first);
   }
 
   async function activateAnnotationBySourceId(sourceId: string) {
     await refreshAnnotationSidebar();
-    const entry = annotationEntries.find((candidate) => candidate.sourceId === sourceId);
+    const entry = activeSession.annotationEntries.find((candidate) => candidate.sourceId === sourceId);
     if (!entry) return false;
     return activateAnnotationEntry(entry);
   }
 
 
   async function activateAnnotationEntry(entry: AnnotationEntry) {
-    selectedAnnotationEntryId = entry.id;
+    activeSession.selectedAnnotationEntryId = entry.id;
     await scrollToPage(entry.page);
     if (entry.source === "live") {
       return activateLiveAnnotationEntry(entry);
@@ -1695,7 +1643,7 @@
   }
 
   async function locateAnnotationEntry(entry: AnnotationEntry) {
-    selectedAnnotationEntryId = entry.id;
+    activeSession.selectedAnnotationEntryId = entry.id;
     await scrollToPage(entry.page);
     for (let attempt = 0; attempt < 12; attempt += 1) {
       if (locateAnnotationBounds(entry)) {
@@ -1703,17 +1651,17 @@
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    status = `Could not find ${entry.label.toLowerCase()} on page ${entry.page}.`;
+    activeSession.status = `Could not find ${entry.label.toLowerCase()} on page ${entry.page}.`;
     return false;
   }
 
   async function scrollToPage(pageNumber: number) {
-    const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const pageElement = activeSession.containerEl.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
     if (pageElement) {
-      containerEl.scrollTop = Math.max(pageElement.offsetTop - 20, 0);
+      activeSession.containerEl.scrollTop = Math.max(pageElement.offsetTop - 20, 0);
       await new Promise((resolve) => setTimeout(resolve, 250));
-    } else if (pdfViewer) {
-      pdfViewer.currentPageNumber = pageNumber;
+    } else if (activeSession.pdfViewer) {
+      activeSession.pdfViewer.currentPageNumber = pageNumber;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
@@ -1729,14 +1677,14 @@
     options: { enterEditMode?: boolean; scrollIntoView?: boolean } = {},
   ) {
     unselectAllIgnoringPdfjsSignalBug();
-    selectedAnnotationKind = null;
-    selectedAnnotationColor = null;
-    hasSelectedHighlight = false;
-    selectedHighlightColor = null;
-    selectedAnnotationEntryId = entry.id;
-    selectedPersistedAnnotationKey = null;
+    activeSession.selectedAnnotationKind = null;
+    activeSession.selectedAnnotationColor = null;
+    activeSession.hasSelectedHighlight = false;
+    activeSession.selectedHighlightColor = null;
+    activeSession.selectedAnnotationEntryId = entry.id;
+    activeSession.selectedPersistedAnnotationKey = null;
     for (let attempt = 0; attempt < 12; attempt += 1) {
-      if (entry.kind === "ink" && activeTool !== "none") {
+      if (entry.kind === "ink" && activeSession.activeTool !== "none") {
         const exactElement = document.getElementById(pdfAnnotationElementId(entry.sourceId));
         if (!isUsableAnnotationElement(exactElement, entry)) {
           setPdfjsEditorMode("none");
@@ -1745,7 +1693,7 @@
       }
       const element = annotationTargetElementForEntry(entry);
       if (element) {
-        selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
+        activeSession.selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
         await focusAnnotationElement(element, {
           scrollIntoView: options.scrollIntoView,
           showFocusBox: false,
@@ -1770,7 +1718,7 @@
       }
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
-    status = `Could not find ${entry.label.toLowerCase()} on page ${entry.page}.`;
+    activeSession.status = `Could not find ${entry.label.toLowerCase()} on page ${entry.page}.`;
     if (entry.kind === "ink" && entry.bounds && locatePdfAnnotationBounds(entry)) {
       return true;
     }
@@ -1779,13 +1727,13 @@
 
   function locatePdfAnnotationEntry(entry: AnnotationEntry) {
     clearLocateOnlyEditorSelection();
-    selectedAnnotationEntryId = entry.id;
-    selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
-    selectedAnnotationKind = null;
-    selectedAnnotationColor = null;
-    hasSelectedHighlight = false;
-    selectedHighlightColor = null;
-    status = `Located ${entry.label.toLowerCase()} on page ${entry.page}.`;
+    activeSession.selectedAnnotationEntryId = entry.id;
+    activeSession.selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
+    activeSession.selectedAnnotationKind = null;
+    activeSession.selectedAnnotationColor = null;
+    activeSession.hasSelectedHighlight = false;
+    activeSession.selectedHighlightColor = null;
+    activeSession.status = `Located ${entry.label.toLowerCase()} on page ${entry.page}.`;
     queueLocateOnlyEditorSelectionClear();
     return true;
   }
@@ -1795,31 +1743,31 @@
   }
 
   function locateAnnotationBounds(entry: AnnotationEntry, options: { scrollIntoView?: boolean } = {}) {
-    if (!containerEl) return false;
+    if (!activeSession.containerEl) return false;
     clearLocateOnlyEditorSelection();
     const focusBox = renderedAnnotationShapeFocusBox(entry) ?? annotationEntryFocusBox(entry);
     if (!focusBox) return false;
     const { left, top, width, height } = focusBox;
 
     if (options.scrollIntoView !== false) {
-      containerEl.scrollLeft = Math.max(0, left + width / 2 - containerEl.clientWidth / 2);
-      containerEl.scrollTop = Math.max(0, top + height / 2 - containerEl.clientHeight / 2);
+      activeSession.containerEl.scrollLeft = Math.max(0, left + width / 2 - activeSession.containerEl.clientWidth / 2);
+      activeSession.containerEl.scrollTop = Math.max(0, top + height / 2 - activeSession.containerEl.clientHeight / 2);
     }
-    annotationFocusBox = focusBox;
+    activeSession.annotationFocusBox = focusBox;
     unselectAllIgnoringPdfjsSignalBug();
-    selectedAnnotationEntryId = entry.id;
-    selectedPersistedAnnotationKey = entry.source === "pdf" ? persistedAnnotationKey(entry.page, entry.sourceId) : null;
-    selectedAnnotationKind = null;
-    selectedAnnotationColor = null;
-    hasSelectedHighlight = false;
-    selectedHighlightColor = null;
-    status = `Located ${entry.label.toLowerCase()} on page ${entry.page}.`;
+    activeSession.selectedAnnotationEntryId = entry.id;
+    activeSession.selectedPersistedAnnotationKey = entry.source === "pdf" ? persistedAnnotationKey(entry.page, entry.sourceId) : null;
+    activeSession.selectedAnnotationKind = null;
+    activeSession.selectedAnnotationColor = null;
+    activeSession.hasSelectedHighlight = false;
+    activeSession.selectedHighlightColor = null;
+    activeSession.status = `Located ${entry.label.toLowerCase()} on page ${entry.page}.`;
     queueLocateOnlyEditorSelectionClear();
     return true;
   }
 
   function annotationEntryFocusBox(entry: AnnotationEntry): FocusBox | null {
-    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
+    const pageElement = activeSession.viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
     if (!pageElement || !entry.bounds) return null;
     return {
       left: pageElement.offsetLeft + entry.bounds.left * pageElement.offsetWidth - 3,
@@ -1830,7 +1778,7 @@
   }
 
   function renderedAnnotationShapeFocusBox(entry: AnnotationEntry): FocusBox | null {
-    if (!isInkHighlightEntry(entry) || !containerEl) return null;
+    if (!isInkHighlightEntry(entry) || !activeSession.containerEl) return null;
     const element = document.getElementById(pdfAnnotationElementId(entry.sourceId));
     if (!(element instanceof HTMLElement)) return null;
     const shapeRects = [...element.querySelectorAll("path, polyline, polygon, line, rect, circle, ellipse")]
@@ -1843,10 +1791,10 @@
       right: Math.max(...shapeRects.map((candidate) => candidate.right)),
       bottom: Math.max(...shapeRects.map((candidate) => candidate.bottom)),
     };
-    const containerRect = containerEl.getBoundingClientRect();
+    const containerRect = activeSession.containerEl.getBoundingClientRect();
     return {
-      left: rect.left - containerRect.left + containerEl.scrollLeft - 3,
-      top: rect.top - containerRect.top + containerEl.scrollTop - 3,
+      left: rect.left - containerRect.left + activeSession.containerEl.scrollLeft - 3,
+      top: rect.top - containerRect.top + activeSession.containerEl.scrollTop - 3,
       width: Math.max(6, rect.right - rect.left + 6),
       height: Math.max(6, rect.bottom - rect.top + 6),
     };
@@ -1854,11 +1802,11 @@
 
   function clearLocateOnlyEditorSelection() {
     unselectAllIgnoringPdfjsSignalBug();
-    setPdfjsEditorMode(activeTool);
-    document.querySelectorAll<HTMLElement>(".editToolbar:not(.hidden)").forEach((toolbar) => {
+    setPdfjsEditorMode(activeSession.activeTool);
+    activeSession.containerEl.querySelectorAll<HTMLElement>(".editToolbar:not(.hidden)").forEach((toolbar) => {
       toolbar.classList.add("hidden");
     });
-    document.querySelectorAll<HTMLElement>(".selectedEditor").forEach((editor) => {
+    activeSession.containerEl.querySelectorAll<HTMLElement>(".selectedEditor").forEach((editor) => {
       editor.classList.remove("selectedEditor");
     });
   }
@@ -1866,7 +1814,7 @@
   function queueLocateOnlyEditorSelectionClear() {
     for (const delay of [0, 50, 150]) {
       setTimeout(() => {
-        if (!selectedAnnotationKind && annotationFocusBox) {
+        if (!activeSession.selectedAnnotationKind && activeSession.annotationFocusBox) {
           clearLocateOnlyEditorSelection();
         }
       }, delay);
@@ -1877,7 +1825,7 @@
     entry: AnnotationEntry,
     options: { enterEditMode?: boolean; scrollIntoView?: boolean } = {},
   ) {
-    const manager = annotationEditorUIManager;
+    const manager = activeSession.annotationEditorUIManager;
     const editorKind = editorKindForAnnotationEntry(entry);
     const tool = editorToolForAnnotationKind(editorKind);
     if (!manager || !tool || !managerHasValidSignal(manager)) return false;
@@ -1889,7 +1837,7 @@
     }
     if (
       !editor ||
-      annotationEditorUIManager !== manager ||
+      activeSession.annotationEditorUIManager !== manager ||
       !managerHasValidSignal(manager) ||
       !editorBelongsToManager(editor, manager) ||
       !editorHasValidManagerSignal(editor)
@@ -1897,23 +1845,23 @@
       return false;
     }
     const persistedKey = persistedAnnotationKey(entry.page, entry.sourceId);
-    selectedPersistedAnnotationKey = persistedKey;
-    persistedAnnotationKeyByEditorId.set(editor.id, persistedKey);
+    activeSession.selectedPersistedAnnotationKey = persistedKey;
+    activeSession.persistedAnnotationKeyByEditorId.set(editor.id, persistedKey);
     await focusEditorById(editor.id, { scrollIntoView: options.scrollIntoView, showFocusBox: false });
     selectEditorIgnoringPdfjsSignalBug(manager, editor);
     syncSelectedEditorState(persistedKey);
-    selectedAnnotationEntryId = entry.id;
+    activeSession.selectedAnnotationEntryId = entry.id;
     if (editorKind === "highlight") {
-      status = "Selected highlight. Change color or delete it, then save.";
+      activeSession.status = "Selected highlight. Change color or delete it, then save.";
     } else if (editorKind === "freetext") {
       if (options.enterEditMode) {
         enterFreeTextEditMode(editor);
-        status = "Editing free text. Press Enter to finish editing.";
+        activeSession.status = "Editing free text. Press Enter to finish editing.";
       } else {
-        status = "Selected free text. Press Enter to edit text, change color, or delete it.";
+        activeSession.status = "Selected free text. Press Enter to edit text, change color, or delete it.";
       }
     } else {
-      status = "Selected ink. Change color or delete it, then save.";
+      activeSession.status = "Selected ink. Change color or delete it, then save.";
     }
     return true;
   }
@@ -1932,10 +1880,10 @@
   function findEditorByPersistedSourceId(
     sourceId: string,
     kind: Exclude<SelectedAnnotationKind, null>,
-    manager = annotationEditorUIManager,
+    manager = activeSession.annotationEditorUIManager,
   ) {
-    if (!manager || !pdfDocument) return null;
-    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
+    if (!manager || !activeSession.pdfDocument) return null;
+    for (let pageIndex = 0; pageIndex < activeSession.pdfDocument.numPages; pageIndex += 1) {
       for (const editor of manager.getEditors(pageIndex)) {
         if (
           editorBelongsToManager(editor, manager) &&
@@ -1951,11 +1899,11 @@
   }
 
   function editorBelongsToCurrentManager(editor: AnnotationEditor | null | undefined) {
-    if (!editor || !annotationEditorUIManager) return false;
-    return editorBelongsToManager(editor, annotationEditorUIManager);
+    if (!editor || !activeSession.annotationEditorUIManager) return false;
+    return editorBelongsToManager(editor, activeSession.annotationEditorUIManager);
   }
 
-  function unselectAllIgnoringPdfjsSignalBug(manager = annotationEditorUIManager) {
+  function unselectAllIgnoringPdfjsSignalBug(manager = activeSession.annotationEditorUIManager) {
     unselectAllForManagerIgnoringSignalBug(manager);
   }
 
@@ -2012,7 +1960,7 @@
         : kind === "freetext"
           ? `.page[data-page-number="${pageNumber}"] .freeTextAnnotation, .page[data-page-number="${pageNumber}"] .freeTextEditor`
           : `.page[data-page-number="${pageNumber}"] .inkAnnotation, .page[data-page-number="${pageNumber}"] .inkEditor`;
-    return [...document.querySelectorAll<HTMLElement>(selector)]
+    return [...activeSession.containerEl.querySelectorAll<HTMLElement>(selector)]
       .filter((element) => {
         const rect = element.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
@@ -2089,18 +2037,18 @@
     options: { scrollIntoView?: boolean; showFocusBox?: boolean } = {},
   ) {
     const rect = element.getBoundingClientRect();
-    const containerRect = containerEl.getBoundingClientRect();
-    const left = rect.left - containerRect.left + containerEl.scrollLeft - 3;
-    const top = rect.top - containerRect.top + containerEl.scrollTop - 3;
+    const containerRect = activeSession.containerEl.getBoundingClientRect();
+    const left = rect.left - containerRect.left + activeSession.containerEl.scrollLeft - 3;
+    const top = rect.top - containerRect.top + activeSession.containerEl.scrollTop - 3;
     const width = rect.width + 6;
     const height = rect.height + 6;
 
     if (options.scrollIntoView !== false) {
-      containerEl.scrollLeft = Math.max(0, left + width / 2 - containerEl.clientWidth / 2);
-      containerEl.scrollTop = Math.max(0, top + height / 2 - containerEl.clientHeight / 2);
+      activeSession.containerEl.scrollLeft = Math.max(0, left + width / 2 - activeSession.containerEl.clientWidth / 2);
+      activeSession.containerEl.scrollTop = Math.max(0, top + height / 2 - activeSession.containerEl.clientHeight / 2);
     }
     if (options.showFocusBox !== false) {
-      annotationFocusBox = { left, top, width, height };
+      activeSession.annotationFocusBox = { left, top, width, height };
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -2116,10 +2064,10 @@
   }
 
   function setTool(tool: EditorTool) {
-    if (!pdfViewer) return;
-    activeTool = tool;
+    if (!activeSession.pdfViewer) return;
+    activeSession.activeTool = tool;
     setPdfjsEditorMode(tool);
-    status =
+    activeSession.status =
       tool === "none"
         ? "Selection mode."
         : tool === "highlight"
@@ -2128,31 +2076,31 @@
   }
 
   function setPdfjsEditorMode(tool: EditorTool, options: { applyDefaultParams?: boolean } = {}) {
-    if (!pdfViewer) return;
+    if (!activeSession.pdfViewer) return;
     const applyDefaultParams = options.applyDefaultParams !== false;
-    if (applyDefaultParams && tool === "highlight" && annotationEditorUIManager) {
-      annotationEditorUIManager.updateParams(
+    if (applyDefaultParams && tool === "highlight" && activeSession.annotationEditorUIManager) {
+      activeSession.annotationEditorUIManager.updateParams(
         pdfjsLib.AnnotationEditorParamsType.HIGHLIGHT_COLOR,
         highlightColors[defaultHighlightColor],
       );
     }
-    pdfViewer.annotationEditorMode = { mode: editorModes[tool] };
-    if (applyDefaultParams && tool === "text" && annotationEditorUIManager) {
-      annotationEditorUIManager.updateParams(
+    activeSession.pdfViewer.annotationEditorMode = { mode: editorModes[tool] };
+    if (applyDefaultParams && tool === "text" && activeSession.annotationEditorUIManager) {
+      activeSession.annotationEditorUIManager.updateParams(
         pdfjsLib.AnnotationEditorParamsType.FREETEXT_COLOR,
         freeTextColors[defaultFreeTextColor],
       );
-      annotationEditorUIManager.updateParams(
+      activeSession.annotationEditorUIManager.updateParams(
         pdfjsLib.AnnotationEditorParamsType.FREETEXT_SIZE,
         defaultFreeTextFontSize,
       );
     }
-    if (applyDefaultParams && tool === "ink" && annotationEditorUIManager) {
-      annotationEditorUIManager.updateParams(
+    if (applyDefaultParams && tool === "ink" && activeSession.annotationEditorUIManager) {
+      activeSession.annotationEditorUIManager.updateParams(
         pdfjsLib.AnnotationEditorParamsType.INK_COLOR_AND_OPACITY,
         { color: inkColors[defaultInkColor], opacity: defaultInkOpacity },
       );
-      annotationEditorUIManager.updateParams(
+      activeSession.annotationEditorUIManager.updateParams(
         pdfjsLib.AnnotationEditorParamsType.INK_THICKNESS,
         defaultInkThickness,
       );
@@ -2166,11 +2114,11 @@
   }
 
   async function activateHighlightEditorAtPoint(clientX: number, clientY: number) {
-    if (!annotationEditorUIManager || !pdfViewer) {
-      status = "Highlight unavailable: PDF.js annotation manager not ready yet.";
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfViewer) {
+      activeSession.status = "Highlight unavailable: PDF.js annotation manager not ready yet.";
       return false;
     }
-    const persistedKeyHint = selectedPersistedAnnotationKey;
+    const persistedKeyHint = activeSession.selectedPersistedAnnotationKey;
     await preparePdfjsEditorModeForEdit("highlight");
     for (let attempt = 0; attempt < 12; attempt += 1) {
       const editorElement = editorElementAtPoint(".highlightEditor", clientX, clientY);
@@ -2206,15 +2154,15 @@
         editorElement.click();
         await new Promise((resolve) => setTimeout(resolve, 50));
         syncSelectedEditorState(persistedKeyHint);
-        if (selectedEditorMatchesPersistedHint(annotationEditorUIManager.firstSelectedEditor, persistedKeyHint)) {
-          status = "Selected highlight. Change color or delete it, then save.";
+        if (selectedEditorMatchesPersistedHint(activeSession.annotationEditorUIManager.firstSelectedEditor, persistedKeyHint)) {
+          activeSession.status = "Selected highlight. Change color or delete it, then save.";
           return true;
         }
         unselectAllIgnoringPdfjsSignalBug();
       }
       await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 100));
     }
-    status = "Could not activate clicked highlight for editing.";
+    activeSession.status = "Could not activate clicked highlight for editing.";
     return false;
   }
 
@@ -2249,11 +2197,11 @@
   }
 
   function findEditorById(editorId: string, predicate: (editor: AnnotationEditor) => boolean) {
-    if (!annotationEditorUIManager || !pdfDocument) {
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfDocument) {
       return null;
     }
-    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
-      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+    for (let pageIndex = 0; pageIndex < activeSession.pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of activeSession.annotationEditorUIManager.getEditors(pageIndex)) {
         if (editorBelongsToCurrentManager(editor) && predicate(editor) && !editor.deleted && editor.id === editorId) {
           return editor;
         }
@@ -2263,8 +2211,8 @@
   }
 
   async function activateExistingHighlightEditor(editorId: string, options: { focusEditor?: boolean } = {}) {
-    if (!annotationEditorUIManager || !pdfViewer) {
-      status = "Highlight unavailable: PDF.js annotation manager not ready yet.";
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfViewer) {
+      activeSession.status = "Highlight unavailable: PDF.js annotation manager not ready yet.";
       return false;
     }
     await preparePdfjsEditorModeForEdit("highlight");
@@ -2274,16 +2222,16 @@
       editor = findHighlightEditorById(editorId);
     }
     if (!editor) {
-      status = "Could not activate clicked highlight for editing.";
+      activeSession.status = "Could not activate clicked highlight for editing.";
       return false;
     }
     if (options.focusEditor !== false) {
       await focusEditorById(editor.id);
     }
-    annotationEditorUIManager.setSelected(editor);
-    selectedAnnotationEntryId = `live:${editor.id}`;
+    activeSession.annotationEditorUIManager.setSelected(editor);
+    activeSession.selectedAnnotationEntryId = `live:${editor.id}`;
     syncSelectedEditorState();
-    status = "Selected highlight. Change color or delete it, then save.";
+    activeSession.status = "Selected highlight. Change color or delete it, then save.";
     return true;
   }
 
@@ -2292,8 +2240,8 @@
   }
 
   async function activateExistingFreeTextEditor(editorId: string, options: { enterEditMode?: boolean; focusEditor?: boolean } = {}) {
-    if (!annotationEditorUIManager || !pdfViewer) {
-      status = "Free text unavailable: PDF.js annotation manager not ready yet.";
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfViewer) {
+      activeSession.status = "Free text unavailable: PDF.js annotation manager not ready yet.";
       return false;
     }
     await preparePdfjsEditorModeForEdit("text");
@@ -2303,20 +2251,20 @@
       editor = findFreeTextEditorById(editorId);
     }
     if (!editor) {
-      status = "Could not activate clicked free text for editing.";
+      activeSession.status = "Could not activate clicked free text for editing.";
       return false;
     }
     if (options.focusEditor !== false) {
       await focusEditorById(editor.id);
     }
-    annotationEditorUIManager.setSelected(editor);
-    selectedAnnotationEntryId = `live:${editor.id}`;
+    activeSession.annotationEditorUIManager.setSelected(editor);
+    activeSession.selectedAnnotationEntryId = `live:${editor.id}`;
     syncSelectedEditorState();
     if (options.enterEditMode) {
       enterFreeTextEditMode(editor);
-      status = "Editing free text. Press Enter to finish editing.";
+      activeSession.status = "Editing free text. Press Enter to finish editing.";
     } else {
-      status = "Selected free text. Press Enter to edit text, change color, or delete it.";
+      activeSession.status = "Selected free text. Press Enter to edit text, change color, or delete it.";
     }
     return true;
   }
@@ -2326,11 +2274,11 @@
     clientY: number,
     options: { enterEditMode?: boolean } = {},
   ) {
-    if (!annotationEditorUIManager || !pdfViewer) {
-      status = "Free text unavailable: PDF.js annotation manager not ready yet.";
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfViewer) {
+      activeSession.status = "Free text unavailable: PDF.js annotation manager not ready yet.";
       return false;
     }
-    const persistedKeyHint = selectedPersistedAnnotationKey;
+    const persistedKeyHint = activeSession.selectedPersistedAnnotationKey;
     await preparePdfjsEditorModeForEdit("text");
     for (let attempt = 0; attempt < 12; attempt += 1) {
       const editorElement = editorElementAtPoint(".freeTextEditor", clientX, clientY);
@@ -2366,19 +2314,19 @@
         editorElement.click();
         const editor = findFreeTextEditorById(editorElement.id);
         if (editor) {
-          annotationEditorUIManager.setSelected(editor);
+          activeSession.annotationEditorUIManager.setSelected(editor);
         }
         await new Promise((resolve) => setTimeout(resolve, 50));
         syncSelectedEditorState(persistedKeyHint);
         if (
-          isFreeTextEditor(annotationEditorUIManager.firstSelectedEditor) &&
-          selectedEditorMatchesPersistedHint(annotationEditorUIManager.firstSelectedEditor, persistedKeyHint)
+          isFreeTextEditor(activeSession.annotationEditorUIManager.firstSelectedEditor) &&
+          selectedEditorMatchesPersistedHint(activeSession.annotationEditorUIManager.firstSelectedEditor, persistedKeyHint)
         ) {
           if (options.enterEditMode) {
-            enterFreeTextEditMode(annotationEditorUIManager.firstSelectedEditor);
-            status = "Editing free text. Press Enter to finish editing.";
+            enterFreeTextEditMode(activeSession.annotationEditorUIManager.firstSelectedEditor);
+            activeSession.status = "Editing free text. Press Enter to finish editing.";
           } else {
-            status = "Selected free text. Press Enter to edit text, change color, or delete it.";
+            activeSession.status = "Selected free text. Press Enter to edit text, change color, or delete it.";
           }
           return true;
         }
@@ -2386,13 +2334,13 @@
       }
       await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 100));
     }
-    status = "Could not activate clicked free text for editing.";
+    activeSession.status = "Could not activate clicked free text for editing.";
     return false;
   }
 
   async function activateExistingInkEditor(editorId: string, options: { focusEditor?: boolean } = {}) {
-    if (!annotationEditorUIManager || !pdfViewer) {
-      status = "Ink unavailable: PDF.js annotation manager not ready yet.";
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfViewer) {
+      activeSession.status = "Ink unavailable: PDF.js annotation manager not ready yet.";
       return false;
     }
     await preparePdfjsEditorModeForEdit("ink");
@@ -2402,25 +2350,25 @@
       editor = findInkEditorById(editorId);
     }
     if (!editor) {
-      status = "Could not activate clicked ink for editing.";
+      activeSession.status = "Could not activate clicked ink for editing.";
       return false;
     }
     if (options.focusEditor !== false) {
       await focusEditorById(editor.id);
     }
-    annotationEditorUIManager.setSelected(editor);
-    selectedAnnotationEntryId = `live:${editor.id}`;
+    activeSession.annotationEditorUIManager.setSelected(editor);
+    activeSession.selectedAnnotationEntryId = `live:${editor.id}`;
     syncSelectedEditorState();
-    status = "Selected ink. Change color or delete it, then save.";
+    activeSession.status = "Selected ink. Change color or delete it, then save.";
     return true;
   }
 
   async function activateInkEditorAtPoint(clientX: number, clientY: number) {
-    if (!annotationEditorUIManager || !pdfViewer) {
-      status = "Ink unavailable: PDF.js annotation manager not ready yet.";
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfViewer) {
+      activeSession.status = "Ink unavailable: PDF.js annotation manager not ready yet.";
       return false;
     }
-    const persistedKeyHint = selectedPersistedAnnotationKey;
+    const persistedKeyHint = activeSession.selectedPersistedAnnotationKey;
     await preparePdfjsEditorModeForEdit("ink");
     for (let attempt = 0; attempt < 12; attempt += 1) {
       const editorElement = editorElementAtPoint(".inkEditor", clientX, clientY);
@@ -2456,27 +2404,27 @@
         editorElement.click();
         const editor = findInkEditorById(editorElement.id);
         if (editor) {
-          annotationEditorUIManager.setSelected(editor);
+          activeSession.annotationEditorUIManager.setSelected(editor);
         }
         await new Promise((resolve) => setTimeout(resolve, 50));
         syncSelectedEditorState(persistedKeyHint);
         if (
-          isInkEditor(annotationEditorUIManager.firstSelectedEditor) &&
-          selectedEditorMatchesPersistedHint(annotationEditorUIManager.firstSelectedEditor, persistedKeyHint)
+          isInkEditor(activeSession.annotationEditorUIManager.firstSelectedEditor) &&
+          selectedEditorMatchesPersistedHint(activeSession.annotationEditorUIManager.firstSelectedEditor, persistedKeyHint)
         ) {
-          status = "Selected ink. Change color or delete it, then save.";
+          activeSession.status = "Selected ink. Change color or delete it, then save.";
           return true;
         }
         unselectAllIgnoringPdfjsSignalBug();
       }
       await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 100));
     }
-    status = "Could not activate clicked ink for editing.";
+    activeSession.status = "Could not activate clicked ink for editing.";
     return false;
   }
 
   function findEditorElementIdAtPoint(selector: string, clientX: number, clientY: number) {
-    const matchingEditors = [...document.querySelectorAll<HTMLElement>(selector)]
+    const matchingEditors = [...activeSession.containerEl.querySelectorAll<HTMLElement>(selector)]
       .map((element) => ({
         element,
         rect: element.getBoundingClientRect(),
@@ -2514,7 +2462,7 @@
     clientY: number,
     predicate: (entry: AnnotationEntry) => boolean = (entry) => entry.kind === "ink",
   ) {
-    const visualMatches = annotationEntries
+    const visualMatches = activeSession.annotationEntries
       .filter((entry) => entry.kind === "ink" && predicate(entry))
       .map((entry) => {
         const element =
@@ -2546,10 +2494,10 @@
       .sort((left, right) => left.area - right.area);
     if (visualMatches[0]) return visualMatches[0].entry;
 
-    const boundsMatches = annotationEntries
+    const boundsMatches = activeSession.annotationEntries
       .filter((entry) => entry.kind === "ink" && predicate(entry) && entry.bounds)
       .map((entry) => {
-        const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
+        const pageElement = activeSession.containerEl.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
         if (!pageElement || !entry.bounds) return null;
         const rect = pageElement.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return null;
@@ -2569,10 +2517,10 @@
   }
 
   function nonInkAnnotationEntryAtPoint(clientX: number, clientY: number) {
-    const matches = annotationEntries
+    const matches = activeSession.annotationEntries
       .filter((entry) => entry.kind !== "ink" && entry.bounds)
       .map((entry) => {
-        const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
+        const pageElement = activeSession.containerEl.querySelector<HTMLElement>(`.page[data-page-number="${entry.page}"]`);
         if (!pageElement || !entry.bounds) return null;
         const rect = pageElement.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return null;
@@ -2592,32 +2540,32 @@
   }
 
   function markInkHighlightEntrySelected(entry: AnnotationEntry) {
-    let selectedEditor: AnnotationEditor | null | undefined = annotationEditorUIManager?.firstSelectedEditor;
-    if (!selectedEditor && annotationEditorUIManager) {
+    let selectedEditor: AnnotationEditor | null | undefined = activeSession.annotationEditorUIManager?.firstSelectedEditor;
+    if (!selectedEditor && activeSession.annotationEditorUIManager) {
       selectedEditor =
         findEditorByPersistedSourceId(entry.sourceId, "highlight") ??
         findEditorByPersistedSourceId(entry.sourceId, "ink");
       if (selectedEditor) {
-        annotationEditorUIManager.setSelected(selectedEditor);
+        activeSession.annotationEditorUIManager.setSelected(selectedEditor);
       }
     }
     const persistedKey = persistedAnnotationKey(entry.page, entry.sourceId);
-    selectedAnnotationKind = "highlight";
-    hasSelectedHighlight = true;
-    selectedAnnotationEntryId = entry.id;
-    selectedPersistedAnnotationKey = persistedKey;
-    selectedAnnotationColor = selectedEditor?.color ?? selectedAnnotationColor;
-    selectedHighlightColor = highlightColorNameForValue(selectedAnnotationColor);
+    activeSession.selectedAnnotationKind = "highlight";
+    activeSession.hasSelectedHighlight = true;
+    activeSession.selectedAnnotationEntryId = entry.id;
+    activeSession.selectedPersistedAnnotationKey = persistedKey;
+    activeSession.selectedAnnotationColor = selectedEditor?.color ?? activeSession.selectedAnnotationColor;
+    activeSession.selectedHighlightColor = highlightColorNameForValue(activeSession.selectedAnnotationColor);
     if (selectedEditor) {
-      persistedAnnotationKeyByEditorId.set(selectedEditor.id, persistedKey);
+      activeSession.persistedAnnotationKeyByEditorId.set(selectedEditor.id, persistedKey);
     }
-    status = "Selected highlight. Change color or delete it, then save.";
+    activeSession.status = "Selected highlight. Change color or delete it, then save.";
   }
 
   function remapSelectedInkHighlightEntry() {
     const entry =
-      persistedAnnotationEntryForKey(selectedPersistedAnnotationKey) ??
-      annotationEntries.find((candidate) => candidate.id === selectedAnnotationEntryId);
+      persistedAnnotationEntryForKey(activeSession.selectedPersistedAnnotationKey) ??
+      activeSession.annotationEntries.find((candidate) => candidate.id === activeSession.selectedAnnotationEntryId);
     if (!entry || !isInkHighlightEntry(entry)) {
       return false;
     }
@@ -2626,18 +2574,18 @@
   }
 
   function activateInkHighlightEntryAtPoint(entry: AnnotationEntry, clientX: number, clientY: number) {
-    selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
+    activeSession.selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
     void (async () => {
       let activated = false;
       if (findInkEditorIdAtPoint(clientX, clientY)) {
         activated = await activateInkEditorAtPoint(clientX, clientY);
       }
       if (!activated) {
-        selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
+        activeSession.selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
         activated = await activateHighlightEditorAtPoint(clientX, clientY);
       }
       if (!activated) {
-        selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
+        activeSession.selectedPersistedAnnotationKey = persistedAnnotationKey(entry.page, entry.sourceId);
         activated = await activateInkEditorAtPoint(clientX, clientY);
       }
       if (!activated) {
@@ -2683,14 +2631,14 @@
       if (directInkHighlightEntry) {
         void activateExistingHighlightEditor(directHighlightEditorId, { focusEditor: false }).then((activated) => {
           if (!activated) return;
-          selectedAnnotationKind = "highlight";
-          hasSelectedHighlight = true;
-          selectedAnnotationEntryId = directInkHighlightEntry.id;
-          selectedPersistedAnnotationKey = persistedAnnotationKey(
+          activeSession.selectedAnnotationKind = "highlight";
+          activeSession.hasSelectedHighlight = true;
+          activeSession.selectedAnnotationEntryId = directInkHighlightEntry.id;
+          activeSession.selectedPersistedAnnotationKey = persistedAnnotationKey(
             directInkHighlightEntry.page,
             directInkHighlightEntry.sourceId,
           );
-          status = "Selected highlight. Change color or delete it, then save.";
+          activeSession.status = "Selected highlight. Change color or delete it, then save.";
         });
         return true;
       }
@@ -2778,7 +2726,7 @@
 
   function handleHighlightTextLayerPointerDown(event: PointerEvent) {
     const target = event.target;
-    if (!(target instanceof Element) || activeTool !== "highlight") {
+    if (!(target instanceof Element) || activeSession.activeTool !== "highlight") {
       return;
     }
     const textLayer = target.closest<HTMLElement>(".textLayer");
@@ -2817,9 +2765,9 @@
       return;
     }
     const clickedEntry = annotationEntryForPointerTarget(target, event.clientX, event.clientY);
-    if (clickedEntry && (!selectedAnnotationKind || !annotationEntryMatchesCurrentSelection(clickedEntry))) {
+    if (clickedEntry && (!activeSession.selectedAnnotationKind || !annotationEntryMatchesCurrentSelection(clickedEntry))) {
       if (isRepeatedAnnotationPointerClick(clickedEntry, event)) {
-        lastAnnotationPointerClick = null;
+        activeSession.lastAnnotationPointerClick = null;
         event.preventDefault();
         event.stopPropagation();
         activateAnnotationEntryForEdit(clickedEntry, event.clientX, event.clientY);
@@ -2842,16 +2790,16 @@
           savedInkAnnotation,
       );
       if (isAnnotationCreationMode() && !pointerHitAnnotationVisual) {
-        lastAnnotationPointerClick = null;
+        activeSession.lastAnnotationPointerClick = null;
         return;
       }
-      if (selectedAnnotationKind || isAnnotationCreationMode()) {
+      if (activeSession.selectedAnnotationKind || isAnnotationCreationMode()) {
         event.preventDefault();
         event.stopPropagation();
       }
       return;
     }
-    lastAnnotationPointerClick = null;
+    activeSession.lastAnnotationPointerClick = null;
     if (directHighlightEditorId) {
       const directInkHighlightEntry = isAnnotationCreationMode()
         ? null
@@ -2859,14 +2807,14 @@
       if (directInkHighlightEntry) {
         void activateExistingHighlightEditor(directHighlightEditorId, { focusEditor: false }).then((activated) => {
           if (!activated) return;
-          selectedAnnotationKind = "highlight";
-          hasSelectedHighlight = true;
-          selectedAnnotationEntryId = directInkHighlightEntry.id;
-          selectedPersistedAnnotationKey = persistedAnnotationKey(
+          activeSession.selectedAnnotationKind = "highlight";
+          activeSession.hasSelectedHighlight = true;
+          activeSession.selectedAnnotationEntryId = directInkHighlightEntry.id;
+          activeSession.selectedPersistedAnnotationKey = persistedAnnotationKey(
             directInkHighlightEntry.page,
             directInkHighlightEntry.sourceId,
           );
-          status = "Selected highlight. Change color or delete it, then save.";
+          activeSession.status = "Selected highlight. Change color or delete it, then save.";
         });
         queueEditorStateRefresh(0, 100, 250);
         return;
@@ -2911,7 +2859,7 @@
       !directFreeTextEditorId &&
       !directInkEditorId
     ) {
-      if (annotationFocusBox || selectedAnnotationEntryId || selectedPersistedAnnotationKey || selectedAnnotationKind) {
+      if (activeSession.annotationFocusBox || activeSession.selectedAnnotationEntryId || activeSession.selectedPersistedAnnotationKey || activeSession.selectedAnnotationKind) {
         clearAnnotationFocusSelection(true);
       }
       return;
@@ -2986,12 +2934,12 @@
   }
 
   function countHighlightEditorsInManager() {
-    if (!annotationEditorUIManager || !pdfDocument) {
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfDocument) {
       return 0;
     }
     let count = 0;
-    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
-      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+    for (let pageIndex = 0; pageIndex < activeSession.pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of activeSession.annotationEditorUIManager.getEditors(pageIndex)) {
         if (isHighlightEditor(editor) && !editor.deleted) {
           count += 1;
         }
@@ -3009,26 +2957,26 @@
     methodOfCreation: string;
     resetModeToNone: boolean;
   }) {
-    const uiManager = annotationEditorUIManager;
-    const viewer = pdfViewer;
+    const uiManager = activeSession.annotationEditorUIManager;
+    const viewer = activeSession.pdfViewer;
     if (!uiManager || !viewer) {
-      status = "Highlight unavailable: PDF.js annotation manager not ready yet.";
+      activeSession.status = "Highlight unavailable: PDF.js annotation manager not ready yet.";
       return false;
     }
     const selection = document.getSelection();
     const liveSelectionText = selection?.toString().trim() ?? "";
-    const selectionText = liveSelectionText || rememberedSelectionText;
+    const selectionText = liveSelectionText || activeSession.rememberedSelectionText;
     const ranges =
       selection && liveSelectionText
         ? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange())
-        : rememberedSelectionRanges.map((range) => range.cloneRange());
+        : activeSession.rememberedSelectionRanges.map((range) => range.cloneRange());
     if (!selectionText || ranges.length === 0) {
-      status = "Select text in the PDF first, then press Highlight.";
+      activeSession.status = "Select text in the PDF first, then press Highlight.";
       return false;
     }
     let before = countHighlightEditorsInManager();
     let previousHighlightEditorIds = new Set(highlightEditorIds());
-    const switchedIntoHighlightMode = activeTool !== "highlight";
+    const switchedIntoHighlightMode = activeSession.activeTool !== "highlight";
     const finishCreatedHighlight = () => {
       cacheNewHighlightDetails(previousHighlightEditorIds, selectionText);
       document.getSelection()?.removeAllRanges();
@@ -3037,12 +2985,12 @@
         unselectAllIgnoringPdfjsSignalBug();
         syncSelectedEditorState();
       }
-      rememberedSelectionText = "";
-      rememberedSelectionRanges = [];
-      isDirty = true;
+      activeSession.rememberedSelectionText = "";
+      activeSession.rememberedSelectionRanges = [];
+      activeSession.isDirty = true;
       void refreshAnnotationSidebar();
       queueEditorStateRefresh(150, 500);
-      status = createdStatus;
+      activeSession.status = createdStatus;
       return true;
     };
     if (switchedIntoHighlightMode) {
@@ -3060,7 +3008,7 @@
       pdfjsLib.AnnotationEditorParamsType.HIGHLIGHT_COLOR,
       highlightColors[defaultHighlightColor],
     );
-    status = `Creating highlight from ${selectionText.length} selected characters...`;
+    activeSession.status = `Creating highlight from ${selectionText.length} selected characters...`;
 
     const restoreSelection = () => {
       const currentSelection = document.getSelection();
@@ -3077,7 +3025,7 @@
     const currentSelection = document.getSelection();
     const textLayer = currentSelection ? getSelectionAnchorElement(currentSelection)?.closest(".textLayer") : null;
     if (!currentSelection || currentSelection.rangeCount === 0 || !textLayer) {
-      status = "PDF.js could not build highlight geometry from the current selection.";
+      activeSession.status = "PDF.js could not build highlight geometry from the current selection.";
       return false;
     }
     uiManager.highlightSelection(methodOfCreation);
@@ -3087,15 +3035,15 @@
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    status = "PDF.js did not create a visible highlight. Try Highlight mode, then drag across text.";
+    activeSession.status = "PDF.js did not create a visible highlight. Try Highlight mode, then drag across text.";
     return false;
   }
 
   function highlightEditorIds() {
-    if (!annotationEditorUIManager || !pdfDocument) return [];
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfDocument) return [];
     const ids: string[] = [];
-    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
-      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+    for (let pageIndex = 0; pageIndex < activeSession.pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of activeSession.annotationEditorUIManager.getEditors(pageIndex)) {
         if (isHighlightEditor(editor) && !editor.deleted) {
           ids.push(editor.id);
         }
@@ -3105,25 +3053,25 @@
   }
 
   function cacheNewHighlightDetails(previousIds: Set<string>, detail: string) {
-    if (!annotationEditorUIManager || !pdfDocument) return;
-    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
-      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfDocument) return;
+    for (let pageIndex = 0; pageIndex < activeSession.pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of activeSession.annotationEditorUIManager.getEditors(pageIndex)) {
         if (
           isHighlightEditor(editor) &&
           !editor.deleted &&
           !previousIds.has(editor.id) &&
           !persistedSourceIdForEditor(editor)
         ) {
-          annotationDetailCache.set(`live:${editor.id}`, detail.trim());
+          activeSession.annotationDetailCache.set(`live:${editor.id}`, detail.trim());
         }
       }
     }
   }
 
   function hasNewUnsavedHighlightEditor(previousIds: Set<string>) {
-    if (!annotationEditorUIManager || !pdfDocument) return false;
-    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
-      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfDocument) return false;
+    for (let pageIndex = 0; pageIndex < activeSession.pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of activeSession.annotationEditorUIManager.getEditors(pageIndex)) {
         if (
           isHighlightEditor(editor) &&
           !editor.deleted &&
@@ -3139,18 +3087,18 @@
 
   function hasTextSelectionForHighlight() {
     const selectionText = document.getSelection()?.toString().trim() ?? "";
-    return Boolean(selectionText || rememberedSelectionText);
+    return Boolean(selectionText || activeSession.rememberedSelectionText);
   }
 
   function clearRememberedSelection() {
-    rememberedSelectionText = "";
-    rememberedSelectionRanges = [];
+    activeSession.rememberedSelectionText = "";
+    activeSession.rememberedSelectionRanges = [];
   }
 
   function toggleAnnotationTool(tool: Exclude<EditorTool, "none">, event?: PointerEvent) {
     event?.preventDefault();
     event?.stopPropagation();
-    if (activeTool === tool) {
+    if (activeSession.activeTool === tool) {
       setTool("none");
       clearRememberedSelection();
       unselectAllIgnoringPdfjsSignalBug();
@@ -3166,14 +3114,14 @@
   }
 
   function isAnnotationCreationMode() {
-    return activeTool !== "none" && !selectedAnnotationKind;
+    return activeSession.activeTool !== "none" && !activeSession.selectedAnnotationKind;
   }
 
   function syncInkEditorHitAreas() {
-    document.querySelectorAll(".ink-hit-area").forEach((element) => element.remove());
-    if (!annotationEditorUIManager || !pdfDocument) return;
-    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
-      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+    activeSession.containerEl.querySelectorAll(".ink-hit-area").forEach((element) => element.remove());
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfDocument) return;
+    for (let pageIndex = 0; pageIndex < activeSession.pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of activeSession.annotationEditorUIManager.getEditors(pageIndex)) {
         if (isInkEditor(editor) && !editor.deleted) {
           addInkEditorHitArea(editor);
         }
@@ -3239,58 +3187,58 @@
   function syncSelectedEditorState(persistedKeyHint: unknown = null) {
     const normalizedPersistedKeyHint = typeof persistedKeyHint === "string" ? persistedKeyHint : null;
     syncInkEditorHitAreas();
-    const firstSelectedEditor = annotationEditorUIManager?.firstSelectedEditor;
+    const firstSelectedEditor = activeSession.annotationEditorUIManager?.firstSelectedEditor;
     const editor = editorBelongsToCurrentManager(firstSelectedEditor) ? firstSelectedEditor : null;
-    if (activeTool === "none") {
+    if (activeSession.activeTool === "none") {
       const editorKey = persistedAnnotationKeyForEditor(editor);
       const liveKey = editor ? `live:${editor.id}` : null;
       const staleSelection =
         !editor ||
-        (selectedPersistedAnnotationKey
-          ? editorKey !== selectedPersistedAnnotationKey
-          : selectedAnnotationEntryId !== liveKey && !selectedAnnotationKind);
+        (activeSession.selectedPersistedAnnotationKey
+          ? editorKey !== activeSession.selectedPersistedAnnotationKey
+          : activeSession.selectedAnnotationEntryId !== liveKey && !activeSession.selectedAnnotationKind);
       if (staleSelection) {
         if (remapSelectedInkHighlightEntry()) {
           return;
         }
-        selectedAnnotationKind = null;
-        selectedAnnotationColor = null;
-        hasSelectedHighlight = false;
-        selectedHighlightColor = null;
-        selectedAnnotationEntryId = null;
-        selectedPersistedAnnotationKey = null;
+        activeSession.selectedAnnotationKind = null;
+        activeSession.selectedAnnotationColor = null;
+        activeSession.hasSelectedHighlight = false;
+        activeSession.selectedHighlightColor = null;
+        activeSession.selectedAnnotationEntryId = null;
+        activeSession.selectedPersistedAnnotationKey = null;
         return;
       }
     }
     if (!editor) {
-      selectedAnnotationKind = null;
-      selectedAnnotationColor = null;
-      hasSelectedHighlight = false;
-      selectedHighlightColor = null;
-      selectedAnnotationEntryId = null;
-      selectedPersistedAnnotationKey = null;
+      activeSession.selectedAnnotationKind = null;
+      activeSession.selectedAnnotationColor = null;
+      activeSession.hasSelectedHighlight = false;
+      activeSession.selectedHighlightColor = null;
+      activeSession.selectedAnnotationEntryId = null;
+      activeSession.selectedPersistedAnnotationKey = null;
       return;
     }
-    selectedAnnotationKind = annotationKindForEditor(editor);
-    if (selectedAnnotationKind) {
-      annotationFocusBox = null;
+    activeSession.selectedAnnotationKind = annotationKindForEditor(editor);
+    if (activeSession.selectedAnnotationKind) {
+      activeSession.annotationFocusBox = null;
     }
-    selectedAnnotationColor = editor.color ?? null;
-    hasSelectedHighlight = isHighlightEditor(editor);
-    selectedHighlightColor = hasSelectedHighlight ? highlightColorNameForValue(editor?.color ?? null) : null;
-    selectedAnnotationEntryId = `live:${editor.id}`;
-    selectedPersistedAnnotationKey = persistedAnnotationKeyForEditor(editor) ?? normalizedPersistedKeyHint;
-    if (selectedPersistedAnnotationKey) {
-      persistedAnnotationKeyByEditorId.set(editor.id, selectedPersistedAnnotationKey);
+    activeSession.selectedAnnotationColor = editor.color ?? null;
+    activeSession.hasSelectedHighlight = isHighlightEditor(editor);
+    activeSession.selectedHighlightColor = activeSession.hasSelectedHighlight ? highlightColorNameForValue(editor?.color ?? null) : null;
+    activeSession.selectedAnnotationEntryId = `live:${editor.id}`;
+    activeSession.selectedPersistedAnnotationKey = persistedAnnotationKeyForEditor(editor) ?? normalizedPersistedKeyHint;
+    if (activeSession.selectedPersistedAnnotationKey) {
+      activeSession.persistedAnnotationKeyByEditorId.set(editor.id, activeSession.selectedPersistedAnnotationKey);
     }
     remapSelectedInkHighlightEntry();
   }
 
 
   function findFirstHighlightEditor() {
-    if (!annotationEditorUIManager || !pdfDocument) return null;
-    for (let pageIndex = 0; pageIndex < pdfDocument.numPages; pageIndex += 1) {
-      for (const editor of annotationEditorUIManager.getEditors(pageIndex)) {
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfDocument) return null;
+    for (let pageIndex = 0; pageIndex < activeSession.pdfDocument.numPages; pageIndex += 1) {
+      for (const editor of activeSession.annotationEditorUIManager.getEditors(pageIndex)) {
         if (isHighlightEditor(editor) && !editor.deleted) {
           return editor;
         }
@@ -3300,11 +3248,11 @@
   }
 
   async function selectFirstHighlight() {
-    if (!annotationEditorUIManager || !pdfDocument) {
-      status = "No PDF loaded.";
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfDocument) {
+      activeSession.status = "No PDF loaded.";
       return false;
     }
-    if (activeTool !== "highlight") {
+    if (activeSession.activeTool !== "highlight") {
       setTool("highlight");
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
@@ -3313,113 +3261,113 @@
       await new Promise((resolve) => setTimeout(resolve, 100));
       editor = findFirstHighlightEditor();
     }
-    if (!editor || !annotationEditorUIManager) {
-      status = "No highlight found to select.";
+    if (!editor || !activeSession.annotationEditorUIManager) {
+      activeSession.status = "No highlight found to select.";
       return false;
     }
-    annotationEditorUIManager.setSelected(editor);
-    selectedAnnotationEntryId = `live:${editor.id}`;
+    activeSession.annotationEditorUIManager.setSelected(editor);
+    activeSession.selectedAnnotationEntryId = `live:${editor.id}`;
     syncSelectedEditorState();
-    status = "Selected highlight. Change color or delete it, then save.";
+    activeSession.status = "Selected highlight. Change color or delete it, then save.";
     return true;
   }
 
   function applyHighlightColor(colorName: HighlightColorName) {
-    if (!annotationEditorUIManager) {
-      status = "Highlight color unavailable: PDF.js annotation manager not ready yet.";
+    if (!activeSession.annotationEditorUIManager) {
+      activeSession.status = "Highlight color unavailable: PDF.js annotation manager not ready yet.";
       return;
     }
     defaultHighlightColor = colorName;
-    annotationEditorUIManager.updateParams(
+    activeSession.annotationEditorUIManager.updateParams(
       pdfjsLib.AnnotationEditorParamsType.HIGHLIGHT_COLOR,
       highlightColors[colorName],
     );
-    if (hasSelectedHighlight) {
-      if (isInkEditor(annotationEditorUIManager.firstSelectedEditor)) {
-        annotationEditorUIManager.updateParams(
+    if (activeSession.hasSelectedHighlight) {
+      if (isInkEditor(activeSession.annotationEditorUIManager.firstSelectedEditor)) {
+        activeSession.annotationEditorUIManager.updateParams(
           pdfjsLib.AnnotationEditorParamsType.INK_COLOR_AND_OPACITY,
           { color: highlightColors[colorName], opacity: defaultInkOpacity },
         );
       }
-      selectedHighlightColor = colorName;
-      selectedAnnotationColor = highlightColors[colorName];
-      isDirty = true;
+      activeSession.selectedHighlightColor = colorName;
+      activeSession.selectedAnnotationColor = highlightColors[colorName];
+      activeSession.isDirty = true;
       void refreshAnnotationSidebar();
       queueEditorStateRefresh(150, 500);
-      status = `Changed selected highlight to ${colorName}. Save to persist it into the PDF.`;
+      activeSession.status = `Changed selected highlight to ${colorName}. Save to persist it into the PDF.`;
       return;
     }
-    if (activeTool !== "highlight") {
+    if (activeSession.activeTool !== "highlight") {
       syncSelectedEditorState();
-      status = `Default highlight color set to ${colorName}.`;
+      activeSession.status = `Default highlight color set to ${colorName}.`;
       return;
     }
-    status = `Next highlight will use ${colorName}.`;
+    activeSession.status = `Next highlight will use ${colorName}.`;
   }
 
 
   function applyFreeTextColor(colorName: FreeTextColorName) {
-    if (!annotationEditorUIManager) {
-      status = "Free text color unavailable: PDF.js annotation manager not ready yet.";
+    if (!activeSession.annotationEditorUIManager) {
+      activeSession.status = "Free text color unavailable: PDF.js annotation manager not ready yet.";
       return;
     }
     defaultFreeTextColor = colorName;
-    annotationEditorUIManager.updateParams(
+    activeSession.annotationEditorUIManager.updateParams(
       pdfjsLib.AnnotationEditorParamsType.FREETEXT_COLOR,
       freeTextColors[colorName],
     );
-    if (selectedAnnotationKind === "freetext") {
-      selectedAnnotationColor = freeTextColors[colorName];
-      isDirty = true;
+    if (activeSession.selectedAnnotationKind === "freetext") {
+      activeSession.selectedAnnotationColor = freeTextColors[colorName];
+      activeSession.isDirty = true;
       void refreshAnnotationSidebar();
       queueEditorStateRefresh(150, 500);
-      status = `Changed selected free text to ${colorName}. Save to persist it into the PDF.`;
+      activeSession.status = `Changed selected free text to ${colorName}. Save to persist it into the PDF.`;
       return;
     }
-    if (activeTool !== "text") {
+    if (activeSession.activeTool !== "text") {
       syncSelectedEditorState();
-      status = `Default free-text color set to ${colorName}.`;
+      activeSession.status = `Default free-text color set to ${colorName}.`;
       return;
     }
-    status = `Next free text will use ${colorName}.`;
+    activeSession.status = `Next free text will use ${colorName}.`;
   }
 
   function applyInkColor(colorName: InkColorName) {
-    if (!annotationEditorUIManager) {
-      status = "Ink color unavailable: PDF.js annotation manager not ready yet.";
+    if (!activeSession.annotationEditorUIManager) {
+      activeSession.status = "Ink color unavailable: PDF.js annotation manager not ready yet.";
       return;
     }
     defaultInkColor = colorName;
-    annotationEditorUIManager.updateParams(
+    activeSession.annotationEditorUIManager.updateParams(
       pdfjsLib.AnnotationEditorParamsType.INK_COLOR_AND_OPACITY,
       { color: inkColors[colorName], opacity: defaultInkOpacity },
     );
-    if (selectedAnnotationKind === "ink") {
-      selectedAnnotationColor = inkColors[colorName];
-      isDirty = true;
+    if (activeSession.selectedAnnotationKind === "ink") {
+      activeSession.selectedAnnotationColor = inkColors[colorName];
+      activeSession.isDirty = true;
       void refreshAnnotationSidebar();
       queueEditorStateRefresh(150, 500);
-      status = `Changed selected ink to ${colorName}. Save to persist it into the PDF.`;
+      activeSession.status = `Changed selected ink to ${colorName}. Save to persist it into the PDF.`;
       return;
     }
-    if (activeTool !== "ink") {
+    if (activeSession.activeTool !== "ink") {
       syncSelectedEditorState();
-      status = `Default ink color set to ${colorName}.`;
+      activeSession.status = `Default ink color set to ${colorName}.`;
       return;
     }
-    status = `Next ink will use ${colorName}.`;
+    activeSession.status = `Next ink will use ${colorName}.`;
   }
 
   function isHighlightSwatchActive(colorName: string) {
-    return (hasSelectedHighlight ? selectedHighlightColor : defaultHighlightColor) === colorName;
+    return (activeSession.hasSelectedHighlight ? activeSession.selectedHighlightColor : defaultHighlightColor) === colorName;
   }
 
   function isFreeTextSwatchActive(colorName: string) {
-    return activeTool === "text" && (freeTextColorNameForValue(selectedAnnotationColor) ?? defaultFreeTextColor) === colorName;
+    return activeSession.activeTool === "text" && (freeTextColorNameForValue(activeSession.selectedAnnotationColor) ?? defaultFreeTextColor) === colorName;
   }
 
   function isInkSwatchActive(colorName: string) {
-    return activeTool === "ink" && (inkColorNameForValue(selectedAnnotationColor) ?? defaultInkColor) === colorName;
+    return activeSession.activeTool === "ink" && (inkColorNameForValue(activeSession.selectedAnnotationColor) ?? defaultInkColor) === colorName;
   }
 
   function applyHighlightSwatchColor(colorName: string) {
@@ -3435,93 +3383,93 @@
   }
 
   function applyInkThickness(thickness: number) {
-    if (!annotationEditorUIManager) {
-      status = "Ink thickness unavailable: PDF.js annotation manager not ready yet.";
+    if (!activeSession.annotationEditorUIManager) {
+      activeSession.status = "Ink thickness unavailable: PDF.js annotation manager not ready yet.";
       return;
     }
     defaultInkThickness = thickness;
-    annotationEditorUIManager.updateParams(
+    activeSession.annotationEditorUIManager.updateParams(
       pdfjsLib.AnnotationEditorParamsType.INK_THICKNESS,
       thickness,
     );
-    if (selectedAnnotationKind === "ink") {
-      isDirty = true;
+    if (activeSession.selectedAnnotationKind === "ink") {
+      activeSession.isDirty = true;
       void refreshAnnotationSidebar();
       queueEditorStateRefresh(150, 500);
-      status = `Changed selected ink thickness to ${thickness}. Save to persist it into the PDF.`;
+      activeSession.status = `Changed selected ink thickness to ${thickness}. Save to persist it into the PDF.`;
       return;
     }
-    if (activeTool !== "ink") {
+    if (activeSession.activeTool !== "ink") {
       syncSelectedEditorState();
-      status = `Default ink thickness set to ${thickness}.`;
+      activeSession.status = `Default ink thickness set to ${thickness}.`;
       return;
     }
-    status = `Next ink thickness will be ${thickness}.`;
+    activeSession.status = `Next ink thickness will be ${thickness}.`;
   }
 
   function applyInkMarkerPreset() {
-    if (!annotationEditorUIManager) {
-      status = "Ink marker unavailable: PDF.js annotation manager not ready yet.";
+    if (!activeSession.annotationEditorUIManager) {
+      activeSession.status = "Ink marker unavailable: PDF.js annotation manager not ready yet.";
       return;
     }
     defaultInkColor = "yellow";
     defaultInkThickness = 14;
     defaultInkOpacity = 0.45;
-    annotationEditorUIManager.updateParams(
+    activeSession.annotationEditorUIManager.updateParams(
       pdfjsLib.AnnotationEditorParamsType.INK_COLOR_AND_OPACITY,
       // Marker preset is highlighter-intent ink (ADR 0012): it uses the pastel
       // highlight yellow, not the saturated ink yellow.
       { color: highlightColors.yellow, opacity: defaultInkOpacity },
     );
-    annotationEditorUIManager.updateParams(
+    activeSession.annotationEditorUIManager.updateParams(
       pdfjsLib.AnnotationEditorParamsType.INK_THICKNESS,
       defaultInkThickness,
     );
-    if (selectedAnnotationKind === "ink") {
-      selectedAnnotationColor = highlightColors.yellow;
-      isDirty = true;
+    if (activeSession.selectedAnnotationKind === "ink") {
+      activeSession.selectedAnnotationColor = highlightColors.yellow;
+      activeSession.isDirty = true;
       void refreshAnnotationSidebar();
       queueEditorStateRefresh(150, 500);
-      status = "Changed selected ink to marker. Save to persist it into the PDF.";
+      activeSession.status = "Changed selected ink to marker. Save to persist it into the PDF.";
       return;
     }
-    if (activeTool !== "ink") {
+    if (activeSession.activeTool !== "ink") {
       syncSelectedEditorState();
-      status = "Marker preset selected.";
+      activeSession.status = "Marker preset selected.";
       return;
     }
-    status = "Marker preset selected.";
+    activeSession.status = "Marker preset selected.";
   }
 
   function deleteSelectedAnnotation() {
-    const manager = annotationEditorUIManager;
+    const manager = activeSession.annotationEditorUIManager;
     const firstSelectedEditor = manager?.firstSelectedEditor;
     const selectedEditor = editorBelongsToCurrentManager(firstSelectedEditor) ? firstSelectedEditor : null;
     if (!manager || !selectedEditor) {
-      status = "Select an annotation first, then delete it.";
+      activeSession.status = "Select an annotation first, then delete it.";
       return false;
     }
-    if (selectedPersistedAnnotationKey && persistedAnnotationKeyForEditor(selectedEditor) !== selectedPersistedAnnotationKey) {
-      const persistedSelection = persistedAnnotationKeyParts(selectedPersistedAnnotationKey);
+    if (activeSession.selectedPersistedAnnotationKey && persistedAnnotationKeyForEditor(selectedEditor) !== activeSession.selectedPersistedAnnotationKey) {
+      const persistedSelection = persistedAnnotationKeyParts(activeSession.selectedPersistedAnnotationKey);
       const expectedEditor =
-        persistedSelection && selectedAnnotationKind
-          ? findEditorByPersistedSourceId(persistedSelection.sourceId, selectedAnnotationKind, manager)
+        persistedSelection && activeSession.selectedAnnotationKind
+          ? findEditorByPersistedSourceId(persistedSelection.sourceId, activeSession.selectedAnnotationKind, manager)
           : null;
       if (expectedEditor && editorBelongsToManager(expectedEditor, manager) && expectedEditor.remove) {
-        const wasHighlight = selectedAnnotationKind === "highlight";
-        const wasFreeText = selectedAnnotationKind === "freetext";
-        pendingDeletedPersistedAnnotationKeys.add(selectedPersistedAnnotationKey);
+        const wasHighlight = activeSession.selectedAnnotationKind === "highlight";
+        const wasFreeText = activeSession.selectedAnnotationKind === "freetext";
+        activeSession.pendingDeletedPersistedAnnotationKeys.add(activeSession.selectedPersistedAnnotationKey);
         expectedEditor.remove();
-        selectedAnnotationKind = null;
-        selectedAnnotationColor = null;
-        hasSelectedHighlight = false;
-        selectedHighlightColor = null;
-        selectedAnnotationEntryId = null;
-        selectedPersistedAnnotationKey = null;
-        isDirty = true;
+        activeSession.selectedAnnotationKind = null;
+        activeSession.selectedAnnotationColor = null;
+        activeSession.hasSelectedHighlight = false;
+        activeSession.selectedHighlightColor = null;
+        activeSession.selectedAnnotationEntryId = null;
+        activeSession.selectedPersistedAnnotationKey = null;
+        activeSession.isDirty = true;
         void refreshAnnotationSidebar();
         queueEditorStateRefresh(100, 250, 500);
-        status = wasHighlight
+        activeSession.status = wasHighlight
           ? "Deleted selected highlight. Save to persist it into the PDF."
           : wasFreeText
             ? "Deleted selected free text. Save to persist it into the PDF."
@@ -3529,43 +3477,43 @@
         return true;
       }
       if (
-        !selectedAnnotationKind ||
+        !activeSession.selectedAnnotationKind ||
         !persistedSelection ||
         !isPersistedAnnotationHidden(persistedSelection.pageNumber, persistedSelection.sourceId)
       ) {
-        status = "Selected annotation changed before delete. Select it again, then delete.";
+        activeSession.status = "Selected annotation changed before delete. Select it again, then delete.";
         return false;
       }
-      pendingDeletedPersistedAnnotationKeys.add(selectedPersistedAnnotationKey);
-      selectedAnnotationKind = null;
-      selectedAnnotationColor = null;
-      hasSelectedHighlight = false;
-      selectedHighlightColor = null;
-      selectedAnnotationEntryId = null;
-      selectedPersistedAnnotationKey = null;
-      isDirty = true;
+      activeSession.pendingDeletedPersistedAnnotationKeys.add(activeSession.selectedPersistedAnnotationKey);
+      activeSession.selectedAnnotationKind = null;
+      activeSession.selectedAnnotationColor = null;
+      activeSession.hasSelectedHighlight = false;
+      activeSession.selectedHighlightColor = null;
+      activeSession.selectedAnnotationEntryId = null;
+      activeSession.selectedPersistedAnnotationKey = null;
+      activeSession.isDirty = true;
       void refreshAnnotationSidebar();
       queueEditorStateRefresh(100, 250, 500);
-      status = "Deleted selected annotation. Save to persist it into the PDF.";
+      activeSession.status = "Deleted selected annotation. Save to persist it into the PDF.";
       return true;
     }
     const wasHighlight = isHighlightEditor(selectedEditor);
     const wasFreeText = isFreeTextEditor(selectedEditor);
-    const pendingDeleteKey = persistedAnnotationKeyForEditor(selectedEditor) ?? selectedPersistedAnnotationKey;
+    const pendingDeleteKey = persistedAnnotationKeyForEditor(selectedEditor) ?? activeSession.selectedPersistedAnnotationKey;
     if (pendingDeleteKey) {
-      pendingDeletedPersistedAnnotationKeys.add(pendingDeleteKey);
+      activeSession.pendingDeletedPersistedAnnotationKeys.add(pendingDeleteKey);
     }
     manager.delete();
-    selectedAnnotationKind = null;
-    selectedAnnotationColor = null;
-    hasSelectedHighlight = false;
-    selectedHighlightColor = null;
-    selectedAnnotationEntryId = null;
-    selectedPersistedAnnotationKey = null;
-    isDirty = true;
+    activeSession.selectedAnnotationKind = null;
+    activeSession.selectedAnnotationColor = null;
+    activeSession.hasSelectedHighlight = false;
+    activeSession.selectedHighlightColor = null;
+    activeSession.selectedAnnotationEntryId = null;
+    activeSession.selectedPersistedAnnotationKey = null;
+    activeSession.isDirty = true;
     void refreshAnnotationSidebar();
     queueEditorStateRefresh(100, 250, 500);
-    status = wasHighlight
+    activeSession.status = wasHighlight
       ? "Deleted selected highlight. Save to persist it into the PDF."
       : wasFreeText
         ? "Deleted selected free text. Save to persist it into the PDF."
@@ -3574,7 +3522,7 @@
   }
 
   function selectFirstText() {
-    const spans = [...document.querySelectorAll<HTMLElement>(".textLayer span")];
+    const spans = [...activeSession.containerEl.querySelectorAll<HTMLElement>(".textLayer span")];
     const child = spans
       .flatMap((node) => [...node.childNodes])
       .find((node) => node.nodeType === Node.TEXT_NODE && (node.textContent?.trim().length ?? 0) > 8);
@@ -3594,43 +3542,43 @@
   }
 
   function moveSelectedAnnotation(x: number, y: number) {
-    if (!annotationEditorUIManager?.firstSelectedEditor) {
+    if (!activeSession.annotationEditorUIManager?.firstSelectedEditor) {
       return false;
     }
-    const movableManager = annotationEditorUIManager as AnnotationEditorUIManager & {
+    const movableManager = activeSession.annotationEditorUIManager as AnnotationEditorUIManager & {
       translateSelectedEditors?: (x: number, y: number, noCommit?: boolean) => void;
     };
     movableManager.translateSelectedEditors?.(x, y, true);
     syncSelectedEditorState();
-    isDirty = true;
+    activeSession.isDirty = true;
     void refreshAnnotationSidebar();
     return true;
   }
 
   function zoomIn() {
-    if (!pdfViewer) return;
-    pdfViewer.currentScale = Math.min(pdfViewer.currentScale * 1.1, 5);
-    scaleLabel = `${Math.round(pdfViewer.currentScale * 100)}%`;
+    if (!activeSession.pdfViewer) return;
+    activeSession.pdfViewer.currentScale = Math.min(activeSession.pdfViewer.currentScale * 1.1, 5);
+    activeSession.scaleLabel = `${Math.round(activeSession.pdfViewer.currentScale * 100)}%`;
   }
 
   function zoomOut() {
-    if (!pdfViewer) return;
-    pdfViewer.currentScale = Math.max(pdfViewer.currentScale / 1.1, 0.2);
-    scaleLabel = `${Math.round(pdfViewer.currentScale * 100)}%`;
+    if (!activeSession.pdfViewer) return;
+    activeSession.pdfViewer.currentScale = Math.max(activeSession.pdfViewer.currentScale / 1.1, 0.2);
+    activeSession.scaleLabel = `${Math.round(activeSession.pdfViewer.currentScale * 100)}%`;
   }
 
   function fitWidth() {
-    if (!pdfViewer) return;
-    pdfViewer.currentScaleValue = "page-width";
-    scaleLabel = "Fit Width";
+    if (!activeSession.pdfViewer) return;
+    activeSession.pdfViewer.currentScaleValue = "page-width";
+    activeSession.scaleLabel = "Fit Width";
   }
 
   async function savePdf() {
-    if (!currentPath) {
+    if (!activeSession.currentPath) {
       await savePdfAs();
       return;
     }
-    await persistPdf(currentPath);
+    await persistPdf(activeSession.currentPath);
   }
 
   async function savePdfAs() {
@@ -3644,66 +3592,66 @@
   }
 
   async function persistPdf(path: string) {
-    if (!pdfDocument) return;
+    if (!activeSession.pdfDocument) return;
 
-    isBusy = true;
-    status = "Saving annotations into PDF...";
+    activeSession.isBusy = true;
+    activeSession.status = "Saving annotations into PDF...";
     try {
       const saved = await savePdfDocumentBytes();
       await invoke("write_pdf_atomic", {
         path,
         bytes: Array.from(saved),
       });
-      currentPath = path;
-      isDirty = false;
+      activeSession.currentPath = path;
+      activeSession.isDirty = false;
       await refreshAnnotationSidebar();
-      status = `Saved ${path}`;
+      activeSession.status = `Saved ${path}`;
     } catch (error) {
-      status = `Save failed: ${formatError(error)}`;
+      activeSession.status = `Save failed: ${formatError(error)}`;
     } finally {
-      isBusy = false;
+      activeSession.isBusy = false;
     }
   }
 
   async function savePdfDocumentBytes() {
-    if (!pdfDocument) throw new Error("No PDF loaded");
-    const saved = new Uint8Array(await pdfDocument.saveDocument());
+    if (!activeSession.pdfDocument) throw new Error("No PDF loaded");
+    const saved = new Uint8Array(await activeSession.pdfDocument.saveDocument());
     return writePdfOutlineState(saved, {
       bookmarkRootTitle,
-      bookmarks: bookmarkEntries,
-      documentOutlineEntries: outlineEntries,
+      bookmarks: activeSession.bookmarkEntries,
+      documentOutlineEntries: activeSession.outlineEntries,
     });
   }
 
   async function createPageFreeText(text = "Regression free text", pageNumber = 1) {
-    if (!annotationEditorUIManager || !pdfDocument) {
+    if (!activeSession.annotationEditorUIManager || !activeSession.pdfDocument) {
       throw new Error("No PDF loaded");
     }
     setTool("text");
     await new Promise((resolve) => setTimeout(resolve, 100));
-    annotationEditorUIManager.updateParams(
+    activeSession.annotationEditorUIManager.updateParams(
       pdfjsLib.AnnotationEditorParamsType.FREETEXT_COLOR,
       freeTextColors[defaultFreeTextColor],
     );
-    const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const pageElement = activeSession.containerEl.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
     if (pageElement) {
-      containerEl.scrollTop = Math.max(pageElement.offsetTop - 20, 0);
+      activeSession.containerEl.scrollTop = Math.max(pageElement.offsetTop - 20, 0);
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
-    const layerElement = document.querySelector<HTMLElement>(
+    const layerElement = activeSession.containerEl.querySelector<HTMLElement>(
       `.page[data-page-number="${pageNumber}"] .annotationEditorLayer`,
     );
     if (!layerElement) {
       throw new Error(`No annotation editor layer for page ${pageNumber}`);
     }
     const rect = layerElement.getBoundingClientRect();
-    const layer = annotationEditorUIManager.findParent(rect.x + 20, rect.y + 20);
+    const layer = activeSession.annotationEditorUIManager.findParent(rect.x + 20, rect.y + 20);
     if (!layer) {
       throw new Error(`No editor layer instance for page ${pageNumber}`);
     }
     const createdEditor = layer.createAndAddNewEditor({ offsetX: 160, offsetY: 220 }, false);
     await new Promise((resolve) => setTimeout(resolve, 100));
-    const editor = document.querySelector<HTMLElement>(
+    const editor = activeSession.containerEl.querySelector<HTMLElement>(
       `.page[data-page-number="${pageNumber}"] .freeTextEditor [contenteditable="true"], .page[data-page-number="${pageNumber}"] .freeTextEditor .internal`,
     );
     if (!editor) {
@@ -3722,28 +3670,28 @@
     );
     createdEditor?.commit?.();
     syncSelectedEditorState();
-    isDirty = true;
+    activeSession.isDirty = true;
     void refreshAnnotationSidebar();
     queueEditorStateRefresh(150, 500);
     return true;
   }
 
   async function editSelectedFreeText(text: string) {
-    const editor = annotationEditorUIManager?.firstSelectedEditor;
+    const editor = activeSession.annotationEditorUIManager?.firstSelectedEditor;
     if (!isFreeTextEditor(editor)) {
-      status = "Select free text first, then edit it.";
+      activeSession.status = "Select free text first, then edit it.";
       return false;
     }
-    if (activeTool !== "text") {
+    if (activeSession.activeTool !== "text") {
       await preparePdfjsEditorModeForEdit("text");
-      annotationEditorUIManager?.setSelected(editor);
+      activeSession.annotationEditorUIManager?.setSelected(editor);
     }
     editor.enterInEditMode?.();
     await new Promise((resolve) => setTimeout(resolve, 100));
     const editorElement = document.getElementById(editor.id);
     const textElement = editorElement?.querySelector<HTMLElement>(".internal, [contenteditable='true']");
     if (!textElement) {
-      status = "Could not find selected free-text editor content.";
+      activeSession.status = "Could not find selected free-text editor content.";
       return false;
     }
     textElement.focus();
@@ -3766,63 +3714,63 @@
       }),
     );
     editor.commit?.();
-    annotationDetailCache.delete(`live:${editor.id}`);
+    activeSession.annotationDetailCache.delete(`live:${editor.id}`);
     const persistedEntry = persistedAnnotationEntryForKey(
-      selectedPersistedAnnotationKey ?? persistedAnnotationKeyForEditor(editor),
+      activeSession.selectedPersistedAnnotationKey ?? persistedAnnotationKeyForEditor(editor),
     );
     if (persistedEntry) {
-      annotationDetailCache.delete(persistedEntry.id);
+      activeSession.annotationDetailCache.delete(persistedEntry.id);
     }
-    isDirty = true;
+    activeSession.isDirty = true;
     await new Promise((resolve) => setTimeout(resolve, 150));
     syncSelectedEditorState();
     await refreshAnnotationSidebar();
     queueEditorStateRefresh(500);
-    status = "Edited selected free text. Save to persist it into the PDF.";
+    activeSession.status = "Edited selected free text. Save to persist it into the PDF.";
     return true;
   }
 
   function teardownViewer() {
     unselectAllIgnoringPdfjsSignalBug();
-    pdfViewer?.setDocument(null as never);
-    (pdfDocument as { destroy?: () => void } | null)?.destroy?.();
-    pdfViewer = null;
-    pdfLinkService = null;
-    pdfDocument = null;
-    annotationEditorUIManager = null;
-    outlineEntries = [];
-    outlineStatus = "Open a PDF to inspect its outline.";
-    collapsedOutlineIds = [];
-    activeOutlineEntryId = null;
-    bookmarkEntries = [];
-    bookmarkStatus = "Open a PDF to inspect bookmarks.";
-    editingBookmarkId = null;
-    activeBookmarkId = null;
-    annotationEntries = [];
-    annotationStatus = "Open a PDF to inspect annotations.";
-    selectedAnnotationEntryId = null;
-    selectedPersistedAnnotationKey = null;
-    selectedAnnotationKind = null;
-    selectedAnnotationColor = null;
-    hasSelectedHighlight = false;
-    selectedHighlightColor = null;
-    activeTool = "none";
-    lastActivatedOutlineEntry = null;
-    annotationFocusBox = null;
-    annotationDetailCache.clear();
-    pendingDeletedPersistedAnnotationKeys.clear();
-    persistedAnnotationKeyByEditorId.clear();
-    persistedPositionByKey.clear();
-    if (annotationRefreshTimer) {
-      clearTimeout(annotationRefreshTimer);
-      annotationRefreshTimer = null;
+    activeSession.pdfViewer?.setDocument(null as never);
+    (activeSession.pdfDocument as { destroy?: () => void } | null)?.destroy?.();
+    activeSession.pdfViewer = null;
+    activeSession.pdfLinkService = null;
+    activeSession.pdfDocument = null;
+    activeSession.annotationEditorUIManager = null;
+    activeSession.outlineEntries = [];
+    activeSession.outlineStatus = "Open a PDF to inspect its outline.";
+    activeSession.collapsedOutlineIds = [];
+    activeSession.activeOutlineEntryId = null;
+    activeSession.bookmarkEntries = [];
+    activeSession.bookmarkStatus = "Open a PDF to inspect bookmarks.";
+    activeSession.editingBookmarkId = null;
+    activeSession.activeBookmarkId = null;
+    activeSession.annotationEntries = [];
+    activeSession.annotationStatus = "Open a PDF to inspect annotations.";
+    activeSession.selectedAnnotationEntryId = null;
+    activeSession.selectedPersistedAnnotationKey = null;
+    activeSession.selectedAnnotationKind = null;
+    activeSession.selectedAnnotationColor = null;
+    activeSession.hasSelectedHighlight = false;
+    activeSession.selectedHighlightColor = null;
+    activeSession.activeTool = "none";
+    activeSession.lastActivatedOutlineEntry = null;
+    activeSession.annotationFocusBox = null;
+    activeSession.annotationDetailCache.clear();
+    activeSession.pendingDeletedPersistedAnnotationKeys.clear();
+    activeSession.persistedAnnotationKeyByEditorId.clear();
+    activeSession.persistedPositionByKey.clear();
+    if (activeSession.annotationRefreshTimer) {
+      clearTimeout(activeSession.annotationRefreshTimer);
+      activeSession.annotationRefreshTimer = null;
     }
-    viewerEl.replaceChildren();
+    activeSession.viewerEl.replaceChildren();
   }
 
   function defaultSavePath() {
-    if (!currentPath) return "annotated.pdf";
-    return currentPath.replace(/\.pdf$/i, "-annotated.pdf");
+    if (!activeSession.currentPath) return "annotated.pdf";
+    return activeSession.currentPath.replace(/\.pdf$/i, "-annotated.pdf");
   }
 
   function toolLabel(tool: EditorTool) {
@@ -3899,11 +3847,11 @@
   }
 
   const fileName = $derived(
-    currentPath ? (currentPath.split("/").pop() ?? currentPath) : "No document",
+    activeSession.currentPath ? (activeSession.currentPath.split("/").pop() ?? activeSession.currentPath) : "No document",
   );
 
   $effect(() => {
-    void menuControls?.setSaveEnabled(Boolean(pdfDocument));
+    void menuControls?.setSaveEnabled(Boolean(activeSession.pdfDocument));
   });
 
   function activateDockTab(tab: SidebarTabId) {
@@ -4018,7 +3966,7 @@
   const headerColorEntries = $derived(headerColorNames.map((name) => annotationPaletteEntry(name)));
 
   $effect(() => {
-    if (toolPopover && activeTool !== toolPopover.tool) {
+    if (toolPopover && activeSession.activeTool !== toolPopover.tool) {
       toolPopover = null;
     }
   });
@@ -4033,40 +3981,40 @@
     defaultHighlightColor = name;
     defaultFreeTextColor = name;
     defaultInkColor = name;
-    if (!annotationEditorUIManager) return;
-    if (hasSelectedHighlight) applyHighlightColor(name);
-    else if (selectedAnnotationKind === "freetext") applyFreeTextColor(name);
-    else if (selectedAnnotationKind === "ink") applyInkColor(name);
-    else if (activeTool === "highlight") applyHighlightColor(name);
-    else if (activeTool === "text") applyFreeTextColor(name);
-    else if (activeTool === "ink") applyInkColor(name);
-    else status = `Annotation color set to ${name}.`;
+    if (!activeSession.annotationEditorUIManager) return;
+    if (activeSession.hasSelectedHighlight) applyHighlightColor(name);
+    else if (activeSession.selectedAnnotationKind === "freetext") applyFreeTextColor(name);
+    else if (activeSession.selectedAnnotationKind === "ink") applyInkColor(name);
+    else if (activeSession.activeTool === "highlight") applyHighlightColor(name);
+    else if (activeSession.activeTool === "text") applyFreeTextColor(name);
+    else if (activeSession.activeTool === "ink") applyInkColor(name);
+    else activeSession.status = `Annotation color set to ${name}.`;
   }
 
   function applyFreeTextFontSize(size: number) {
     defaultFreeTextFontSize = size;
-    if (!annotationEditorUIManager) {
-      status = "Free text size unavailable: PDF.js annotation manager not ready yet.";
+    if (!activeSession.annotationEditorUIManager) {
+      activeSession.status = "Free text size unavailable: PDF.js annotation manager not ready yet.";
       return;
     }
-    annotationEditorUIManager.updateParams(
+    activeSession.annotationEditorUIManager.updateParams(
       pdfjsLib.AnnotationEditorParamsType.FREETEXT_SIZE,
       size,
     );
-    if (selectedAnnotationKind === "freetext") {
-      isDirty = true;
+    if (activeSession.selectedAnnotationKind === "freetext") {
+      activeSession.isDirty = true;
       void refreshAnnotationSidebar();
       queueEditorStateRefresh(150, 500);
-      status = `Changed selected free text size to ${size}. Save to persist it into the PDF.`;
+      activeSession.status = `Changed selected free text size to ${size}. Save to persist it into the PDF.`;
       return;
     }
-    status = `Free text size set to ${size}px.`;
+    activeSession.status = `Free text size set to ${size}px.`;
   }
 
   function handleToolbarToggle(tool: Exclude<EditorTool, "none">, event: PointerEvent) {
     const anchor = (event.currentTarget as HTMLElement | null)?.getBoundingClientRect() ?? null;
     toggleAnnotationTool(tool, event);
-    const popoverTool = activeTool === "text" || activeTool === "ink" ? activeTool : null;
+    const popoverTool = activeSession.activeTool === "text" || activeSession.activeTool === "ink" ? activeSession.activeTool : null;
     toolPopover =
       popoverTool && anchor && popoverTool === tool ? { tool: popoverTool, anchor } : null;
   }
@@ -4091,25 +4039,25 @@
   <header class="topbar">
     <div class="brand">
       <span class="file">{fileName}</span>
-      {#if isDirty}
+      {#if activeSession.isDirty}
         <span class="dirty-dot" role="img" aria-label="Unsaved changes"></span>
       {/if}
     </div>
     <div class="toolbar" aria-label="Reader toolbar">
       <Toolbar
-        canAnnotate={Boolean(pdfDocument)}
-        {activeTool}
+        canAnnotate={Boolean(activeSession.pdfDocument)}
+        activeTool={activeSession.activeTool}
         headerColors={headerColorEntries}
         selectedColorName={annotationColorName}
         onToggleTool={handleToolbarToggle}
         onSelectColor={applyAnnotationColor}
         onOpenPlate={openColorPlate}
       />
-      <button class="icon-btn" onclick={zoomOut} disabled={!pdfDocument} aria-label="Zoom out">
+      <button class="icon-btn" onclick={zoomOut} disabled={!activeSession.pdfDocument} aria-label="Zoom out">
         −
       </button>
-      <span class="zoom-value">{zoomPercent}%</span>
-      <button class="icon-btn" onclick={zoomIn} disabled={!pdfDocument} aria-label="Zoom in">
+      <span class="zoom-value">{activeSession.zoomPercent}%</span>
+      <button class="icon-btn" onclick={zoomIn} disabled={!activeSession.pdfDocument} aria-label="Zoom in">
         +
       </button>
     </div>
@@ -4168,9 +4116,9 @@
             >
               {#if tab === "outline"}
                 <OutlineSidebar
-                  {outlineEntries}
-                  {outlineStatus}
-                  bind:outlineColorMenuId
+                  outlineEntries={activeSession.outlineEntries}
+                  outlineStatus={activeSession.outlineStatus}
+                  bind:outlineColorMenuId={activeSession.outlineColorMenuId}
                   {isOutlineCollapsed}
                   {isActiveOutlineRow}
                   {toggleOutlineCollapsed}
@@ -4181,12 +4129,12 @@
                 />
               {:else if tab === "bookmarks"}
                 <BookmarksSidebar
-                  {bookmarkEntries}
-                  {bookmarkStatus}
-                  bind:editingBookmarkId
-                  bind:hoveredBookmarkId
-                  {activeBookmarkId}
-                  bind:bookmarkColorMenuId
+                  bookmarkEntries={activeSession.bookmarkEntries}
+                  bookmarkStatus={activeSession.bookmarkStatus}
+                  bind:editingBookmarkId={activeSession.editingBookmarkId}
+                  bind:hoveredBookmarkId={activeSession.hoveredBookmarkId}
+                  activeBookmarkId={activeSession.activeBookmarkId}
+                  bind:bookmarkColorMenuId={activeSession.bookmarkColorMenuId}
                   {bookmarkColorStyle}
                   {updateBookmarkTitle}
                   {handleBookmarkTitleKey}
@@ -4197,9 +4145,9 @@
                 />
               {:else}
                 <AnnotationsSidebar
-                  {annotationEntries}
-                  {annotationStatus}
-                  {selectedAnnotationEntryId}
+                  annotationEntries={activeSession.annotationEntries}
+                  annotationStatus={activeSession.annotationStatus}
+                  selectedAnnotationEntryId={activeSession.selectedAnnotationEntryId}
                   {locateAnnotationEntry}
                 />
               {/if}
@@ -4209,59 +4157,59 @@
       </aside>
     {/each}
     <section class="reader viewer-shell">
-      {#if !pdfDocument}
+      {#if !activeSession.pdfDocument}
         <div class="reader-empty">Open a PDF to start reading (⌘O).</div>
       {/if}
     <div
       class="pdf-container"
       class:annotation-tool-active={isAnnotationCreationMode()}
-      bind:this={containerEl}
+      bind:this={activeSession.containerEl}
       role="region"
       aria-label="PDF pages"
     >
-      {#if annotationFocusBox}
+      {#if activeSession.annotationFocusBox}
         <div
           class="annotation-focus-box"
-          style={`left: ${annotationFocusBox.left}px; top: ${annotationFocusBox.top}px; width: ${annotationFocusBox.width}px; height: ${annotationFocusBox.height}px`}
+          style={`left: ${activeSession.annotationFocusBox.left}px; top: ${activeSession.annotationFocusBox.top}px; width: ${activeSession.annotationFocusBox.width}px; height: ${activeSession.annotationFocusBox.height}px`}
           aria-hidden="true"
         ></div>
       {/if}
-      {#each bookmarkEntries as entry (entry.id)}
+      {#each activeSession.bookmarkEntries as entry (entry.id)}
         <button
           type="button"
           class="bookmark-page-marker"
-          class:bookmark-hovered={hoveredBookmarkId === entry.id}
+          class:bookmark-hovered={activeSession.hoveredBookmarkId === entry.id}
           data-page-number={entry.pageNumber}
           style={bookmarkMarkerStyle(entry)}
           onclick={(event) => {
             event.stopPropagation();
             deleteBookmark(entry.id);
           }}
-          onmouseenter={() => (hoveredBookmarkId = entry.id)}
-          onmouseleave={() => (hoveredBookmarkId = null)}
+          onmouseenter={() => (activeSession.hoveredBookmarkId = entry.id)}
+          onmouseleave={() => (activeSession.hoveredBookmarkId = null)}
           title={`Remove bookmark: ${entry.title}`}
           aria-label={`Remove bookmark ${entry.title}`}
         ></button>
       {/each}
-      {#if bookmarkRailHoverCue}
+      {#if activeSession.bookmarkRailHoverCue}
         <div
           class="bookmark-rail-focus-cue"
-          data-page-number={bookmarkRailHoverCue.pageNumber}
-          style={`left: ${bookmarkRailHoverCue.focusLeft}px; top: ${bookmarkRailHoverCue.focusTop}px`}
+          data-page-number={activeSession.bookmarkRailHoverCue.pageNumber}
+          style={`left: ${activeSession.bookmarkRailHoverCue.focusLeft}px; top: ${activeSession.bookmarkRailHoverCue.focusTop}px`}
           aria-hidden="true"
         >
           +
         </div>
         <div
           class="bookmark-rail-add-cue"
-          data-page-number={bookmarkRailHoverCue.pageNumber}
-          style={`left: ${bookmarkRailHoverCue.hintLeft}px; top: ${bookmarkRailHoverCue.hintTop}px`}
+          data-page-number={activeSession.bookmarkRailHoverCue.pageNumber}
+          style={`left: ${activeSession.bookmarkRailHoverCue.hintLeft}px; top: ${activeSession.bookmarkRailHoverCue.hintTop}px`}
           aria-hidden="true"
         >
           +
         </div>
       {/if}
-      <div class="pdfViewer" bind:this={viewerEl}></div>
+      <div class="pdfViewer" bind:this={activeSession.viewerEl}></div>
     </div>
     </section>
   </main>
@@ -4317,7 +4265,7 @@
   onClose={() => (toolPopover = null)}
 />
 
-<div class="app-status" role="status" aria-live="polite">{status}</div>
+<div class="app-status" role="status" aria-live="polite">{activeSession.status}</div>
 
 <style>
   /* ---- Official-app shell (topbar, workspace, sidebars, reader host) ---- */
