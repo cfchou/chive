@@ -20,6 +20,22 @@ _Avoid_: saved row, stored row
 An annotation-sidebar entry for annotation state created or modified in the current session before a save/reopen cycle completes.
 _Avoid_: temporary row, unsaved annotation
 
+**Document Tab**:
+One open PDF tracked by Chive's app-level document tab model.
+_Avoid_: file tab, window tab
+
+**Document Tab Bar**:
+The titlebar-area strip that will display Document Tabs in the app shell.
+_Avoid_: tab strip, titlebar tabs
+
+**Active Document Tab**:
+The Document Tab whose PDF receives tool, menu, keyboard, save, and debug API actions.
+_Avoid_: current tab, focused tab
+
+**Document Session**:
+The runtime unit for a Document Tab, including pdf.js state, per-document UI state, and viewer DOM.
+_Avoid_: viewer instance, document state
+
 **Document Outline Entry**:
 One navigation entry that comes from the opened PDF's document outline.
 _Avoid_: bookmark, PDF-native bookmark, TOC row

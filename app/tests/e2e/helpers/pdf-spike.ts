@@ -26,6 +26,13 @@ export type PdfSpikeApi = {
   setInkThickness: (thickness: number) => void;
   setTool: (tool: "none" | "highlight" | "text" | "ink") => void;
   stats: () => Record<string, unknown>;
+  tabs: {
+    list: () => { id: string; label: string; path: string | null; dirty: boolean; active: boolean }[];
+    openBytes: (bytes: Uint8Array, label: string) => Promise<string>;
+    activate: (id: string) => Promise<void>;
+    close: (id: string, opts?: { force?: boolean }) => Promise<"closed" | "prompted">;
+    reorder: (from: number, to: number) => void;
+  };
 };
 
 export type BookmarkEntry = {

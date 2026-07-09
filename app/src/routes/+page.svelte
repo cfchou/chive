@@ -20,9 +20,18 @@
   import {
     parseSidebarWidths,
     resizedSidebarWidth,
-    serializeSidebarWidths,
     type SidebarWidths,
   } from "../lib/ui/sidebar-resize";
+  import { getBrowserAppPersistence } from "$lib/persistence/app-persistence";
+  import {
+    activateTab as activateDocumentTabState,
+    addTab as addDocumentTabState,
+    findByPath as findDocumentTabByPath,
+    moveTab as moveDocumentTabState,
+    removeTab as removeDocumentTabState,
+    type DocumentTabId,
+    type DocumentTabsState,
+  } from "$lib/tabs/tab-state";
   import { tabMeta } from "../lib/ui/tab-meta";
   import { installAppMenu, type AppMenuControls } from "../lib/tauri/menu";
   import { invoke } from "@tauri-apps/api/core";
@@ -138,6 +147,10 @@
   type PdfPage = Awaited<ReturnType<PdfDocument["getPage"]>>;
   type NavigationTab = "outline" | "bookmarks" | "annotations";
   type SelectedAnnotationKind = "highlight" | "freetext" | "ink" | null;
+  type DocumentTabDraft = {
+    bytes: Uint8Array;
+    dirty: boolean;
+  };
   type PdfOutlineRaw = {
     title?: string;
     dest?: PdfDestination;
@@ -219,6 +232,8 @@
   let rememberedSelectionText = "";
   let rememberedSelectionRanges: Range[] = [];
   let annotationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let documentTabsState = $state<DocumentTabsState>({ order: [], tabs: {}, activeId: null });
+  const documentTabDrafts = new Map<DocumentTabId, DocumentTabDraft>();
   const annotationDetailCache = new Map<string, string>();
   const pendingDeletedPersistedAnnotationKeys = new Set<string>();
   const persistedAnnotationKeyByEditorId = new Map<string, string>();
@@ -364,6 +379,14 @@
       debugSavedBytes: debugHarness.debugSavedBytes,
       stats: debugHarness.stats,
       setTool,
+      tabs: {
+        list: listDocumentTabs,
+        open: openDocumentTab,
+        openBytes: openDocumentTabBytes,
+        activate: activateDocumentTab,
+        close: closeDocumentTab,
+        reorder: reorderDocumentTab,
+      },
     });
     // Official-app additions: collapsible/dockable sidebars resize the viewer
     // container mid-session (the spike never did), so the viewer and the
@@ -527,6 +550,132 @@
     await loadPdf(selected);
   }
 
+  function nextDocumentTabId(): DocumentTabId {
+    return crypto.randomUUID?.() ?? `doc-tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function labelFromPath(path: string) {
+    return path.split("/").pop() || path;
+  }
+
+  function syncActiveDocumentTab(bytes: Uint8Array, label: string, path: string | null) {
+    const id = documentTabsState.activeId ?? nextDocumentTabId();
+    const displayLabel = path ? labelFromPath(path) : labelFromPath(label);
+    documentTabsState = addDocumentTabState(documentTabsState, {
+      id,
+      path,
+      label: displayLabel,
+    });
+    documentTabDrafts.set(id, { bytes: bytes.slice(), dirty: isDirty });
+  }
+
+  function updateActiveDocumentTabPath(path: string | null, label = path ?? currentPath) {
+    const id = documentTabsState.activeId;
+    if (!id || !documentTabsState.tabs[id]) return;
+    documentTabsState = addDocumentTabState(
+      { ...documentTabsState, activeId: id },
+      {
+        ...documentTabsState.tabs[id],
+        path,
+        label: labelFromPath(label || documentTabsState.tabs[id].label),
+      },
+    );
+  }
+
+  async function snapshotActiveDocumentTab() {
+    const id = documentTabsState.activeId;
+    if (!id || !pdfDocument) return;
+    const bytes = await savePdfDocumentBytes();
+    documentTabDrafts.set(id, { bytes, dirty: isDirty });
+  }
+
+  function listDocumentTabs() {
+    return documentTabsState.order.map((id) => {
+      const tab = documentTabsState.tabs[id];
+      return {
+        id,
+        label: tab.label,
+        path: tab.path,
+        dirty: documentTabsState.activeId === id ? isDirty : (documentTabDrafts.get(id)?.dirty ?? false),
+        active: documentTabsState.activeId === id,
+      };
+    });
+  }
+
+  async function openDocumentTab(path: string) {
+    const existingId = findDocumentTabByPath(documentTabsState, path);
+    if (existingId) {
+      await activateDocumentTab(existingId);
+      return existingId;
+    }
+    isBusy = true;
+    status = "Loading PDF...";
+    try {
+      const rawBytes = await invoke<number[]>("read_pdf", { path });
+      return await openDocumentTabBytes(new Uint8Array(rawBytes), path, path);
+    } finally {
+      isBusy = false;
+    }
+  }
+
+  async function openDocumentTabBytes(bytes: Uint8Array, label: string, path: string | null = null) {
+    await snapshotActiveDocumentTab();
+    const id = nextDocumentTabId();
+    await loadPdfBytes(bytes.slice(), label, { syncDocumentTab: false });
+    documentTabsState = addDocumentTabState(documentTabsState, {
+      id,
+      path,
+      label: path ? labelFromPath(path) : labelFromPath(label),
+    });
+    documentTabDrafts.set(id, { bytes: bytes.slice(), dirty: false });
+    currentPath = path ?? label;
+    isDirty = false;
+    activeTool = "none";
+    status = `Loaded ${label}`;
+    return id;
+  }
+
+  async function activateDocumentTab(id: DocumentTabId) {
+    if (!documentTabsState.tabs[id] || documentTabsState.activeId === id) return;
+    await snapshotActiveDocumentTab();
+    const draft = documentTabDrafts.get(id);
+    if (!draft) throw new Error(`No draft bytes stored for Document Tab ${id}`);
+    const tab = documentTabsState.tabs[id];
+    documentTabsState = activateDocumentTabState(documentTabsState, id);
+    await loadPdfBytes(draft.bytes.slice(), tab.path ?? tab.label, { syncDocumentTab: false });
+    currentPath = tab.path ?? tab.label;
+    isDirty = draft.dirty;
+    activeTool = "none";
+    status = `Switched to ${tab.label}`;
+  }
+
+  async function closeDocumentTab(id: DocumentTabId, opts: { force?: boolean } = {}) {
+    const dirty = documentTabsState.activeId === id ? isDirty : (documentTabDrafts.get(id)?.dirty ?? false);
+    if (dirty && !opts.force) return "prompted" as const;
+
+    const wasActive = documentTabsState.activeId === id;
+    const nextState = removeDocumentTabState(documentTabsState, id);
+    documentTabDrafts.delete(id);
+
+    if (wasActive && nextState.activeId) {
+      documentTabsState = { ...nextState, activeId: null };
+      await activateDocumentTab(nextState.activeId);
+    } else if (wasActive) {
+      documentTabsState = nextState;
+      teardownViewer();
+      currentPath = "";
+      isDirty = false;
+      status = "Open a PDF, add highlight/text/ink annotations, then save.";
+    } else {
+      documentTabsState = nextState;
+    }
+    return "closed" as const;
+  }
+
+  function reorderDocumentTab(from: number, to: number) {
+    documentTabsState = moveDocumentTabState(documentTabsState, from, to);
+  }
+
   async function loadPdf(path: string) {
     isBusy = true;
     status = "Loading PDF...";
@@ -534,6 +683,7 @@
       const rawBytes = await invoke<number[]>("read_pdf", { path });
       await loadPdfBytes(new Uint8Array(rawBytes), path);
       currentPath = path;
+      updateActiveDocumentTabPath(path);
       isDirty = false;
       activeTool = "none";
       status = `Loaded ${path}`;
@@ -552,6 +702,7 @@
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       await loadPdfBytes(new Uint8Array(await response.arrayBuffer()), "sample.pdf");
       currentPath = "sample.pdf";
+      updateActiveDocumentTabPath(null, "sample.pdf");
       isDirty = false;
       activeTool = "none";
       rememberedSelectionText = "";
@@ -564,11 +715,19 @@
     }
   }
 
-  async function loadPdfBytes(bytes: Uint8Array, label: string) {
-    const loadingTask = pdfjsLib.getDocument({ data: bytes, wasmUrl: pdfjsWasmUrl });
+  async function loadPdfBytes(
+    bytes: Uint8Array,
+    label: string,
+    options: { syncDocumentTab?: boolean } = {},
+  ) {
+    const draftBytes = bytes.slice();
+    const loadingTask = pdfjsLib.getDocument({ data: bytes.slice(), wasmUrl: pdfjsWasmUrl });
     const nextDocument = await loadingTask.promise;
 
     teardownViewer();
+    if (options.syncDocumentTab ?? true) {
+      syncActiveDocumentTab(draftBytes, label, null);
+    }
     rememberedSelectionText = "";
     rememberedSelectionRanges = [];
 
@@ -3852,13 +4011,17 @@
   let menuControls: AppMenuControls | null = null;
 
   const SIDEBAR_WIDTHS_STORAGE_KEY = "chive.sidebarWidths";
-  let sidebarWidths = $state<SidebarWidths>(
-    parseSidebarWidths(
-      typeof localStorage === "undefined" ? null : localStorage.getItem(SIDEBAR_WIDTHS_STORAGE_KEY),
-    ),
-  );
+  const appPersistence = getBrowserAppPersistence();
+  let sidebarWidths = $state<SidebarWidths>(parseSidebarWidths(null));
   let resizingSide = $state<SidebarSide | null>(null);
   let resizeSession: { side: SidebarSide; startX: number; startWidth: number } | null = null;
+
+  $effect(() => {
+    void appPersistence?.getJson<SidebarWidths>(SIDEBAR_WIDTHS_STORAGE_KEY).then((stored) => {
+      if (!stored) return;
+      sidebarWidths = parseSidebarWidths(JSON.stringify(stored));
+    });
+  });
 
   const workspaceColumns = $derived(
     `${isSideOpen(dock, "left") ? `${sidebarWidths.left}px` : "0"} minmax(0, 1fr) ${
@@ -3891,11 +4054,9 @@
     if (!resizeSession) return;
     resizeSession = null;
     resizingSide = null;
-    try {
-      localStorage.setItem(SIDEBAR_WIDTHS_STORAGE_KEY, serializeSidebarWidths(sidebarWidths));
-    } catch {
+    void appPersistence?.setJson(SIDEBAR_WIDTHS_STORAGE_KEY, sidebarWidths).catch(() => {
       // Persisting the width is best-effort; resizing still works this session.
-    }
+    });
   }
 
   const fileName = $derived(

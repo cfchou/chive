@@ -4,6 +4,14 @@ import type { FreeTextColorName, HighlightColorName, InkColorName } from "../pdf
 import type { OutlineEntry } from "../pdf/outline-tree";
 import type { EditorTool } from "../pdf/pdfjs-quirks";
 
+export type DocumentTabDebugSummary = {
+  id: string;
+  label: string;
+  path: string | null;
+  dirty: boolean;
+  active: boolean;
+};
+
 // The app's automated tests (Playwright in tests/e2e, native WKWebView in
 // tests/native) run against the real UI but cannot reach into Svelte component
 // state from outside the page. The page therefore publishes this API on
@@ -43,6 +51,14 @@ export type SpikeDebugApi = {
   debugSavedBytes: (path: string) => number[];
   stats: () => Record<string, unknown>;
   setTool: (tool: EditorTool) => void;
+  tabs: {
+    list: () => DocumentTabDebugSummary[];
+    open: (path: string) => Promise<string>;
+    openBytes: (bytes: Uint8Array, label: string) => Promise<string>;
+    activate: (id: string) => Promise<void>;
+    close: (id: string, opts?: { force?: boolean }) => Promise<"closed" | "prompted">;
+    reorder: (from: number, to: number) => void;
+  };
 };
 
 export type SpikeDebugTarget = {
