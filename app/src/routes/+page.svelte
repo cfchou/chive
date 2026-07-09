@@ -32,6 +32,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { listen } from "@tauri-apps/api/event";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { onMount, tick } from "svelte";
   import AnnotationsSidebar from "$lib/pdf/AnnotationsSidebar.svelte";
@@ -468,6 +469,7 @@
     let unlistenResize: (() => void) | null = null;
     let unlistenClose: (() => void) | null = null;
     let unlistenDrop: (() => void) | null = null;
+    let unlistenSingleInstance: (() => void) | null = null;
     if (isTauriRuntime()) {
       const appWindow = getCurrentWindow();
       const syncFullscreen = () => {
@@ -495,11 +497,20 @@
         })
         .then((unlisten) => (unlistenDrop = unlisten))
         .catch(() => {});
+      // A second app launch forwards its argv PDF paths here (D11).
+      void listen<string[]>("single-instance-open", (event) => {
+        void (async () => {
+          for (const path of event.payload) await openPdfFromPath(path);
+        })();
+      })
+        .then((unlisten) => (unlistenSingleInstance = unlisten))
+        .catch(() => {});
     }
     return () => {
       unlistenResize?.();
       unlistenClose?.();
       unlistenDrop?.();
+      unlistenSingleInstance?.();
       document.removeEventListener("keydown", handleTabSwitchKeys);
       containerResizeObserver.disconnect();
       pdfStageEl?.removeEventListener("mouseleave", clearRailHoverCue);
