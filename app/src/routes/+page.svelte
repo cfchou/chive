@@ -431,6 +431,7 @@
       debugSavedBytes: debugHarness.debugSavedBytes,
       stats: debugHarness.stats,
       setTool,
+      requestWindowCloseForTest: handleWindowCloseRequest,
       tabs: {
         list: listDocumentTabs,
         open: openDocumentTab,
@@ -450,6 +451,7 @@
     });
     if (containerEl) containerResizeObserver.observe(containerEl);
     let unlistenFullscreenResize: (() => void) | null = null;
+    let unlistenWindowClose: (() => void) | null = null;
     let fullscreenPollId: number | null = null;
     const syncNativeFullscreen = async () => {
       if (!isTauriRuntime()) return;
@@ -475,6 +477,12 @@
         unlistenFullscreenResize = await appWindow.onResized(() => {
           void syncNativeFullscreen();
         });
+        unlistenWindowClose = await appWindow.onCloseRequested(async (event) => {
+          const closeResult = await handleWindowCloseRequest();
+          if (closeResult === "prompted") {
+            event.preventDefault();
+          }
+        });
         fullscreenPollId = window.setInterval(() => {
           void syncNativeFullscreen();
         }, 250);
@@ -486,6 +494,7 @@
     });
     return () => {
       unlistenFullscreenResize?.();
+      unlistenWindowClose?.();
       if (fullscreenPollId !== null) {
         window.clearInterval(fullscreenPollId);
       }
@@ -1087,6 +1096,19 @@
 
   function handleDocumentTabClose(id: DocumentTabId) {
     void closeDocumentTab(id);
+  }
+
+  async function handleWindowCloseRequest() {
+    for (const id of documentTabsState.order) {
+      const dirty = documentTabsState.activeId === id ? isDirty : (documentTabDrafts.get(id)?.dirty ?? false);
+      if (!dirty) continue;
+      const tab = documentTabsState.tabs[id];
+      if (!tab) continue;
+      await activateDocumentTab(id);
+      pendingDocumentTabClose = { id, label: tab.label };
+      return "prompted" as const;
+    }
+    return "closed" as const;
   }
 
   function cancelPendingDocumentTabClose() {

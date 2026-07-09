@@ -51,6 +51,7 @@ export type SpikeDebugApi = {
   debugSavedBytes: (path: string) => number[];
   stats: () => Record<string, unknown>;
   setTool: (tool: EditorTool) => void;
+  requestWindowCloseForTest: () => Promise<"closed" | "prompted">;
   tabs: {
     list: () => DocumentTabDebugSummary[];
     open: (path: string) => Promise<string>;

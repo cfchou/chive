@@ -26,6 +26,7 @@ export type PdfSpikeApi = {
   setInkThickness: (thickness: number) => void;
   setTool: (tool: "none" | "highlight" | "text" | "ink") => void;
   stats: () => Record<string, unknown>;
+  requestWindowCloseForTest: () => Promise<"closed" | "prompted">;
   tabs: {
     list: () => { id: string; label: string; path: string | null; dirty: boolean; active: boolean }[];
     openBytes: (bytes: Uint8Array, label: string) => Promise<string>;

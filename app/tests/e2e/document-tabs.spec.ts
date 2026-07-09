@@ -210,6 +210,68 @@ test("dirty Document Tab close prompts and Cancel keeps the tab open", async ({ 
   await expect(page.getByRole("tab", { name: "dirty-a.pdf" })).toHaveCount(0);
 });
 
+test("dirty Document Tab close Save failure keeps the tab open and dirty", async ({ page }) => {
+  await page.waitForFunction(() => Boolean(window.__pdfSpike?.tabs));
+  const [firstId, secondId] = await page.evaluate(async () => {
+    const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
+    const first = await window.__pdfSpike!.tabs.openBytes(bytes, "save-fail-a.pdf");
+    const second = await window.__pdfSpike!.tabs.openBytes(bytes, "save-fail-b.pdf");
+    return [first, second];
+  });
+  await waitForPageReady(page);
+
+  await page.evaluate((id) => window.__pdfSpike!.tabs.activate(id), firstId);
+  await waitForPageReady(page);
+  await page.evaluate(() => window.__pdfSpike!.saveToPath("/tmp/chive-save-failure-tab.pdf"));
+  await page.evaluate(() => window.__pdfSpike!.createPageFreeText("Save failure keeps dirty tab open"));
+
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toMatchObject([
+    { id: firstId, label: "save-fail-a.pdf", dirty: true, active: true },
+    { id: secondId, label: "save-fail-b.pdf", dirty: false, active: false },
+  ]);
+
+  await page.getByRole("button", { name: "Close save-fail-a.pdf" }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+
+  await expect(page.getByText("Do you want to save the changes made to 'save-fail-a.pdf'?")).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("Save failed:");
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toMatchObject([
+    { id: firstId, label: "save-fail-a.pdf", dirty: true, active: true },
+    { id: secondId, label: "save-fail-b.pdf", dirty: false, active: false },
+  ]);
+});
+
+test("window close request prompts dirty Document Tabs and Cancel aborts close", async ({ page }) => {
+  await page.waitForFunction(() => Boolean(window.__pdfSpike?.tabs));
+  const [firstId, secondId] = await page.evaluate(async () => {
+    const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
+    const first = await window.__pdfSpike!.tabs.openBytes(bytes, "window-close-a.pdf");
+    const second = await window.__pdfSpike!.tabs.openBytes(bytes, "window-close-b.pdf");
+    return [first, second];
+  });
+  await waitForPageReady(page);
+
+  await page.evaluate((id) => window.__pdfSpike!.tabs.activate(id), firstId);
+  await waitForPageReady(page);
+  await page.evaluate(() => window.__pdfSpike!.createPageFreeText("Cancel window close keeps all tabs"));
+
+  const closeResult = await page.evaluate(() => window.__pdfSpike!.requestWindowCloseForTest());
+
+  expect(closeResult).toBe("prompted");
+  await expect(page.getByText("Do you want to save the changes made to 'window-close-a.pdf'?")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toMatchObject([
+    { id: firstId, label: "window-close-a.pdf", dirty: true, active: true },
+    { id: secondId, label: "window-close-b.pdf", dirty: false, active: false },
+  ]);
+
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByText("Do you want to save the changes made to 'window-close-a.pdf'?")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toMatchObject([
+    { id: firstId, label: "window-close-a.pdf", dirty: true, active: true },
+    { id: secondId, label: "window-close-b.pdf", dirty: false, active: false },
+  ]);
+});
+
 test("Document Tabs keep undo history across switches", async ({ page }) => {
   const [firstId, secondId] = await page.evaluate(async () => {
     const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
