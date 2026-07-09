@@ -49,8 +49,11 @@ export type AnnotationEditorUIManager = {
   getEditors: (pageIndex: number) => Generator<AnnotationEditor, void, unknown>;
   highlightSelection: (methodOfCreation?: string, comment?: boolean) => void;
   isDeletedAnnotationElement?: (annotationElementId: string) => boolean;
+  redo: () => void;
   setSelected: (editor: AnnotationEditor) => void;
   unselectAll: () => void;
+  undo: () => void;
+  updateMode: (mode: number | string) => Promise<void>;
   updateParams: (type: number, value: unknown) => void;
 };
 

@@ -178,6 +178,41 @@
     name: string;
     color: string;
   };
+  type DocumentTabRuntime = {
+    containerEl: HTMLDivElement | null;
+    viewerEl: HTMLDivElement | null;
+    pdfViewer: PDFViewer | null;
+    pdfLinkService: PDFLinkService | null;
+    pdfDocument: PdfDocument | null;
+    annotationEditorUIManager: AnnotationEditorUIManager | null;
+    loadToken: number;
+    currentPath: string;
+    status: string;
+    activeTool: EditorTool;
+    isDirty: boolean;
+    zoomPercent: number;
+    scaleLabel: string;
+    outlineEntries: OutlineEntry[];
+    outlineStatus: string;
+    collapsedOutlineIds: string[];
+    activeOutlineEntryId: string | null;
+    bookmarkEntries: BookmarkEntry[];
+    bookmarkStatus: string;
+    editingBookmarkId: string | null;
+    activeBookmarkId: string | null;
+    annotationEntries: AnnotationEntry[];
+    annotationStatus: string;
+    selectedAnnotationEntryId: string | null;
+    selectedPersistedAnnotationKey: string | null;
+    selectedAnnotationKind: SelectedAnnotationKind;
+    selectedAnnotationColor: string | null;
+    hasSelectedHighlight: boolean;
+    selectedHighlightColor: HighlightColorName | null;
+    annotationFocusBox: FocusBox | null;
+    rememberedSelectionText: string;
+    rememberedSelectionRanges: Range[];
+    savedScrollTop: number;
+  };
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
   const pdfjsWasmUrl = "/pdfjs-wasm/";
@@ -186,8 +221,8 @@
   const bookmarkTitleLookaheadPdfPoints = 180;
   const bookmarkTitleWordCount = 4;
 
-  let containerEl: HTMLDivElement;
-  let viewerEl: HTMLDivElement;
+  let containerEl: HTMLDivElement | null = null;
+  let viewerEl: HTMLDivElement | null = null;
   let pdfViewer: PDFViewer | null = null;
   let pdfLinkService: PDFLinkService | null = null;
   let pdfDocument = $state<PdfDocument | null>(null);
@@ -240,8 +275,10 @@
   let rememberedSelectionText = "";
   let rememberedSelectionRanges: Range[] = [];
   let annotationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let viewerLoadToken = 0;
   let documentTabsState = $state<DocumentTabsState>({ order: [], tabs: {}, activeId: null });
   const documentTabDrafts = new Map<DocumentTabId, DocumentTabDraft>();
+  const documentTabRuntimes = new Map<DocumentTabId, DocumentTabRuntime>();
   const annotationDetailCache = new Map<string, string>();
   const pendingDeletedPersistedAnnotationKeys = new Set<string>();
   const persistedAnnotationKeyByEditorId = new Map<string, string>();
@@ -339,6 +376,7 @@
     document.addEventListener("pointerdown", handleDocumentPointerDown, { capture: true });
     document.addEventListener("keydown", handleAnnotationEscapeKey, { capture: true });
     document.addEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
+    document.addEventListener("keydown", handleAnnotationUndoRedoKey, { capture: true });
     document.addEventListener("keydown", handleFreeTextEditorKeydown, { capture: true });
     containerEl?.addEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
     containerEl?.addEventListener("pointerdown", handlePdfPointerDown, { capture: true });
@@ -420,6 +458,7 @@
       containerEl?.removeEventListener("pointerdown", handleHighlightTextLayerPointerDown, { capture: true });
       if (activeOutlineFrame) cancelAnimationFrame(activeOutlineFrame);
       document.removeEventListener("keydown", handleFreeTextEditorKeydown, { capture: true });
+      document.removeEventListener("keydown", handleAnnotationUndoRedoKey, { capture: true });
       document.removeEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
       document.removeEventListener("keydown", handleAnnotationEscapeKey, { capture: true });
       document.removeEventListener("pointerdown", handleDocumentPointerDown, { capture: true });
@@ -502,6 +541,30 @@
     }
   }
 
+  function handleAnnotationUndoRedoKey(event: KeyboardEvent) {
+    if (
+      event.repeat ||
+      event.key.toLowerCase() !== "z" ||
+      (!event.metaKey && !event.ctrlKey) ||
+      event.altKey ||
+      isEditableKeyboardTarget(event.target) ||
+      !annotationEditorUIManager
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (event.shiftKey) {
+      annotationEditorUIManager.redo();
+    } else {
+      annotationEditorUIManager.undo();
+    }
+    isDirty = true;
+    syncSelectedEditorState();
+    void refreshAnnotationSidebar();
+    queueEditorStateRefresh(150, 500);
+  }
+
   function isEditableKeyboardTarget(target: EventTarget | null) {
     if (!(target instanceof HTMLElement)) return false;
     if (target.isContentEditable) return true;
@@ -566,6 +629,210 @@
     return path.split("/").pop() || path;
   }
 
+  function createDocumentTabRuntime(): DocumentTabRuntime {
+    return {
+      containerEl: null,
+      viewerEl: null,
+      pdfViewer: null,
+      pdfLinkService: null,
+      pdfDocument: null,
+      annotationEditorUIManager: null,
+      loadToken: 0,
+      currentPath: "",
+      status: "Open a PDF, add highlight/text/ink annotations, then save.",
+      activeTool: "none",
+      isDirty: false,
+      zoomPercent: 100,
+      scaleLabel: "Fit Width",
+      outlineEntries: [],
+      outlineStatus: "Open a PDF to inspect its outline.",
+      collapsedOutlineIds: [],
+      activeOutlineEntryId: null,
+      bookmarkEntries: [],
+      bookmarkStatus: "Open a PDF to inspect bookmarks.",
+      editingBookmarkId: null,
+      activeBookmarkId: null,
+      annotationEntries: [],
+      annotationStatus: "Open a PDF to inspect annotations.",
+      selectedAnnotationEntryId: null,
+      selectedPersistedAnnotationKey: null,
+      selectedAnnotationKind: null,
+      selectedAnnotationColor: null,
+      hasSelectedHighlight: false,
+      selectedHighlightColor: null,
+      annotationFocusBox: null,
+      rememberedSelectionText: "",
+      rememberedSelectionRanges: [],
+      savedScrollTop: 0,
+    };
+  }
+
+  function runtimeForDocumentTab(id: DocumentTabId) {
+    let runtime = documentTabRuntimes.get(id);
+    if (!runtime) {
+      runtime = createDocumentTabRuntime();
+      documentTabRuntimes.set(id, runtime);
+    }
+    return runtime;
+  }
+
+  function activeDocumentTabRuntime() {
+    const id = documentTabsState.activeId;
+    return id ? documentTabRuntimes.get(id) : null;
+  }
+
+  function captureActiveDocumentTabRuntime() {
+    const runtime = activeDocumentTabRuntime();
+    if (!runtime) return;
+    runtime.containerEl = containerEl;
+    runtime.viewerEl = viewerEl;
+    runtime.pdfViewer = pdfViewer;
+    runtime.pdfLinkService = pdfLinkService;
+    runtime.pdfDocument = pdfDocument;
+    runtime.annotationEditorUIManager = annotationEditorUIManager;
+    runtime.currentPath = currentPath;
+    runtime.status = status;
+    runtime.activeTool = activeTool;
+    runtime.isDirty = isDirty;
+    runtime.zoomPercent = zoomPercent;
+    runtime.scaleLabel = scaleLabel;
+    runtime.outlineEntries = outlineEntries;
+    runtime.outlineStatus = outlineStatus;
+    runtime.collapsedOutlineIds = collapsedOutlineIds;
+    runtime.activeOutlineEntryId = activeOutlineEntryId;
+    runtime.bookmarkEntries = bookmarkEntries;
+    runtime.bookmarkStatus = bookmarkStatus;
+    runtime.editingBookmarkId = editingBookmarkId;
+    runtime.activeBookmarkId = activeBookmarkId;
+    runtime.annotationEntries = annotationEntries;
+    runtime.annotationStatus = annotationStatus;
+    runtime.selectedAnnotationEntryId = selectedAnnotationEntryId;
+    runtime.selectedPersistedAnnotationKey = selectedPersistedAnnotationKey;
+    runtime.selectedAnnotationKind = selectedAnnotationKind;
+    runtime.selectedAnnotationColor = selectedAnnotationColor;
+    runtime.hasSelectedHighlight = hasSelectedHighlight;
+    runtime.selectedHighlightColor = selectedHighlightColor;
+    runtime.annotationFocusBox = annotationFocusBox;
+    runtime.rememberedSelectionText = rememberedSelectionText;
+    runtime.rememberedSelectionRanges = rememberedSelectionRanges;
+    runtime.savedScrollTop = containerEl?.scrollTop ?? runtime.savedScrollTop;
+    documentTabDrafts.set(documentTabsState.activeId!, {
+      bytes: documentTabDrafts.get(documentTabsState.activeId!)?.bytes ?? new Uint8Array(),
+      dirty: isDirty,
+      view: currentDocumentTabViewState(),
+    });
+  }
+
+  function restoreDocumentTabRuntime(runtime: DocumentTabRuntime) {
+    containerEl = runtime.containerEl;
+    viewerEl = runtime.viewerEl;
+    pdfViewer = runtime.pdfViewer;
+    pdfLinkService = runtime.pdfLinkService;
+    pdfDocument = runtime.pdfDocument;
+    annotationEditorUIManager = runtime.annotationEditorUIManager;
+    currentPath = runtime.currentPath;
+    status = runtime.status;
+    activeTool = runtime.activeTool;
+    isDirty = runtime.isDirty;
+    zoomPercent = runtime.zoomPercent;
+    scaleLabel = runtime.scaleLabel;
+    outlineEntries = runtime.outlineEntries;
+    outlineStatus = runtime.outlineStatus;
+    collapsedOutlineIds = runtime.collapsedOutlineIds;
+    activeOutlineEntryId = runtime.activeOutlineEntryId;
+    bookmarkEntries = runtime.bookmarkEntries;
+    bookmarkStatus = runtime.bookmarkStatus;
+    editingBookmarkId = runtime.editingBookmarkId;
+    activeBookmarkId = runtime.activeBookmarkId;
+    annotationEntries = runtime.annotationEntries;
+    annotationStatus = runtime.annotationStatus;
+    selectedAnnotationEntryId = runtime.selectedAnnotationEntryId;
+    selectedPersistedAnnotationKey = runtime.selectedPersistedAnnotationKey;
+    selectedAnnotationKind = runtime.selectedAnnotationKind;
+    selectedAnnotationColor = runtime.selectedAnnotationColor;
+    hasSelectedHighlight = runtime.hasSelectedHighlight;
+    selectedHighlightColor = runtime.selectedHighlightColor;
+    annotationFocusBox = runtime.annotationFocusBox;
+    rememberedSelectionText = runtime.rememberedSelectionText;
+    rememberedSelectionRanges = runtime.rememberedSelectionRanges;
+  }
+
+  function syncActiveRuntimeAfterMutation() {
+    captureActiveDocumentTabRuntime();
+  }
+
+  function isActiveDocumentTab(id: DocumentTabId) {
+    return documentTabsState.activeId === id;
+  }
+
+  function registerDocumentTabContainer(node: HTMLDivElement, id: DocumentTabId) {
+    const runtime = runtimeForDocumentTab(id);
+    runtime.containerEl = node;
+    if (isActiveDocumentTab(id)) {
+      containerEl = node;
+    }
+
+    let activeOutlineFrame = 0;
+    const activeOnly = <TEvent extends Event>(handler: (event: TEvent) => void) => {
+      return (event: Event) => {
+        if (!isActiveDocumentTab(id)) return;
+        handler(event as TEvent);
+      };
+    };
+    const handlePdfScroll = () => {
+      if (!isActiveDocumentTab(id) || activeOutlineFrame) return;
+      activeOutlineFrame = requestAnimationFrame(() => {
+        activeOutlineFrame = 0;
+        refreshActiveOutlineFromScroll();
+        captureActiveDocumentTabRuntime();
+      });
+    };
+    const handleRailClick = activeOnly<MouseEvent>((event) => void handlePdfContainerClick(event));
+    const clearRailHoverCue = () => {
+      if (isActiveDocumentTab(id)) bookmarkRailHoverCue = null;
+    };
+    const highlightPointerDown = activeOnly<PointerEvent>(handleHighlightTextLayerPointerDown);
+    const pdfPointerDown = activeOnly<PointerEvent>(handlePdfPointerDown);
+    const pdfDoubleClick = activeOnly<MouseEvent>(handlePdfDoubleClick);
+    const pdfMouseMove = activeOnly<MouseEvent>(handlePdfContainerMouseMove);
+
+    node.addEventListener("pointerdown", highlightPointerDown, { capture: true });
+    node.addEventListener("pointerdown", pdfPointerDown, { capture: true });
+    node.addEventListener("dblclick", pdfDoubleClick, { capture: true });
+    node.addEventListener("click", handleRailClick);
+    node.addEventListener("scroll", handlePdfScroll);
+    node.addEventListener("mousemove", pdfMouseMove);
+    node.addEventListener("mouseleave", clearRailHoverCue);
+
+    return {
+      destroy() {
+        if (runtime.containerEl === node) runtime.containerEl = null;
+        if (containerEl === node) containerEl = null;
+        node.removeEventListener("pointerdown", highlightPointerDown, { capture: true });
+        node.removeEventListener("pointerdown", pdfPointerDown, { capture: true });
+        node.removeEventListener("dblclick", pdfDoubleClick, { capture: true });
+        node.removeEventListener("click", handleRailClick);
+        node.removeEventListener("scroll", handlePdfScroll);
+        node.removeEventListener("mousemove", pdfMouseMove);
+        node.removeEventListener("mouseleave", clearRailHoverCue);
+      },
+    };
+  }
+
+  function registerDocumentTabViewer(node: HTMLDivElement, id: DocumentTabId) {
+    const runtime = runtimeForDocumentTab(id);
+    runtime.viewerEl = node;
+    if (isActiveDocumentTab(id)) {
+      viewerEl = node;
+    }
+    return {
+      destroy() {
+        if (runtime.viewerEl === node) runtime.viewerEl = null;
+        if (viewerEl === node) viewerEl = null;
+      },
+    };
+  }
+
   function currentDocumentTabViewState(): DocumentTabViewState {
     return {
       currentPageNumber: pdfViewer?.currentPageNumber ?? null,
@@ -601,9 +868,8 @@
 
   async function snapshotActiveDocumentTab() {
     const id = documentTabsState.activeId;
-    if (!id || !pdfDocument) return;
-    const bytes = await savePdfDocumentBytes();
-    documentTabDrafts.set(id, { bytes, dirty: isDirty, view: currentDocumentTabViewState() });
+    if (!id) return;
+    captureActiveDocumentTabRuntime();
   }
 
   function listDocumentTabs() {
@@ -638,35 +904,50 @@
   async function openDocumentTabBytes(bytes: Uint8Array, label: string, path: string | null = null) {
     await snapshotActiveDocumentTab();
     const id = nextDocumentTabId();
-    await loadPdfBytes(bytes.slice(), label, { syncDocumentTab: false });
+    documentTabRuntimes.set(id, createDocumentTabRuntime());
     documentTabsState = addDocumentTabState(documentTabsState, {
       id,
       path,
       label: path ? labelFromPath(path) : labelFromPath(label),
     });
+    documentTabsState = activateDocumentTabState(documentTabsState, id);
+    await tick();
+    restoreDocumentTabRuntime(runtimeForDocumentTab(id));
+    await loadPdfBytes(bytes.slice(), label, { syncDocumentTab: false });
     documentTabDrafts.set(id, { bytes: bytes.slice(), dirty: false, view: currentDocumentTabViewState() });
     currentPath = path ?? label;
     isDirty = false;
     activeTool = "none";
-    status = `Loaded ${label}`;
+    syncActiveRuntimeAfterMutation();
     return id;
   }
 
   async function activateDocumentTab(id: DocumentTabId) {
     if (!documentTabsState.tabs[id] || documentTabsState.activeId === id) return;
     await snapshotActiveDocumentTab();
-    const draft = documentTabDrafts.get(id);
-    if (!draft) throw new Error(`No draft bytes stored for Document Tab ${id}`);
     const tab = documentTabsState.tabs[id];
     documentTabsState = activateDocumentTabState(documentTabsState, id);
-    await loadPdfBytes(draft.bytes.slice(), tab.path ?? tab.label, {
-      syncDocumentTab: false,
-      viewState: draft.view,
-    });
+    await tick();
+    const runtime = runtimeForDocumentTab(id);
+    restoreDocumentTabRuntime(runtime);
+    if (!runtime.pdfDocument) {
+      const draft = documentTabDrafts.get(id);
+      if (!draft) throw new Error(`No draft bytes stored for Document Tab ${id}`);
+      await loadPdfBytes(draft.bytes.slice(), tab.path ?? tab.label, {
+        syncDocumentTab: false,
+        viewState: draft.view,
+      });
+    }
+    if (runtime.containerEl) {
+      runtime.containerEl.scrollTop = runtime.savedScrollTop;
+    }
+    runtime.pdfViewer?.update();
+    runtime.pdfViewer?.forceRendering(undefined);
     currentPath = tab.path ?? tab.label;
-    isDirty = draft.dirty;
+    isDirty = runtime.isDirty;
     activeTool = "none";
     status = `Switched to ${tab.label}`;
+    syncActiveRuntimeAfterMutation();
   }
 
   async function closeDocumentTab(id: DocumentTabId, opts: { force?: boolean } = {}) {
@@ -678,15 +959,23 @@
     documentTabDrafts.delete(id);
 
     if (wasActive && nextState.activeId) {
+      teardownViewer();
+      documentTabRuntimes.delete(id);
       documentTabsState = { ...nextState, activeId: null };
       await activateDocumentTab(nextState.activeId);
     } else if (wasActive) {
       documentTabsState = nextState;
       teardownViewer();
+      documentTabRuntimes.delete(id);
       currentPath = "";
       isDirty = false;
       status = "Open a PDF, add highlight/text/ink annotations, then save.";
     } else {
+      const runtime = documentTabRuntimes.get(id);
+      runtime?.pdfViewer?.setDocument(null as never);
+      (runtime?.pdfDocument as { destroy?: () => void } | null | undefined)?.destroy?.();
+      runtime?.viewerEl?.replaceChildren();
+      documentTabRuntimes.delete(id);
       documentTabsState = nextState;
     }
     return "closed" as const;
@@ -710,7 +999,7 @@
       updateActiveDocumentTabPath(path);
       isDirty = false;
       activeTool = "none";
-      status = `Loaded ${path}`;
+      syncActiveRuntimeAfterMutation();
     } catch (error) {
       status = `Open failed: ${formatError(error)}`;
     } finally {
@@ -731,7 +1020,7 @@
       activeTool = "none";
       rememberedSelectionText = "";
       rememberedSelectionRanges = [];
-      status = "Loaded bundled sample PDF.";
+      syncActiveRuntimeAfterMutation();
     } catch (error) {
       status = `Sample load failed: ${formatError(error)}`;
     } finally {
@@ -744,9 +1033,33 @@
     label: string,
     options: { syncDocumentTab?: boolean; viewState?: DocumentTabViewState } = {},
   ) {
+    if ((options.syncDocumentTab ?? true) && !documentTabsState.activeId) {
+      const id = nextDocumentTabId();
+      documentTabRuntimes.set(id, createDocumentTabRuntime());
+      documentTabsState = addDocumentTabState(documentTabsState, {
+        id,
+        path: null,
+        label: labelFromPath(label),
+      });
+      documentTabsState = activateDocumentTabState(documentTabsState, id);
+      await tick();
+      restoreDocumentTabRuntime(runtimeForDocumentTab(id));
+    }
+    if (!containerEl || !viewerEl) {
+      throw new Error("No Document Tab viewer is available.");
+    }
+    const loadTabId = documentTabsState.activeId;
+    const loadRuntime = loadTabId ? runtimeForDocumentTab(loadTabId) : null;
+    const loadToken = loadRuntime ? (loadRuntime.loadToken += 1) : ++viewerLoadToken;
+    const isCurrentLoad = () => Boolean(loadRuntime && loadRuntime.loadToken === loadToken);
+    const isActiveLoad = () => isCurrentLoad() && loadTabId === documentTabsState.activeId;
     const draftBytes = bytes.slice();
     const loadingTask = pdfjsLib.getDocument({ data: bytes.slice(), wasmUrl: pdfjsWasmUrl });
     const nextDocument = await loadingTask.promise;
+    if (!isCurrentLoad()) {
+      (nextDocument as { destroy?: () => void }).destroy?.();
+      return;
+    }
 
     teardownViewer();
     if (options.syncDocumentTab ?? true) {
@@ -757,9 +1070,69 @@
 
     const eventBus = new EventBus();
     const linkService = new PDFLinkService({ eventBus });
+    let resolvePagesInitialized: () => void = () => {};
+    const pagesInitialized = new Promise<void>((resolve) => {
+      resolvePagesInitialized = resolve;
+    });
+    let resolveAnnotationEditorInitialized: () => void = () => {};
+    const annotationEditorInitialized = new Promise<void>((resolve) => {
+      resolveAnnotationEditorInitialized = resolve;
+    });
     pdfLinkService = linkService;
     eventBus.on("annotationeditoruimanager", (event: { uiManager: AnnotationEditorUIManager }) => {
-      annotationEditorUIManager = event.uiManager;
+      if (!isCurrentLoad()) {
+        resolveAnnotationEditorInitialized();
+        return;
+      }
+      if (loadRuntime) loadRuntime.annotationEditorUIManager = event.uiManager;
+      if (isActiveLoad()) {
+        annotationEditorUIManager = event.uiManager;
+        syncActiveRuntimeAfterMutation();
+      }
+      resolveAnnotationEditorInitialized();
+    });
+    eventBus.on("pagesinit", () => {
+      if (!isCurrentLoad()) {
+        resolvePagesInitialized();
+        return;
+      }
+      const targetViewer = loadRuntime?.pdfViewer ?? pdfViewer;
+      if (!targetViewer) {
+        resolvePagesInitialized();
+        return;
+      }
+      if (options.viewState?.scale) {
+        targetViewer.currentScale = options.viewState.scale;
+      } else {
+        targetViewer.currentScaleValue = "page-width";
+      }
+      if (options.viewState?.currentPageNumber) {
+        targetViewer.currentPageNumber = options.viewState.currentPageNumber;
+      }
+      targetViewer.update();
+      targetViewer.forceRendering(undefined);
+      requestAnimationFrame(() => {
+        if (!isCurrentLoad()) return;
+        if (options.viewState && loadRuntime?.containerEl) {
+          loadRuntime.containerEl.scrollTop = options.viewState.scrollTop;
+        }
+        targetViewer.update();
+        targetViewer.forceRendering(undefined);
+      });
+      if (loadRuntime) {
+        loadRuntime.scaleLabel = options.viewState?.scaleLabel ?? "Fit Width";
+        loadRuntime.status = `Rendered ${label}`;
+      }
+      if (isActiveLoad()) {
+        scaleLabel = options.viewState?.scaleLabel ?? "Fit Width";
+        status = `Rendered ${label}`;
+        syncActiveRuntimeAfterMutation();
+        refreshBookmarkRailLayout();
+        queueAnnotationSidebarRefresh(0);
+        queueAnnotationSidebarRefresh(300);
+        queueAnnotationSidebarRefresh(1000);
+      }
+      resolvePagesInitialized();
     });
 
     pdfViewer = new PDFViewer({
@@ -776,34 +1149,8 @@
     pdfViewer.setDocument(nextDocument);
     linkService.setDocument(nextDocument, null);
     pdfDocument = nextDocument;
+    syncActiveRuntimeAfterMutation();
     void loadOutline(nextDocument);
-
-    eventBus.on("pagesinit", () => {
-      if (!pdfViewer) return;
-      if (options.viewState?.scale) {
-        pdfViewer.currentScale = options.viewState.scale;
-      } else {
-        pdfViewer.currentScaleValue = "page-width";
-      }
-      if (options.viewState?.currentPageNumber) {
-        pdfViewer.currentPageNumber = options.viewState.currentPageNumber;
-      }
-      pdfViewer.update();
-      pdfViewer.forceRendering(undefined);
-      requestAnimationFrame(() => {
-        if (options.viewState) {
-          containerEl.scrollTop = options.viewState.scrollTop;
-        }
-        pdfViewer?.update();
-        pdfViewer?.forceRendering(undefined);
-      });
-      scaleLabel = options.viewState?.scaleLabel ?? "Fit Width";
-      status = `Rendered ${label}`;
-      refreshBookmarkRailLayout();
-      queueAnnotationSidebarRefresh(0);
-      queueAnnotationSidebarRefresh(300);
-      queueAnnotationSidebarRefresh(1000);
-    });
     for (const eventName of [
       "pagerendered",
       "textlayerrendered",
@@ -811,34 +1158,77 @@
       "annotationeditorlayerrendered",
     ]) {
       eventBus.on(eventName, () => {
+        if (!isActiveLoad()) return;
         refreshBookmarkRailLayout();
         scheduleAnnotationSidebarRefresh(120);
       });
     }
-    eventBus.on("editingstateschanged", () => syncSelectedEditorState());
-    eventBus.on("annotationeditorparamschanged", () => syncSelectedEditorState());
-    eventBus.on("scalechanging", (event: { scale: number }) => {
-      zoomPercent = Math.round(event.scale * 100);
+    eventBus.on("editingstateschanged", () => {
+      if (!isActiveLoad()) return;
+      syncSelectedEditorState();
+      syncActiveRuntimeAfterMutation();
     });
+    eventBus.on("annotationeditorparamschanged", () => {
+      if (!isActiveLoad()) return;
+      syncSelectedEditorState();
+      syncActiveRuntimeAfterMutation();
+    });
+    eventBus.on("scalechanging", (event: { scale: number }) => {
+      if (!isActiveLoad()) return;
+      zoomPercent = Math.round(event.scale * 100);
+      syncActiveRuntimeAfterMutation();
+    });
+    syncActiveRuntimeAfterMutation();
+    await Promise.race([
+      pagesInitialized,
+      new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+    ]);
+    await Promise.race([
+      annotationEditorInitialized,
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+    ]);
+    await tick();
+    await Promise.race([
+      new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+      new Promise<void>((resolve) => setTimeout(resolve, 100)),
+    ]);
+    if (isActiveLoad()) {
+      pdfViewer?.update();
+      pdfViewer?.forceRendering(undefined);
+      status = `Rendered ${label}`;
+      syncActiveRuntimeAfterMutation();
+    } else if (loadRuntime) {
+      loadRuntime.pdfViewer?.update();
+      loadRuntime.pdfViewer?.forceRendering(undefined);
+      loadRuntime.status = `Rendered ${label}`;
+    }
   }
 
   function scheduleAnnotationSidebarRefresh(delay = 120) {
     if (annotationRefreshTimer) {
       clearTimeout(annotationRefreshTimer);
     }
+    const refreshTabId = documentTabsState.activeId;
     annotationRefreshTimer = setTimeout(() => {
+      if (refreshTabId !== documentTabsState.activeId) return;
       annotationRefreshTimer = null;
       void refreshAnnotationSidebar();
     }, delay);
   }
 
   function queueAnnotationSidebarRefresh(delay = 0) {
-    setTimeout(() => void refreshAnnotationSidebar(), delay);
+    const refreshTabId = documentTabsState.activeId;
+    setTimeout(() => {
+      if (refreshTabId !== documentTabsState.activeId) return;
+      void refreshAnnotationSidebar();
+    }, delay);
   }
 
   function queueEditorStateRefresh(...delays: number[]) {
+    const refreshTabId = documentTabsState.activeId;
     for (const delay of delays) {
       setTimeout(() => {
+        if (refreshTabId !== documentTabsState.activeId) return;
         syncSelectedEditorState();
         void refreshAnnotationSidebar();
       }, delay);
@@ -846,13 +1236,17 @@
   }
 
   async function refreshAnnotationSidebar() {
+    const refreshTabId = documentTabsState.activeId;
+    const refreshDocument = pdfDocument;
     if (!pdfDocument) {
       annotationEntries = [];
       annotationStatus = "Open a PDF to inspect annotations.";
+      syncActiveRuntimeAfterMutation();
       return;
     }
     try {
       const pdfEntries = await getPdfAnnotationEntries();
+      if (refreshTabId !== documentTabsState.activeId || refreshDocument !== pdfDocument) return;
       for (const entry of pdfEntries) {
         persistedPositionByKey.set(persistedAnnotationKey(entry.page, entry.sourceId), {
           top: entry.sortTop,
@@ -869,8 +1263,11 @@
       );
       annotationEntries = merged;
       annotationStatus = annotationCountLabel(merged.length);
+      syncActiveRuntimeAfterMutation();
     } catch (error) {
+      if (refreshTabId !== documentTabsState.activeId || refreshDocument !== pdfDocument) return;
       annotationStatus = `Annotation scan failed: ${formatError(error)}`;
+      syncActiveRuntimeAfterMutation();
     }
   }
 
@@ -1149,11 +1546,13 @@
   }
 
   async function loadOutline(document: PdfDocument) {
+    const loadTabId = documentTabsState.activeId;
     outlineEntries = [];
     outlineStatus = "Loading outline...";
     activeOutlineEntryId = null;
     bookmarkEntries = [];
     bookmarkStatus = "Loading bookmarks...";
+    syncActiveRuntimeAfterMutation();
     try {
       const documentWithOutline = document as PdfDocument & {
         getDestination: (id: string) => Promise<unknown[] | null>;
@@ -1161,9 +1560,11 @@
         getPageIndex: (ref: unknown) => Promise<number>;
       };
       const rawOutline = await documentWithOutline.getOutline();
+      if (loadTabId !== documentTabsState.activeId || document !== pdfDocument) return;
       if (!rawOutline || rawOutline.length === 0) {
         outlineStatus = "This PDF has no outline.";
         bookmarkStatus = bookmarkCountLabel(0);
+        syncActiveRuntimeAfterMutation();
         return;
       }
       const bookmarkRoot = rawOutline.find((item) => item.title?.trim() === bookmarkRootTitle);
@@ -1174,6 +1575,7 @@
             normalizeBookmarkEntry(documentWithOutline, item, `${index + 1}`),
           ),
         );
+        if (loadTabId !== documentTabsState.activeId || document !== pdfDocument) return;
         bookmarkEntries = sortBookmarkEntries(
           normalizedBookmarks.filter((entry): entry is BookmarkEntry => Boolean(entry)),
         );
@@ -1181,11 +1583,13 @@
       bookmarkStatus = bookmarkCountLabel(bookmarkEntries.length);
       if (documentOutline.length === 0) {
         outlineStatus = "This PDF has no outline.";
+        syncActiveRuntimeAfterMutation();
         return;
       }
       outlineEntries = await Promise.all(
         documentOutline.map((item, index) => normalizeOutlineEntry(documentWithOutline, item, `${index + 1}`)),
       );
+      if (loadTabId !== documentTabsState.activeId || document !== pdfDocument) return;
       collapsedOutlineIds = [];
       const count = countOutlineEntries(outlineEntries);
       const unavailableCount = countUnavailableOutlineEntries(outlineEntries);
@@ -1193,9 +1597,12 @@
         unavailableCount > 0
           ? `${count} outline ${count === 1 ? "item" : "items"}; ${unavailableCount} not navigable`
           : `${count} outline ${count === 1 ? "item" : "items"}`;
+      syncActiveRuntimeAfterMutation();
       requestAnimationFrame(refreshActiveOutlineFromScroll);
     } catch (error) {
+      if (loadTabId !== documentTabsState.activeId || document !== pdfDocument) return;
       outlineStatus = `Outline failed: ${formatError(error)}`;
+      syncActiveRuntimeAfterMutation();
     }
   }
 
@@ -1901,9 +2308,10 @@
   }
 
   async function scrollToPage(pageNumber: number) {
-    const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
-    if (pageElement) {
-      containerEl.scrollTop = Math.max(pageElement.offsetTop - 20, 0);
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    const activeContainer = containerEl;
+    if (pageElement && activeContainer) {
+      activeContainer.scrollTop = Math.max(pageElement.offsetTop - 20, 0);
       await new Promise((resolve) => setTimeout(resolve, 250));
     } else if (pdfViewer) {
       pdfViewer.currentPageNumber = pageNumber;
@@ -2281,16 +2689,18 @@
     element: HTMLElement,
     options: { scrollIntoView?: boolean; showFocusBox?: boolean } = {},
   ) {
+    if (!containerEl) return;
+    const activeContainer = containerEl;
     const rect = element.getBoundingClientRect();
-    const containerRect = containerEl.getBoundingClientRect();
-    const left = rect.left - containerRect.left + containerEl.scrollLeft - 3;
-    const top = rect.top - containerRect.top + containerEl.scrollTop - 3;
+    const containerRect = activeContainer.getBoundingClientRect();
+    const left = rect.left - containerRect.left + activeContainer.scrollLeft - 3;
+    const top = rect.top - containerRect.top + activeContainer.scrollTop - 3;
     const width = rect.width + 6;
     const height = rect.height + 6;
 
     if (options.scrollIntoView !== false) {
-      containerEl.scrollLeft = Math.max(0, left + width / 2 - containerEl.clientWidth / 2);
-      containerEl.scrollTop = Math.max(0, top + height / 2 - containerEl.clientHeight / 2);
+      activeContainer.scrollLeft = Math.max(0, left + width / 2 - activeContainer.clientWidth / 2);
+      activeContainer.scrollTop = Math.max(0, top + height / 2 - activeContainer.clientHeight / 2);
     }
     if (options.showFocusBox !== false) {
       annotationFocusBox = { left, top, width, height };
@@ -2329,7 +2739,14 @@
         highlightColors[defaultHighlightColor],
       );
     }
-    pdfViewer.annotationEditorMode = { mode: editorModes[tool] };
+    try {
+      pdfViewer.annotationEditorMode = { mode: editorModes[tool] };
+    } catch (error) {
+      if (!annotationEditorUIManager || !String(error).includes("AnnotationEditor is not enabled")) {
+        throw error;
+      }
+      void annotationEditorUIManager.updateMode(editorModes[tool]);
+    }
     if (applyDefaultParams && tool === "text" && annotationEditorUIManager) {
       annotationEditorUIManager.updateParams(
         pdfjsLib.AnnotationEditorParamsType.FREETEXT_COLOR,
@@ -3873,19 +4290,29 @@
       throw new Error("No PDF loaded");
     }
     setTool("text");
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    pdfViewer?.update();
+    pdfViewer?.forceRendering(undefined);
+    await new Promise((resolve) => setTimeout(resolve, 150));
     annotationEditorUIManager.updateParams(
       pdfjsLib.AnnotationEditorParamsType.FREETEXT_COLOR,
       freeTextColors[defaultFreeTextColor],
     );
-    const pageElement = document.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
-    if (pageElement) {
+    const pageElement = viewerEl?.querySelector<HTMLElement>(`.page[data-page-number="${pageNumber}"]`);
+    if (pageElement && containerEl) {
       containerEl.scrollTop = Math.max(pageElement.offsetTop - 20, 0);
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
-    const layerElement = document.querySelector<HTMLElement>(
+    let layerElement = viewerEl?.querySelector<HTMLElement>(
       `.page[data-page-number="${pageNumber}"] .annotationEditorLayer`,
     );
+    for (let attempt = 0; !layerElement && attempt < 10; attempt += 1) {
+      pdfViewer?.update();
+      pdfViewer?.forceRendering(undefined);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      layerElement = viewerEl?.querySelector<HTMLElement>(
+        `.page[data-page-number="${pageNumber}"] .annotationEditorLayer`,
+      );
+    }
     if (!layerElement) {
       throw new Error(`No annotation editor layer for page ${pageNumber}`);
     }
@@ -3913,7 +4340,13 @@
         inputType: "insertText",
       }),
     );
-    createdEditor?.commit?.();
+    try {
+      createdEditor?.commit?.();
+    } catch (error) {
+      if (!String(error).includes("reading 'div'")) {
+        throw error;
+      }
+    }
     syncSelectedEditorState();
     isDirty = true;
     void refreshAnnotationSidebar();
@@ -4010,7 +4443,8 @@
       clearTimeout(annotationRefreshTimer);
       annotationRefreshTimer = null;
     }
-    viewerEl.replaceChildren();
+    viewerEl?.replaceChildren();
+    syncActiveRuntimeAfterMutation();
   }
 
   function defaultSavePath() {
@@ -4414,57 +4848,62 @@
       {#if !pdfDocument}
         <div class="reader-empty">Open a PDF to start reading (⌘O).</div>
       {/if}
-    <div
-      class="pdf-container"
-      class:annotation-tool-active={isAnnotationCreationMode()}
-      bind:this={containerEl}
-      role="region"
-      aria-label="PDF pages"
-    >
-      {#if annotationFocusBox}
+      {#each documentTabsState.order as documentTabId (documentTabId)}
         <div
-          class="annotation-focus-box"
-          style={`left: ${annotationFocusBox.left}px; top: ${annotationFocusBox.top}px; width: ${annotationFocusBox.width}px; height: ${annotationFocusBox.height}px`}
-          aria-hidden="true"
-        ></div>
-      {/if}
-      {#each bookmarkEntries as entry (entry.id)}
-        <button
-          type="button"
-          class="bookmark-page-marker"
-          class:bookmark-hovered={hoveredBookmarkId === entry.id}
-          data-page-number={entry.pageNumber}
-          style={bookmarkMarkerStyle(entry)}
-          onclick={(event) => {
-            event.stopPropagation();
-            deleteBookmark(entry.id);
-          }}
-          onmouseenter={() => (hoveredBookmarkId = entry.id)}
-          onmouseleave={() => (hoveredBookmarkId = null)}
-          title={`Remove bookmark: ${entry.title}`}
-          aria-label={`Remove bookmark ${entry.title}`}
-        ></button>
+          class="pdf-container"
+          class:is-hidden-document-tab={documentTabsState.activeId !== documentTabId}
+          class:annotation-tool-active={documentTabsState.activeId === documentTabId && isAnnotationCreationMode()}
+          use:registerDocumentTabContainer={documentTabId}
+          role="region"
+          aria-label="PDF pages"
+        >
+          {#if documentTabsState.activeId === documentTabId && annotationFocusBox}
+            <div
+              class="annotation-focus-box"
+              style={`left: ${annotationFocusBox.left}px; top: ${annotationFocusBox.top}px; width: ${annotationFocusBox.width}px; height: ${annotationFocusBox.height}px`}
+              aria-hidden="true"
+            ></div>
+          {/if}
+          {#if documentTabsState.activeId === documentTabId}
+            {#each bookmarkEntries as entry (entry.id)}
+              <button
+                type="button"
+                class="bookmark-page-marker"
+                class:bookmark-hovered={hoveredBookmarkId === entry.id}
+                data-page-number={entry.pageNumber}
+                style={bookmarkMarkerStyle(entry)}
+                onclick={(event) => {
+                  event.stopPropagation();
+                  deleteBookmark(entry.id);
+                }}
+                onmouseenter={() => (hoveredBookmarkId = entry.id)}
+                onmouseleave={() => (hoveredBookmarkId = null)}
+                title={`Remove bookmark: ${entry.title}`}
+                aria-label={`Remove bookmark ${entry.title}`}
+              ></button>
+            {/each}
+          {/if}
+          {#if documentTabsState.activeId === documentTabId && bookmarkRailHoverCue}
+            <div
+              class="bookmark-rail-focus-cue"
+              data-page-number={bookmarkRailHoverCue.pageNumber}
+              style={`left: ${bookmarkRailHoverCue.focusLeft}px; top: ${bookmarkRailHoverCue.focusTop}px`}
+              aria-hidden="true"
+            >
+              +
+            </div>
+            <div
+              class="bookmark-rail-add-cue"
+              data-page-number={bookmarkRailHoverCue.pageNumber}
+              style={`left: ${bookmarkRailHoverCue.hintLeft}px; top: ${bookmarkRailHoverCue.hintTop}px`}
+              aria-hidden="true"
+            >
+              +
+            </div>
+          {/if}
+          <div class="pdfViewer" use:registerDocumentTabViewer={documentTabId}></div>
+        </div>
       {/each}
-      {#if bookmarkRailHoverCue}
-        <div
-          class="bookmark-rail-focus-cue"
-          data-page-number={bookmarkRailHoverCue.pageNumber}
-          style={`left: ${bookmarkRailHoverCue.focusLeft}px; top: ${bookmarkRailHoverCue.focusTop}px`}
-          aria-hidden="true"
-        >
-          +
-        </div>
-        <div
-          class="bookmark-rail-add-cue"
-          data-page-number={bookmarkRailHoverCue.pageNumber}
-          style={`left: ${bookmarkRailHoverCue.hintLeft}px; top: ${bookmarkRailHoverCue.hintTop}px`}
-          aria-hidden="true"
-        >
-          +
-        </div>
-      {/if}
-      <div class="pdfViewer" bind:this={viewerEl}></div>
-    </div>
     </section>
   </main>
 </div>
@@ -4877,6 +5316,9 @@
     inset: 0;
     overflow: auto;
     background: var(--surface-warm);
+  }
+  .pdf-container.is-hidden-document-tab {
+    display: none;
   }
 
   .annotation-focus-box {
