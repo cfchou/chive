@@ -130,6 +130,7 @@
   } from "$lib/pdf/bookmark-rail-geometry";
   import { createSpikeDebugHarness } from "$lib/debug/spike-harness";
   import { DocumentSession } from "$lib/tabs/document-session.svelte";
+  import DocumentTabBar from "$lib/ui/DocumentTabBar.svelte";
   import {
     addTab as addDocTab,
     removeTab as removeDocTab,
@@ -195,6 +196,50 @@
   const activeSession = $derived(
     tabsState.activeId ? (sessions.get(tabsState.activeId) ?? nullSession) : nullSession,
   );
+
+  const tabList = $derived(
+    tabsState.order.map((id) => {
+      const tab = tabsState.tabs[id];
+      const session = sessions.get(id);
+      return {
+        id,
+        label: tab?.label ?? "?",
+        path: tab?.path ?? null,
+        dirty: session?.isDirty ?? false,
+        active: id === tabsState.activeId,
+      };
+    }),
+  );
+
+  let isFullscreen = $state(false);
+
+  async function detectFullscreen() {
+    if (!isTauriRuntime()) return;
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      isFullscreen = await getCurrentWindow().isFullscreen();
+    } catch {
+      // ignore
+    }
+  }
+
+  async function closeTabFromUI(id: string) {
+    // Phase C: no modal yet — close directly (D3/D9 land in Phase D).
+    const session = sessions.get(id);
+    if (session) {
+      teardownSessionViewer(session);
+      sessions.delete(id);
+    }
+    tabsState = removeDocTab(tabsState, id);
+    await syncActiveTabUI();
+    if (tabsState.activeId) {
+      const active = sessions.get(tabsState.activeId);
+      if (active?.pdfViewer) {
+        active.pdfViewer.update();
+        active.pdfViewer.forceRendering(undefined);
+      }
+    }
+  }
   let navigationTab = $state<NavigationTab>("outline");
   let defaultHighlightColor = $state<HighlightColorName>("yellow");
   let defaultFreeTextColor = $state<FreeTextColorName>("yellow");
@@ -413,12 +458,17 @@
       refreshBookmarkRailLayout();
     });
     if (activeSession.containerEl) containerResizeObserver.observe(activeSession.containerEl);
+    // D10: detect fullscreen transitions to hide/show the Document Tab Bar.
+    const onWindowResize = () => { void detectFullscreen(); };
+    window.addEventListener("resize", onWindowResize);
+    void detectFullscreen();
     void installAppMenu({ openPdf, savePdf, savePdfAs }).then((controls) => {
       menuControls = controls;
       void controls?.setSaveEnabled(Boolean(activeSession.pdfDocument));
     });
     return () => {
       containerResizeObserver.disconnect();
+      window.removeEventListener("resize", onWindowResize);
       activeSession.containerEl?.removeEventListener("mouseleave", clearRailHoverCue);
       activeSession.containerEl?.removeEventListener("mousemove", handlePdfContainerMouseMove);
       activeSession.containerEl?.removeEventListener("scroll", handlePdfScroll);
@@ -4235,7 +4285,15 @@
   }
 </script>
 
-<div class="app">
+<div class="app" class:browser-build={!isTauriRuntime()} class:fullscreen={isFullscreen}>
+  <DocumentTabBar
+    tabs={tabList}
+    onactivate={(id: string) => switchToTab(id)}
+    onclose={(id: string) => closeTabFromUI(id)}
+    onopen={openPdf}
+    isTauri={isTauriRuntime()}
+    {isFullscreen}
+  />
   <header class="topbar">
     <div class="brand">
       <span class="file">{fileName}</span>
@@ -4479,8 +4537,11 @@
     height: 100vh;
     min-width: var(--app-min-width);
     display: grid;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto auto 1fr;
     background: var(--surface);
+  }
+  .app.fullscreen {
+    grid-template-rows: 0 auto 1fr;
   }
   .topbar {
     height: 48px;
