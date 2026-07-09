@@ -30,6 +30,8 @@ type OutlineEntry = {
 
 type DocumentTabSummary = {
   id: string;
+  label: string;
+  path: string | null;
   active: boolean;
 };
 
@@ -251,6 +253,50 @@ describe("native WKWebView PDF smoke", () => {
     } finally {
       await setNativeFullscreen(false);
     }
+  });
+
+  it("opens dropped Finder PDF paths as Document Tabs", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+
+    await app.execute(
+      async ({ firstPath, secondPath }) => {
+        await window.__pdfSpike!.openDroppedFilesForTest([firstPath, secondPath]);
+      },
+      { firstPath: samplePdfPath, secondPath: noOutlinePdfPath },
+    );
+
+    await app.waitUntil(
+      async () =>
+        app.execute(({ firstPath, secondPath }) => {
+          const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+          return (
+            tabs.length === 2 &&
+            tabs.some((tab) => tab.path === firstPath && tab.label === "sample.pdf" && !tab.active) &&
+            tabs.some((tab) => tab.path === secondPath && tab.label === "no-outline.pdf" && tab.active)
+          );
+        }, { firstPath: samplePdfPath, secondPath: noOutlinePdfPath }),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native dropped PDF paths did not open as Document Tabs",
+      },
+    );
+
+    await app.execute(async (filePath) => {
+      await window.__pdfSpike!.openDroppedFilesForTest([filePath]);
+    }, samplePdfPath);
+
+    await app.waitUntil(
+      async () =>
+        app.execute((filePath) => {
+          const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+          return tabs.length === 2 && tabs.some((tab) => tab.path === filePath && tab.active);
+        }, samplePdfPath),
+      {
+        timeout: 10_000,
+        timeoutMsg: "duplicate dropped PDF path did not focus the existing Document Tab",
+      },
+    );
   });
 
   it("locates persisted ink rows independently after adjacent ink clicks", async () => {

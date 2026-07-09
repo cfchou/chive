@@ -432,6 +432,7 @@
       stats: debugHarness.stats,
       setTool,
       requestWindowCloseForTest: handleWindowCloseRequest,
+      openDroppedFilesForTest: openDroppedDocumentPaths,
       tabs: {
         list: listDocumentTabs,
         open: openDocumentTab,
@@ -451,6 +452,7 @@
     });
     if (containerEl) containerResizeObserver.observe(containerEl);
     let unlistenFullscreenResize: (() => void) | null = null;
+    let unlistenNativeFileDrop: (() => void) | null = null;
     let unlistenWindowClose: (() => void) | null = null;
     let fullscreenPollId: number | null = null;
     const syncNativeFullscreen = async () => {
@@ -483,6 +485,11 @@
             event.preventDefault();
           }
         });
+        unlistenNativeFileDrop = await appWindow.onDragDropEvent((event) => {
+          if (event.payload.type === "drop") {
+            void openDroppedDocumentPaths(event.payload.paths);
+          }
+        });
         fullscreenPollId = window.setInterval(() => {
           void syncNativeFullscreen();
         }, 250);
@@ -494,6 +501,7 @@
     });
     return () => {
       unlistenFullscreenResize?.();
+      unlistenNativeFileDrop?.();
       unlistenWindowClose?.();
       if (fullscreenPollId !== null) {
         window.clearInterval(fullscreenPollId);
@@ -1094,8 +1102,12 @@
     documentTabsState = moveDocumentTabState(documentTabsState, from, to);
   }
 
+  function isPdfFileName(name: string) {
+    return name.toLowerCase().endsWith(".pdf");
+  }
+
   function isPdfDropFile(file: File) {
-    return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+    return file.type === "application/pdf" || isPdfFileName(file.name);
   }
 
   function handleDocumentFileDragOver(event: DragEvent) {
@@ -1110,6 +1122,14 @@
     event.preventDefault();
     for (const file of files) {
       await openDocumentTabBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+    }
+  }
+
+  async function openDroppedDocumentPaths(paths: string[]) {
+    for (const path of paths) {
+      if (isPdfFileName(path)) {
+        await openDocumentTab(path);
+      }
     }
   }
 

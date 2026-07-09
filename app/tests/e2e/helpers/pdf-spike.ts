@@ -27,6 +27,7 @@ export type PdfSpikeApi = {
   setTool: (tool: "none" | "highlight" | "text" | "ink") => void;
   stats: () => Record<string, unknown>;
   requestWindowCloseForTest: () => Promise<"closed" | "prompted">;
+  openDroppedFilesForTest: (paths: string[]) => Promise<void>;
   tabs: {
     list: () => { id: string; label: string; path: string | null; dirty: boolean; active: boolean }[];
     openBytes: (bytes: Uint8Array, label: string) => Promise<string>;
