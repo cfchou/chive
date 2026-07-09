@@ -2825,6 +2825,26 @@
         activateAnnotationEntryForEdit(clickedEntry, event.clientX, event.clientY);
         return;
       }
+      // In pure creation mode, only a pointer that landed on an annotation
+      // *visual* (free-text glyphs, ink strokes, sections — the DOM-target
+      // hits pinned by the double-click-edit specs) reserves the click for
+      // select/edit. Entries matched purely by geometry (the pointer target
+      // is the bare text/drawing layer inside an annotation's rect) must not
+      // block the active tool from creating there. Live highlight editors
+      // are rect-sized interactive surfaces, not thin visuals, so they don't
+      // reserve the click either — highlights stay reachable via double
+      // click in selection mode and via the sidebar.
+      const pointerHitAnnotationVisual = Boolean(
+        (editableEditor && !editableEditor.classList.contains("highlightEditor")) ||
+          directDisabledEditorId ||
+          savedAnnotation ||
+          savedFreeTextAnnotation ||
+          savedInkAnnotation,
+      );
+      if (isAnnotationCreationMode() && !pointerHitAnnotationVisual) {
+        lastAnnotationPointerClick = null;
+        return;
+      }
       if (selectedAnnotationKind || isAnnotationCreationMode()) {
         event.preventDefault();
         event.stopPropagation();
@@ -4672,6 +4692,17 @@
 
   .pdf-container.annotation-tool-active :global(.annotationLayer :is(.highlightAnnotation, .freeTextAnnotation, .inkAnnotation)),
   .pdf-container.annotation-tool-active :global(.annotationEditorLayer :is(.highlightEditor, .freeTextEditor, .inkEditor)) {
+    pointer-events: none !important;
+  }
+
+  /* Official-app addition (P0-6): pdf_viewer.css re-enables pointer events on
+     a highlight editor's .internal, which spans the editor's whole rect and
+     both steals the pointerdown from the active tool and stops pdf.js from
+     creating (its layer only creates when the event target is the layer div
+     itself). In creation mode the entire highlight editor subtree must be
+     pointer-transparent; the editToolbar subtree keeps its own rule below. */
+  .pdf-container.annotation-tool-active
+    :global(.annotationEditorLayer .highlightEditor :not(.editToolbar, .editToolbar *)) {
     pointer-events: none !important;
   }
 

@@ -848,6 +848,60 @@ test("active annotation tool creates over empty existing ink editor bounds", asy
     });
 });
 
+test("ink tool draws a new stroke starting inside an existing highlight region", async ({ page }) => {
+  await createHighlight(page);
+  await page.keyboard.press("Escape");
+  const start = await page.evaluate(() => {
+    const editor = document.querySelector<HTMLElement>(".page[data-page-number='1'] .highlightEditor");
+    if (!editor) throw new Error("Missing highlight editor");
+    const rect = editor.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.evaluate(() => window.__pdfSpike!.setTool("ink"));
+  await page.waitForTimeout(200);
+  const before = await page.evaluate(
+    () => document.querySelectorAll(".page[data-page-number='1'] .inkEditor").length,
+  );
+
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x + 70, start.y + 24, { steps: 8 });
+  await page.mouse.up();
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.querySelectorAll(".page[data-page-number='1'] .inkEditor").length),
+    )
+    .toBe(before + 1);
+});
+
+test("free text tool creates inside an existing highlight region", async ({ page }) => {
+  await createHighlight(page);
+  await page.keyboard.press("Escape");
+  const point = await page.evaluate(() => {
+    const editor = document.querySelector<HTMLElement>(".page[data-page-number='1'] .highlightEditor");
+    if (!editor) throw new Error("Missing highlight editor");
+    const rect = editor.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.evaluate(() => window.__pdfSpike!.setTool("text"));
+  await page.waitForTimeout(200);
+
+  await page.mouse.click(point.x, point.y);
+  await page.keyboard.type("Over the highlight");
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        [...document.querySelectorAll<HTMLElement>(".page[data-page-number='1'] .freeTextEditor .internal")].some(
+          (editor) => editor.innerText.includes("Over the highlight"),
+        ),
+      ),
+    )
+    .toBe(true);
+});
+
 test("active annotation tool double-click edits visible annotations without switching tools", async ({ page }) => {
   await createFreeText(page, "Clickable visible text");
   await page.keyboard.press("Escape");
