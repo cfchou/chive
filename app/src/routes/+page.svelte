@@ -130,6 +130,17 @@
   } from "$lib/pdf/bookmark-rail-geometry";
   import { createSpikeDebugHarness } from "$lib/debug/spike-harness";
   import { DocumentSession } from "$lib/tabs/document-session.svelte";
+  import {
+    addTab as addDocTab,
+    removeTab as removeDocTab,
+    activateTab as activateDocTab,
+    moveTab as moveDocTab,
+    nextTabId,
+    previousTabId,
+    findByPath,
+    createEmptyTabsState,
+    type DocumentTabId,
+  } from "$lib/tabs/tab-state";
 
   if (import.meta.env.VITE_WDIO_TAURI === "1" && typeof window !== "undefined") {
     void import("@wdio/tauri-plugin");
@@ -166,7 +177,24 @@
   const bookmarkTitleLookaheadPdfPoints = 180;
   const bookmarkTitleWordCount = 4;
 
-  const activeSession = new DocumentSession();
+  const nullSession = new DocumentSession();
+  const sessions = new Map<DocumentTabId, DocumentSession>();
+  let tabsState = $state(createEmptyTabsState());
+
+  // Start with one empty tab (preserves existing single-doc behavior).
+  {
+    const initialId = crypto.randomUUID();
+    sessions.set(initialId, new DocumentSession());
+    tabsState = {
+      order: [initialId],
+      activeId: initialId,
+      tabs: { [initialId]: { id: initialId, path: null, label: "New Document" } },
+    };
+  }
+
+  const activeSession = $derived(
+    tabsState.activeId ? (sessions.get(tabsState.activeId) ?? nullSession) : nullSession,
+  );
   let navigationTab = $state<NavigationTab>("outline");
   let defaultHighlightColor = $state<HighlightColorName>("yellow");
   let defaultFreeTextColor = $state<FreeTextColorName>("yellow");
@@ -312,6 +340,69 @@
       debugSavedBytes: debugHarness.debugSavedBytes,
       stats: debugHarness.stats,
       setTool,
+      tabs: {
+        list: () =>
+          tabsState.order.map((id) => ({
+            id,
+            label: tabsState.tabs[id]?.label ?? "?",
+            path: tabsState.tabs[id]?.path ?? null,
+            dirty: sessions.get(id)?.isDirty ?? false,
+            active: id === tabsState.activeId,
+          })),
+        open: async (path: string) => {
+          await openPathAsTab(path);
+          const id = findByPath(tabsState, path);
+          if (!id) throw new Error(`Failed to open tab for ${path}`);
+          return id;
+        },
+        openBytes: async (bytes: Uint8Array, label: string) => {
+          const id = crypto.randomUUID();
+          const session = new DocumentSession();
+          sessions.set(id, session);
+          tabsState = addDocTab(tabsState, { path: null, label });
+          tabsState = activateDocTab(tabsState, id);
+          await syncActiveTabUI();
+          session.isBusy = true;
+          session.status = `Loading ${label}...`;
+          try {
+            await loadPdfBytesInto(session, bytes, label);
+            session.isDirty = false;
+            session.activeTool = "none";
+            session.status = `Loaded ${label}`;
+          } catch (error) {
+            session.status = `Load failed: ${formatError(error)}`;
+          } finally {
+            session.isBusy = false;
+          }
+          return id;
+        },
+        activate: async (id: string) => {
+          await switchToTab(id);
+        },
+        close: async (id: string, opts?: { force?: boolean }) => {
+          // Phase B: force-only, no modal (D3/D9 land in Phase D).
+          if (!opts?.force) return "prompted" as const;
+          const session = sessions.get(id);
+          if (session) {
+            teardownSessionViewer(session);
+            sessions.delete(id);
+          }
+          tabsState = removeDocTab(tabsState, id);
+          await syncActiveTabUI();
+          // Wake rendering on the new active tab.
+          if (tabsState.activeId) {
+            const active = sessions.get(tabsState.activeId);
+            if (active?.pdfViewer) {
+              active.pdfViewer.update();
+              active.pdfViewer.forceRendering(undefined);
+            }
+          }
+          return "closed" as const;
+        },
+        reorder: (from: number, to: number) => {
+          tabsState = moveDocTab(tabsState, from, to);
+        },
+      },
     });
     // Official-app additions: collapsible/dockable sidebars resize the viewer
     // container mid-session (the spike never did), so the viewer and the
@@ -472,7 +563,210 @@
 
     if (!selected || Array.isArray(selected)) return;
 
-    await loadPdf(selected);
+    await openPathAsTab(selected);
+  }
+
+  async function openPathAsTab(path: string) {
+    // D4: dedupe by absolute path — if already open, activate that tab.
+    const existingId = findByPath(tabsState, path);
+    if (existingId) {
+      await switchToTab(existingId);
+      return;
+    }
+
+    // Create a new tab + session, activate it, then load the PDF.
+    const id = crypto.randomUUID();
+    const label = path.split("/").pop() ?? path;
+    const session = new DocumentSession();
+    sessions.set(id, session);
+    tabsState = addDocTab(tabsState, { path, label });
+    tabsState = activateDocTab(tabsState, id);
+    await syncActiveTabUI();
+
+    session.isBusy = true;
+    session.status = "Loading PDF...";
+    try {
+      const rawBytes = await invoke<number[]>("read_pdf", { path });
+      await loadPdfBytesInto(session, new Uint8Array(rawBytes), label);
+      session.currentPath = path;
+      session.isDirty = false;
+      session.activeTool = "none";
+      session.status = `Loaded ${label}`;
+    } catch (error) {
+      session.status = `Open failed: ${formatError(error)}`;
+    } finally {
+      session.isBusy = false;
+    }
+  }
+
+  async function switchToTab(id: DocumentTabId) {
+    if (tabsState.activeId === id) return;
+    const prev = tabsState.activeId ? sessions.get(tabsState.activeId) : null;
+    const next = sessions.get(id);
+    if (!next) return;
+
+    // §4.4: Save scroll, flip active, restore scroll, wake rendering.
+    if (prev) {
+      prev.savedScrollTop = prev.containerEl?.scrollTop ?? 0;
+    }
+
+    tabsState = activateDocTab(tabsState, id);
+    await syncActiveTabUI();
+
+    // Restore scroll and wake rendering.
+    next.containerEl.scrollTop = next.savedScrollTop;
+    if (next.pdfViewer) {
+      next.pdfViewer.update();
+      next.pdfViewer.forceRendering(undefined);
+      requestAnimationFrame(() => {
+        next.pdfViewer?.update();
+        next.pdfViewer?.forceRendering(undefined);
+      });
+    }
+  }
+
+  async function syncActiveTabUI() {
+    await tick();
+    // Sync window title.
+    if (tabsState.activeId) {
+      const tab = tabsState.tabs[tabsState.activeId];
+      const title = tab?.label ?? "Chive";
+      if (isTauriRuntime()) {
+        try {
+          const { getCurrentWindow } = await import("@tauri-apps/api/window");
+          await getCurrentWindow().setTitle(title);
+        } catch {
+          // Browser build — no window title API.
+        }
+      }
+    }
+    // Sync save menu state.
+    menuControls?.setSaveEnabled(Boolean(activeSession.pdfDocument));
+  }
+
+  function isTauriRuntime() {
+    return "__TAURI_INTERNALS__" in window;
+  }
+
+  async function loadPdfBytesInto(session: DocumentSession, bytes: Uint8Array, label: string) {
+    const loadingTask = pdfjsLib.getDocument({ data: bytes, wasmUrl: pdfjsWasmUrl });
+    const nextDocument = await loadingTask.promise;
+
+    // Tear down this session's existing viewer (if any).
+    teardownSessionViewer(session);
+    session.rememberedSelectionText = "";
+    session.rememberedSelectionRanges = [];
+
+    const eventBus = new EventBus();
+    const linkService = new PDFLinkService({ eventBus });
+    session.pdfLinkService = linkService;
+    session.eventBus = eventBus;
+    eventBus.on("annotationeditoruimanager", (event: { uiManager: AnnotationEditorUIManager }) => {
+      session.annotationEditorUIManager = event.uiManager;
+    });
+
+    session.pdfViewer = new PDFViewer({
+      container: session.containerEl,
+      viewer: session.viewerEl,
+      eventBus,
+      linkService,
+      annotationEditorMode: editorModes.none,
+      enableHighlightFloatingButton: false,
+      annotationEditorHighlightColors:
+        "red=#ffb3ab,orange=#ffd1a1,yellow=#fff35c,green=#7cf2aa,cyan=#a5ecf2,blue=#8ecbff,purple=#d7bfff,rose=#ffb6de",
+    } as ConstructorParameters<typeof PDFViewer>[0] & { enableHighlightFloatingButton: boolean });
+    linkService.setViewer(session.pdfViewer);
+    session.pdfViewer.setDocument(nextDocument);
+    linkService.setDocument(nextDocument, null);
+    session.pdfDocument = nextDocument;
+    void loadOutlineInto(session, nextDocument);
+
+    eventBus.on("pagesinit", () => {
+      if (!session.pdfViewer) return;
+      session.pdfViewer.currentScaleValue = "page-width";
+      session.pdfViewer.update();
+      session.pdfViewer.forceRendering(undefined);
+      requestAnimationFrame(() => {
+        session.pdfViewer?.update();
+        session.pdfViewer?.forceRendering(undefined);
+      });
+      session.scaleLabel = "Fit Width";
+      session.status = `Rendered ${label}`;
+      refreshBookmarkRailLayout();
+      queueAnnotationSidebarRefresh(0);
+      queueAnnotationSidebarRefresh(300);
+      queueAnnotationSidebarRefresh(1000);
+    });
+    for (const eventName of [
+      "pagerendered",
+      "textlayerrendered",
+      "annotationlayerrendered",
+      "annotationeditorlayerrendered",
+    ]) {
+      eventBus.on(eventName, () => {
+        refreshBookmarkRailLayout();
+        scheduleAnnotationSidebarRefresh(120);
+      });
+    }
+    eventBus.on("editingstateschanged", () => syncSelectedEditorState());
+    eventBus.on("annotationeditorparamschanged", () => syncSelectedEditorState());
+    eventBus.on("scalechanging", (event: { scale: number }) => {
+      session.zoomPercent = Math.round(event.scale * 100);
+    });
+  }
+
+  function teardownSessionViewer(session: DocumentSession) {
+    unselectAllIgnoringPdfjsSignalBugForSession(session);
+    session.pdfViewer?.setDocument(null as never);
+    (session.pdfDocument as { destroy?: () => void } | null)?.destroy?.();
+    session.pdfViewer = null;
+    session.pdfLinkService = null;
+    session.pdfDocument = null;
+    session.annotationEditorUIManager = null;
+    session.eventBus = null;
+    session.outlineEntries = [];
+    session.outlineStatus = "Open a PDF to inspect its outline.";
+    session.collapsedOutlineIds = [];
+    session.activeOutlineEntryId = null;
+    session.bookmarkEntries = [];
+    session.bookmarkStatus = "Open a PDF to inspect bookmarks.";
+    session.editingBookmarkId = null;
+    session.activeBookmarkId = null;
+    session.annotationEntries = [];
+    session.annotationStatus = "Open a PDF to inspect annotations.";
+    session.selectedAnnotationEntryId = null;
+    session.selectedPersistedAnnotationKey = null;
+    session.selectedAnnotationKind = null;
+    session.selectedAnnotationColor = null;
+    session.hasSelectedHighlight = false;
+    session.selectedHighlightColor = null;
+    session.activeTool = "none";
+    session.lastActivatedOutlineEntry = null;
+    session.annotationFocusBox = null;
+    session.annotationDetailCache.clear();
+    session.pendingDeletedPersistedAnnotationKeys.clear();
+    session.persistedAnnotationKeyByEditorId.clear();
+    session.persistedPositionByKey.clear();
+    if (session.annotationRefreshTimer) {
+      clearTimeout(session.annotationRefreshTimer);
+      session.annotationRefreshTimer = null;
+    }
+    session.viewerEl?.replaceChildren();
+  }
+
+  function unselectAllIgnoringPdfjsSignalBugForSession(session: DocumentSession) {
+    const mgr = session.annotationEditorUIManager;
+    if (!mgr) return;
+    unselectAllForManagerIgnoringSignalBug(mgr);
+  }
+
+  async function loadOutlineInto(session: DocumentSession, document: PdfDocument) {
+    // Delegate to the existing loadOutline function but scoped to the session.
+    // For Phase B, we reuse the existing loadOutline which reads from activeSession.
+    // When this session IS the active session, it works directly.
+    if (session === activeSession) {
+      await loadOutline(document);
+    }
   }
 
   async function loadPdf(path: string) {
@@ -513,68 +807,8 @@
   }
 
   async function loadPdfBytes(bytes: Uint8Array, label: string) {
-    const loadingTask = pdfjsLib.getDocument({ data: bytes, wasmUrl: pdfjsWasmUrl });
-    const nextDocument = await loadingTask.promise;
-
-    teardownViewer();
-    activeSession.rememberedSelectionText = "";
-    activeSession.rememberedSelectionRanges = [];
-
-    const eventBus = new EventBus();
-    const linkService = new PDFLinkService({ eventBus });
-    activeSession.pdfLinkService = linkService;
-    eventBus.on("annotationeditoruimanager", (event: { uiManager: AnnotationEditorUIManager }) => {
-      activeSession.annotationEditorUIManager = event.uiManager;
-    });
-
-    activeSession.pdfViewer = new PDFViewer({
-      container: activeSession.containerEl,
-      viewer: activeSession.viewerEl,
-      eventBus,
-      linkService,
-      annotationEditorMode: editorModes.none,
-      enableHighlightFloatingButton: false,
-      annotationEditorHighlightColors:
-        "red=#ffb3ab,orange=#ffd1a1,yellow=#fff35c,green=#7cf2aa,cyan=#a5ecf2,blue=#8ecbff,purple=#d7bfff,rose=#ffb6de",
-    } as ConstructorParameters<typeof PDFViewer>[0] & { enableHighlightFloatingButton: boolean });
-    linkService.setViewer(activeSession.pdfViewer);
-    activeSession.pdfViewer.setDocument(nextDocument);
-    linkService.setDocument(nextDocument, null);
-    activeSession.pdfDocument = nextDocument;
-    void loadOutline(nextDocument);
-
-    eventBus.on("pagesinit", () => {
-      if (!activeSession.pdfViewer) return;
-      activeSession.pdfViewer.currentScaleValue = "page-width";
-      activeSession.pdfViewer.update();
-      activeSession.pdfViewer.forceRendering(undefined);
-      requestAnimationFrame(() => {
-        activeSession.pdfViewer?.update();
-        activeSession.pdfViewer?.forceRendering(undefined);
-      });
-      activeSession.scaleLabel = "Fit Width";
-      activeSession.status = `Rendered ${label}`;
-      refreshBookmarkRailLayout();
-      queueAnnotationSidebarRefresh(0);
-      queueAnnotationSidebarRefresh(300);
-      queueAnnotationSidebarRefresh(1000);
-    });
-    for (const eventName of [
-      "pagerendered",
-      "textlayerrendered",
-      "annotationlayerrendered",
-      "annotationeditorlayerrendered",
-    ]) {
-      eventBus.on(eventName, () => {
-        refreshBookmarkRailLayout();
-        scheduleAnnotationSidebarRefresh(120);
-      });
-    }
-    eventBus.on("editingstateschanged", () => syncSelectedEditorState());
-    eventBus.on("annotationeditorparamschanged", () => syncSelectedEditorState());
-    eventBus.on("scalechanging", (event: { scale: number }) => {
-      activeSession.zoomPercent = Math.round(event.scale * 100);
-    });
+    // D8: Legacy loads replace the active tab's document in-place.
+    await loadPdfBytesInto(activeSession, bytes, label);
   }
 
   function scheduleAnnotationSidebarRefresh(delay = 120) {
@@ -3731,41 +3965,7 @@
   }
 
   function teardownViewer() {
-    unselectAllIgnoringPdfjsSignalBug();
-    activeSession.pdfViewer?.setDocument(null as never);
-    (activeSession.pdfDocument as { destroy?: () => void } | null)?.destroy?.();
-    activeSession.pdfViewer = null;
-    activeSession.pdfLinkService = null;
-    activeSession.pdfDocument = null;
-    activeSession.annotationEditorUIManager = null;
-    activeSession.outlineEntries = [];
-    activeSession.outlineStatus = "Open a PDF to inspect its outline.";
-    activeSession.collapsedOutlineIds = [];
-    activeSession.activeOutlineEntryId = null;
-    activeSession.bookmarkEntries = [];
-    activeSession.bookmarkStatus = "Open a PDF to inspect bookmarks.";
-    activeSession.editingBookmarkId = null;
-    activeSession.activeBookmarkId = null;
-    activeSession.annotationEntries = [];
-    activeSession.annotationStatus = "Open a PDF to inspect annotations.";
-    activeSession.selectedAnnotationEntryId = null;
-    activeSession.selectedPersistedAnnotationKey = null;
-    activeSession.selectedAnnotationKind = null;
-    activeSession.selectedAnnotationColor = null;
-    activeSession.hasSelectedHighlight = false;
-    activeSession.selectedHighlightColor = null;
-    activeSession.activeTool = "none";
-    activeSession.lastActivatedOutlineEntry = null;
-    activeSession.annotationFocusBox = null;
-    activeSession.annotationDetailCache.clear();
-    activeSession.pendingDeletedPersistedAnnotationKeys.clear();
-    activeSession.persistedAnnotationKeyByEditorId.clear();
-    activeSession.persistedPositionByKey.clear();
-    if (activeSession.annotationRefreshTimer) {
-      clearTimeout(activeSession.annotationRefreshTimer);
-      activeSession.annotationRefreshTimer = null;
-    }
-    activeSession.viewerEl.replaceChildren();
+    teardownSessionViewer(activeSession);
   }
 
   function defaultSavePath() {
@@ -4157,60 +4357,64 @@
       </aside>
     {/each}
     <section class="reader viewer-shell">
-      {#if !activeSession.pdfDocument}
+      {#if tabsState.order.length === 0 || !activeSession.pdfDocument}
         <div class="reader-empty">Open a PDF to start reading (⌘O).</div>
       {/if}
-    <div
-      class="pdf-container"
-      class:annotation-tool-active={isAnnotationCreationMode()}
-      bind:this={activeSession.containerEl}
-      role="region"
-      aria-label="PDF pages"
-    >
-      {#if activeSession.annotationFocusBox}
+      {#each tabsState.order as tabId (tabId)}
+        {@const session = sessions.get(tabId) ?? nullSession}
         <div
-          class="annotation-focus-box"
-          style={`left: ${activeSession.annotationFocusBox.left}px; top: ${activeSession.annotationFocusBox.top}px; width: ${activeSession.annotationFocusBox.width}px; height: ${activeSession.annotationFocusBox.height}px`}
-          aria-hidden="true"
-        ></div>
-      {/if}
-      {#each activeSession.bookmarkEntries as entry (entry.id)}
-        <button
-          type="button"
-          class="bookmark-page-marker"
-          class:bookmark-hovered={activeSession.hoveredBookmarkId === entry.id}
-          data-page-number={entry.pageNumber}
-          style={bookmarkMarkerStyle(entry)}
-          onclick={(event) => {
-            event.stopPropagation();
-            deleteBookmark(entry.id);
-          }}
-          onmouseenter={() => (activeSession.hoveredBookmarkId = entry.id)}
-          onmouseleave={() => (activeSession.hoveredBookmarkId = null)}
-          title={`Remove bookmark: ${entry.title}`}
-          aria-label={`Remove bookmark ${entry.title}`}
-        ></button>
+          class="pdf-container"
+          class:annotation-tool-active={tabId === tabsState.activeId && isAnnotationCreationMode()}
+          style:display={tabId === tabsState.activeId ? "block" : "none"}
+          bind:this={session.containerEl}
+          role="region"
+          aria-label="PDF pages"
+        >
+          {#if session.annotationFocusBox}
+            <div
+              class="annotation-focus-box"
+              style={`left: ${session.annotationFocusBox.left}px; top: ${session.annotationFocusBox.top}px; width: ${session.annotationFocusBox.width}px; height: ${session.annotationFocusBox.height}px`}
+              aria-hidden="true"
+            ></div>
+          {/if}
+          {#each session.bookmarkEntries as entry (entry.id)}
+            <button
+              type="button"
+              class="bookmark-page-marker"
+              class:bookmark-hovered={session.hoveredBookmarkId === entry.id}
+              data-page-number={entry.pageNumber}
+              style={bookmarkMarkerStyle(entry)}
+              onclick={(event) => {
+                event.stopPropagation();
+                deleteBookmark(entry.id);
+              }}
+              onmouseenter={() => (session.hoveredBookmarkId = entry.id)}
+              onmouseleave={() => (session.hoveredBookmarkId = null)}
+              title={`Remove bookmark: ${entry.title}`}
+              aria-label={`Remove bookmark ${entry.title}`}
+            ></button>
+          {/each}
+          {#if session.bookmarkRailHoverCue}
+            <div
+              class="bookmark-rail-focus-cue"
+              data-page-number={session.bookmarkRailHoverCue.pageNumber}
+              style={`left: ${session.bookmarkRailHoverCue.focusLeft}px; top: ${session.bookmarkRailHoverCue.focusTop}px`}
+              aria-hidden="true"
+            >
+              +
+            </div>
+            <div
+              class="bookmark-rail-add-cue"
+              data-page-number={session.bookmarkRailHoverCue.pageNumber}
+              style={`left: ${session.bookmarkRailHoverCue.hintLeft}px; top: ${session.bookmarkRailHoverCue.hintTop}px`}
+              aria-hidden="true"
+            >
+              +
+            </div>
+          {/if}
+          <div class="pdfViewer" bind:this={session.viewerEl}></div>
+        </div>
       {/each}
-      {#if activeSession.bookmarkRailHoverCue}
-        <div
-          class="bookmark-rail-focus-cue"
-          data-page-number={activeSession.bookmarkRailHoverCue.pageNumber}
-          style={`left: ${activeSession.bookmarkRailHoverCue.focusLeft}px; top: ${activeSession.bookmarkRailHoverCue.focusTop}px`}
-          aria-hidden="true"
-        >
-          +
-        </div>
-        <div
-          class="bookmark-rail-add-cue"
-          data-page-number={activeSession.bookmarkRailHoverCue.pageNumber}
-          style={`left: ${activeSession.bookmarkRailHoverCue.hintLeft}px; top: ${activeSession.bookmarkRailHoverCue.hintTop}px`}
-          aria-hidden="true"
-        >
-          +
-        </div>
-      {/if}
-      <div class="pdfViewer" bind:this={activeSession.viewerEl}></div>
-    </div>
     </section>
   </main>
 </div>

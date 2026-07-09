@@ -13,6 +13,15 @@ import type { EditorTool } from "../pdf/pdfjs-quirks";
 // Treat every member name and signature as a public contract: the test suites
 // are the consumers, so renaming or removing a member breaks tests/e2e and
 // tests/native even though the app itself never calls this API.
+export type SpikeTabsApi = {
+  list(): { id: string; label: string; path: string | null; dirty: boolean; active: boolean }[];
+  open(path: string): Promise<string>;
+  openBytes(bytes: Uint8Array, label: string): Promise<string>;
+  activate(id: string): Promise<void>;
+  close(id: string, opts?: { force?: boolean }): Promise<"closed" | "prompted">;
+  reorder(from: number, to: number): void;
+};
+
 export type SpikeDebugApi = {
   annotationSummary: () => Promise<Record<string, unknown>[]>;
   annotationSidebarSummary: () => AnnotationEntry[];
@@ -43,6 +52,7 @@ export type SpikeDebugApi = {
   debugSavedBytes: (path: string) => number[];
   stats: () => Record<string, unknown>;
   setTool: (tool: EditorTool) => void;
+  tabs: SpikeTabsApi;
 };
 
 export type SpikeDebugTarget = {
