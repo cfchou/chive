@@ -281,6 +281,7 @@
   let viewerLoadToken = 0;
   let documentTabsState = $state<DocumentTabsState>({ order: [], tabs: {}, activeId: null });
   let pendingDocumentTabClose = $state<{ id: DocumentTabId; label: string } | null>(null);
+  let isNativeFullscreen = $state(false);
   const documentTabDrafts = new Map<DocumentTabId, DocumentTabDraft>();
   const documentTabRuntimes = new Map<DocumentTabId, DocumentTabRuntime>();
   const annotationDetailCache = new Map<string, string>();
@@ -448,11 +449,46 @@
       refreshBookmarkRailLayout();
     });
     if (containerEl) containerResizeObserver.observe(containerEl);
+    let unlistenFullscreenResize: (() => void) | null = null;
+    let fullscreenPollId: number | null = null;
+    const syncNativeFullscreen = async () => {
+      if (!isTauriRuntime()) return;
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      try {
+        const fillsScreen =
+          window.innerWidth >= window.screen.width - 2 && window.innerHeight >= window.screen.height - 2;
+        isNativeFullscreen = (await getCurrentWindow().isFullscreen()) || fillsScreen;
+      } catch {
+        isNativeFullscreen = false;
+      }
+    };
+    if (isTauriRuntime()) {
+      void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+        const appWindow = getCurrentWindow();
+        try {
+          const fillsScreen =
+            window.innerWidth >= window.screen.width - 2 && window.innerHeight >= window.screen.height - 2;
+          isNativeFullscreen = (await appWindow.isFullscreen()) || fillsScreen;
+        } catch {
+          isNativeFullscreen = false;
+        }
+        unlistenFullscreenResize = await appWindow.onResized(() => {
+          void syncNativeFullscreen();
+        });
+        fullscreenPollId = window.setInterval(() => {
+          void syncNativeFullscreen();
+        }, 250);
+      });
+    }
     void installAppMenu({ openPdf, savePdf, savePdfAs }).then((controls) => {
       menuControls = controls;
       void controls?.setSaveEnabled(Boolean(pdfDocument));
     });
     return () => {
+      unlistenFullscreenResize?.();
+      if (fullscreenPollId !== null) {
+        window.clearInterval(fullscreenPollId);
+      }
       containerResizeObserver.disconnect();
       containerEl?.removeEventListener("mouseleave", clearRailHoverCue);
       containerEl?.removeEventListener("mousemove", handlePdfContainerMouseMove);
@@ -4816,7 +4852,7 @@
   }
 </script>
 
-<div class="app">
+<div class="app" class:is-native-fullscreen={isNativeFullscreen}>
   <DocumentTabBar
     tabs={documentTabSummaries}
     onActivate={(id) => void activateDocumentTab(id)}
@@ -5078,6 +5114,12 @@
     display: grid;
     grid-template-rows: auto auto 1fr;
     background: var(--surface);
+  }
+  .app.is-native-fullscreen {
+    grid-template-rows: 0 auto 1fr;
+  }
+  .app.is-native-fullscreen :global(.document-tab-bar) {
+    display: none;
   }
   .topbar {
     height: 48px;

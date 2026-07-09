@@ -50,6 +50,40 @@ async function waitForPdfSpike() {
   );
 }
 
+async function setNativeFullscreen(fullscreen: boolean) {
+  return app.execute(async (nextFullscreen) => {
+    type TauriInternals = {
+      invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+    };
+    const tauriInternals = (window as Window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__;
+    if (!tauriInternals) throw new Error("window.__TAURI_INTERNALS__ is not available");
+    await tauriInternals.invoke("plugin:window|set_simple_fullscreen", { label: "main", value: nextFullscreen });
+    return true;
+  }, fullscreen);
+}
+
+async function getNativeFullscreenTabBarDebug() {
+  return app.execute(async () => {
+    type TauriInternals = {
+      invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+    };
+    const tauriInternals = (window as Window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__;
+    const tabBar = document.querySelector<HTMLElement>(".document-tab-bar");
+    const appRoot = document.querySelector<HTMLElement>(".app");
+    const rect = tabBar?.getBoundingClientRect();
+    return {
+      appClassName: appRoot?.className ?? null,
+      display: tabBar ? getComputedStyle(tabBar).display : null,
+      height: rect?.height ?? null,
+      innerHeight: window.innerHeight,
+      innerWidth: window.innerWidth,
+      nativeFullscreen: tauriInternals ? await tauriInternals.invoke("plugin:window|is_fullscreen", { label: "main" }) : null,
+      screenHeight: window.screen.height,
+      screenWidth: window.screen.width,
+    };
+  });
+}
+
 describe("native WKWebView PDF smoke", () => {
   it("loads a PDF, extracts sidebar text, and creates annotation state", async () => {
     await waitForPdfSpike();
@@ -157,6 +191,66 @@ describe("native WKWebView PDF smoke", () => {
         timeoutMsg: "Cmd+W did not close only the Active Document Tab",
       },
     );
+  });
+
+  it("hides the Document Tab Bar in fullscreen while keyboard tab switching still works", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+
+    const opened = await app.execute(
+      async ({ firstPath, secondPath }) => {
+        const first = await window.__pdfSpike!.tabs.open(firstPath);
+        const second = await window.__pdfSpike!.tabs.open(secondPath);
+        return { first, second };
+      },
+      { firstPath: samplePdfPath, secondPath: noOutlinePdfPath },
+    );
+
+    await app.waitUntil(
+      async () =>
+        app.execute(({ second }) => window.__pdfSpike!.tabs.list().some((tab: DocumentTabSummary) => tab.id === second && tab.active), opened),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native Document Tabs did not open before fullscreen check",
+      },
+    );
+
+    try {
+      const fullscreen = await setNativeFullscreen(true);
+      expect(fullscreen).toBe(true);
+
+      try {
+        await app.waitUntil(
+          async () =>
+            app.execute(() => {
+              const tabBar = document.querySelector<HTMLElement>(".document-tab-bar");
+              if (!tabBar) return false;
+              const rect = tabBar.getBoundingClientRect();
+              return getComputedStyle(tabBar).display === "none" || rect.height === 0;
+            }),
+          {
+            timeout: 10_000,
+            timeoutMsg: "Document Tab Bar stayed visible in fullscreen",
+          },
+        );
+      } catch (error) {
+        const debug = await getNativeFullscreenTabBarDebug();
+        throw new Error(`Document Tab Bar stayed visible in fullscreen; debug=${JSON.stringify(debug)}; ${String(error)}`);
+      }
+
+      await app.keys([Key.Command, Key.Shift, "]"]);
+
+      await app.waitUntil(
+        async () =>
+          app.execute(({ first }) => window.__pdfSpike!.tabs.list().some((tab: DocumentTabSummary) => tab.id === first && tab.active), opened),
+        {
+          timeout: 10_000,
+          timeoutMsg: "Cmd+Shift+] did not switch Document Tabs in fullscreen",
+        },
+      );
+    } finally {
+      await setNativeFullscreen(false);
+    }
   });
 
   it("locates persisted ink rows independently after adjacent ink clicks", async () => {
