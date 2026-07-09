@@ -1,5 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::{Emitter, Manager};
+
+const SECOND_INSTANCE_EVENT: &str = "chive://second-instance";
+
+#[derive(Clone, serde::Serialize)]
+struct SecondInstancePayload {
+    args: Vec<String>,
+}
 
 #[tauri::command]
 fn read_pdf(path: String) -> Result<Vec<u8>, String> {
@@ -39,11 +47,21 @@ fn backup_path(target: &Path) -> PathBuf {
     target.with_extension(format!("{extension}.bak"))
 }
 
+fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_focus();
+        let _ = window.emit(SECOND_INSTANCE_EVENT, SecondInstancePayload { args });
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init());
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            handle_second_instance(app, args);
+        }));
 
     #[cfg(feature = "wdio")]
     let builder = builder

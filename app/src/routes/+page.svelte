@@ -26,6 +26,11 @@
   } from "../lib/ui/sidebar-resize";
   import { getBrowserAppPersistence } from "$lib/persistence/app-persistence";
   import {
+    SECOND_INSTANCE_EVENT,
+    pdfPathsFromSecondInstanceArgs,
+    type SecondInstancePayload,
+  } from "$lib/tauri/single-instance";
+  import {
     activateTab as activateDocumentTabState,
     addTab as addDocumentTabState,
     findByPath as findDocumentTabByPath,
@@ -453,6 +458,7 @@
     if (containerEl) containerResizeObserver.observe(containerEl);
     let unlistenFullscreenResize: (() => void) | null = null;
     let unlistenNativeFileDrop: (() => void) | null = null;
+    let unlistenSecondInstance: (() => void) | null = null;
     let unlistenWindowClose: (() => void) | null = null;
     let fullscreenPollId: number | null = null;
     const syncNativeFullscreen = async () => {
@@ -467,33 +473,38 @@
       }
     };
     if (isTauriRuntime()) {
-      void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
-        const appWindow = getCurrentWindow();
-        try {
-          const fillsScreen =
-            window.innerWidth >= window.screen.width - 2 && window.innerHeight >= window.screen.height - 2;
-          isNativeFullscreen = (await appWindow.isFullscreen()) || fillsScreen;
-        } catch {
-          isNativeFullscreen = false;
-        }
-        unlistenFullscreenResize = await appWindow.onResized(() => {
-          void syncNativeFullscreen();
-        });
-        unlistenWindowClose = await appWindow.onCloseRequested(async (event) => {
-          const closeResult = await handleWindowCloseRequest();
-          if (closeResult === "prompted") {
-            event.preventDefault();
+      void Promise.all([import("@tauri-apps/api/window"), import("@tauri-apps/api/event")]).then(
+        async ([{ getCurrentWindow }, { listen }]) => {
+          const appWindow = getCurrentWindow();
+          try {
+            const fillsScreen =
+              window.innerWidth >= window.screen.width - 2 && window.innerHeight >= window.screen.height - 2;
+            isNativeFullscreen = (await appWindow.isFullscreen()) || fillsScreen;
+          } catch {
+            isNativeFullscreen = false;
           }
-        });
-        unlistenNativeFileDrop = await appWindow.onDragDropEvent((event) => {
-          if (event.payload.type === "drop") {
-            void openDroppedDocumentPaths(event.payload.paths);
-          }
-        });
-        fullscreenPollId = window.setInterval(() => {
-          void syncNativeFullscreen();
-        }, 250);
-      });
+          unlistenFullscreenResize = await appWindow.onResized(() => {
+            void syncNativeFullscreen();
+          });
+          unlistenWindowClose = await appWindow.onCloseRequested(async (event) => {
+            const closeResult = await handleWindowCloseRequest();
+            if (closeResult === "prompted") {
+              event.preventDefault();
+            }
+          });
+          unlistenNativeFileDrop = await appWindow.onDragDropEvent((event) => {
+            if (event.payload.type === "drop") {
+              void openDroppedDocumentPaths(event.payload.paths);
+            }
+          });
+          unlistenSecondInstance = await listen<SecondInstancePayload>(SECOND_INSTANCE_EVENT, (event) => {
+            void openSecondInstanceDocumentPaths(event.payload);
+          });
+          fullscreenPollId = window.setInterval(() => {
+            void syncNativeFullscreen();
+          }, 250);
+        },
+      );
     }
     void installAppMenu({ openPdf, savePdf, savePdfAs }).then((controls) => {
       menuControls = controls;
@@ -502,6 +513,7 @@
     return () => {
       unlistenFullscreenResize?.();
       unlistenNativeFileDrop?.();
+      unlistenSecondInstance?.();
       unlistenWindowClose?.();
       if (fullscreenPollId !== null) {
         window.clearInterval(fullscreenPollId);
@@ -1131,6 +1143,10 @@
         await openDocumentTab(path);
       }
     }
+  }
+
+  async function openSecondInstanceDocumentPaths(payload: SecondInstancePayload | null | undefined) {
+    await openDroppedDocumentPaths(pdfPathsFromSecondInstanceArgs(payload?.args));
   }
 
   function handleDocumentTabClose(id: DocumentTabId) {

@@ -86,6 +86,20 @@ async function getNativeFullscreenTabBarDebug() {
   });
 }
 
+async function emitTauriEventForTest(event: string, payload: Record<string, unknown>) {
+  await app.execute(
+    async ({ eventName, eventPayload }) => {
+      type TauriInternals = {
+        invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+      };
+      const tauriInternals = (window as Window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__;
+      if (!tauriInternals) throw new Error("window.__TAURI_INTERNALS__ is not available");
+      await tauriInternals.invoke("plugin:event|emit", { event: eventName, payload: eventPayload });
+    },
+    { eventName: event, eventPayload: payload },
+  );
+}
+
 describe("native WKWebView PDF smoke", () => {
   it("loads a PDF, extracts sidebar text, and creates annotation state", async () => {
     await waitForPdfSpike();
@@ -295,6 +309,45 @@ describe("native WKWebView PDF smoke", () => {
       {
         timeout: 10_000,
         timeoutMsg: "duplicate dropped PDF path did not focus the existing Document Tab",
+      },
+    );
+  });
+
+  it("opens second-launch PDF paths in the existing window", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+
+    await emitTauriEventForTest("chive://second-instance", {
+      args: ["--ignored-flag", samplePdfPath, noOutlinePdfPath],
+    });
+
+    await app.waitUntil(
+      async () =>
+        app.execute(({ firstPath, secondPath }) => {
+          const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+          return (
+            tabs.length === 2 &&
+            tabs.some((tab) => tab.path === firstPath && tab.label === "sample.pdf" && !tab.active) &&
+            tabs.some((tab) => tab.path === secondPath && tab.label === "no-outline.pdf" && tab.active)
+          );
+        }, { firstPath: samplePdfPath, secondPath: noOutlinePdfPath }),
+      {
+        timeout: 30_000,
+        timeoutMsg: "second-launch PDF paths did not open as Document Tabs",
+      },
+    );
+
+    await emitTauriEventForTest("chive://second-instance", { args: [samplePdfPath] });
+
+    await app.waitUntil(
+      async () =>
+        app.execute((filePath) => {
+          const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+          return tabs.length === 2 && tabs.some((tab) => tab.path === filePath && tab.active);
+        }, samplePdfPath),
+      {
+        timeout: 10_000,
+        timeoutMsg: "duplicate second-launch PDF path did not focus the existing Document Tab",
       },
     );
   });
