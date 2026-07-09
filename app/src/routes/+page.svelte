@@ -22,15 +22,16 @@
   import {
     parseSidebarWidths,
     resizedSidebarWidth,
-    serializeSidebarWidths,
     type SidebarWidths,
   } from "../lib/ui/sidebar-resize";
   import { tabMeta } from "../lib/ui/tab-meta";
+  import { createLocalStoragePersistence } from "$lib/persistence/app-persistence";
   import { DocumentSession } from "$lib/tabs/document-session";
   import { activeIdAfterClose, findTabIdByPath, moveTab, nextTabId, previousTabId } from "$lib/tabs/tab-state";
   import { installAppMenu, isTauriRuntime, type AppMenuControls } from "../lib/tauri/menu";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { onMount, tick } from "svelte";
   import AnnotationsSidebar from "$lib/pdf/AnnotationsSidebar.svelte";
@@ -466,6 +467,7 @@
     // if the window API/permission is unavailable the bar simply stays visible.
     let unlistenResize: (() => void) | null = null;
     let unlistenClose: (() => void) | null = null;
+    let unlistenDrop: (() => void) | null = null;
     if (isTauriRuntime()) {
       const appWindow = getCurrentWindow();
       const syncFullscreen = () => {
@@ -483,10 +485,21 @@
         .onCloseRequested((event) => void handleWindowCloseRequested(event))
         .then((unlisten) => (unlistenClose = unlisten))
         .catch(() => {});
+      void getCurrentWebview()
+        .onDragDropEvent((event) => {
+          if (event.payload.type !== "drop") return;
+          const paths = event.payload.paths.filter((path) => isPdfName(path));
+          void (async () => {
+            for (const path of paths) await openPdfFromPath(path);
+          })();
+        })
+        .then((unlisten) => (unlistenDrop = unlisten))
+        .catch(() => {});
     }
     return () => {
       unlistenResize?.();
       unlistenClose?.();
+      unlistenDrop?.();
       document.removeEventListener("keydown", handleTabSwitchKeys);
       containerResizeObserver.disconnect();
       pdfStageEl?.removeEventListener("mouseleave", clearRailHoverCue);
@@ -632,10 +645,13 @@
     });
 
     if (!selected || Array.isArray(selected)) return;
+    await openPdfFromPath(selected);
+  }
 
-    // Cmd+O opens the file in a new Document Tab, or focuses the tab that
-    // already has this path open (D4 dedupe).
-    const existing = findTabIdByPath(documentSessions, selected);
+  // Open a file path in a new Document Tab, focusing an existing tab with that
+  // path (D4). Shared by Cmd+O and Finder drag-and-drop (Tauri).
+  async function openPdfFromPath(path: string) {
+    const existing = findTabIdByPath(documentSessions, path);
     if (existing) {
       await switchToTab(existing);
       return;
@@ -643,16 +659,37 @@
     isBusy = true;
     status = "Loading PDF...";
     try {
-      const rawBytes = await invoke<number[]>("read_pdf", { path: selected });
-      await loadPdfBytes(new Uint8Array(rawBytes), selected, { newTab: true, path: selected });
-      currentPath = selected;
+      const rawBytes = await invoke<number[]>("read_pdf", { path });
+      await loadPdfBytes(new Uint8Array(rawBytes), path, { newTab: true, path });
+      currentPath = path;
       isDirty = false;
       activeTool = "none";
-      status = `Loaded ${selected}`;
+      status = `Loaded ${path}`;
     } catch (error) {
       status = `Open failed: ${formatError(error)}`;
     } finally {
       isBusy = false;
+    }
+  }
+
+  // Finder drag-and-drop. The browser build uses HTML5 file drops; in Tauri the
+  // default dragDropEnabled suppresses HTML5 drop events, so a native
+  // onDragDropEvent listener (installed in onMount) forwards dropped paths.
+  function isPdfName(name: string) {
+    return name.toLowerCase().endsWith(".pdf");
+  }
+  function onAppDragOver(event: DragEvent) {
+    if (event.dataTransfer) event.preventDefault();
+  }
+  async function onAppDrop(event: DragEvent) {
+    const files = [...(event.dataTransfer?.files ?? [])].filter(
+      (file) => isPdfName(file.name) || file.type === "application/pdf",
+    );
+    if (files.length === 0) return;
+    event.preventDefault();
+    for (const file of files) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      await openDocumentInNewTab(bytes, file.name, null);
     }
   }
 
@@ -4324,6 +4361,9 @@
   let menuControls: AppMenuControls | null = null;
 
   const SIDEBAR_WIDTHS_STORAGE_KEY = "chive.sidebarWidths";
+  const appPersistence = createLocalStoragePersistence();
+  // Initial read is synchronous so the sidebar paints at its saved width without
+  // a flash; the value is the same JSON that appPersistence writes.
   let sidebarWidths = $state<SidebarWidths>(
     parseSidebarWidths(
       typeof localStorage === "undefined" ? null : localStorage.getItem(SIDEBAR_WIDTHS_STORAGE_KEY),
@@ -4363,11 +4403,7 @@
     if (!resizeSession) return;
     resizeSession = null;
     resizingSide = null;
-    try {
-      localStorage.setItem(SIDEBAR_WIDTHS_STORAGE_KEY, serializeSidebarWidths(sidebarWidths));
-    } catch {
-      // Persisting the width is best-effort; resizing still works this session.
-    }
+    void appPersistence.setJson(SIDEBAR_WIDTHS_STORAGE_KEY, sidebarWidths);
   }
 
   const fileName = $derived(
@@ -4563,7 +4599,13 @@
   }
 </script>
 
-<div class="app" class:has-tabbar={showDocumentTabBar}>
+<div
+  class="app"
+  class:has-tabbar={showDocumentTabBar}
+  role="application"
+  ondragover={onAppDragOver}
+  ondrop={(event) => void onAppDrop(event)}
+>
   {#if showDocumentTabBar}
     <DocumentTabBar
       tabs={documentTabs}
@@ -4571,6 +4613,7 @@
       onSelect={(id) => void switchToTab(id)}
       onClose={(id) => void requestCloseTab(id)}
       onNew={() => void openPdf()}
+      onReorder={reorderTabs}
     />
   {/if}
   <header class="topbar">

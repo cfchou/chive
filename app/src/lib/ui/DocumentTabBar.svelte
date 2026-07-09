@@ -16,11 +16,61 @@
     onSelect: (id: string) => void;
     onClose: (id: string) => void;
     onNew: () => void;
+    onReorder: (from: number, to: number) => void;
   };
 
-  let { tabs, trafficLightInset = false, onSelect, onClose, onNew }: Props = $props();
+  let { tabs, trafficLightInset = false, onSelect, onClose, onNew, onReorder }: Props = $props();
 
   const basename = (label: string) => label.split(/[\\/]/).pop() || label;
+
+  const DRAG_START_PX = 4;
+  let tabsEl: HTMLDivElement | undefined;
+  let dragId = $state<string | null>(null);
+  let dragging = $state(false);
+  let dragFromIndex = -1;
+  let dragStartX = 0;
+  let suppressClick = false;
+
+  function onTabPointerDown(event: PointerEvent, id: string, index: number) {
+    if (event.button !== 0) return;
+    dragId = id;
+    dragging = false;
+    dragFromIndex = index;
+    dragStartX = event.clientX;
+    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+  }
+  function onTabPointerMove(event: PointerEvent) {
+    if (dragId === null) return;
+    if (!dragging && Math.abs(event.clientX - dragStartX) > DRAG_START_PX) dragging = true;
+  }
+  function dropIndexForX(x: number): number {
+    const els = [...(tabsEl?.querySelectorAll<HTMLElement>("[data-doc-tab]") ?? [])];
+    for (let i = 0; i < els.length; i += 1) {
+      const rect = els[i].getBoundingClientRect();
+      if (x < rect.left + rect.width / 2) return i;
+    }
+    return Math.max(0, els.length - 1);
+  }
+  function onTabPointerUp(event: PointerEvent) {
+    if (dragId === null) return;
+    const wasDragging = dragging;
+    const from = dragFromIndex;
+    const to = wasDragging ? dropIndexForX(event.clientX) : from;
+    dragId = null;
+    dragging = false;
+    dragFromIndex = -1;
+    if (wasDragging) {
+      suppressClick = true; // the drag ends on a click we must not treat as select
+      if (to !== from && to >= 0) onReorder(from, to);
+    }
+  }
+  function onTabClick(id: string) {
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
+    onSelect(id);
+  }
 </script>
 
 <div
@@ -30,16 +80,24 @@
   aria-label="Open documents"
   data-tauri-drag-region
 >
-  <div class="doc-tabs">
-    {#each tabs as tab (tab.id)}
-      <div class="doc-tab" class:is-active={tab.active} data-doc-tab={tab.id}>
+  <div class="doc-tabs" bind:this={tabsEl}>
+    {#each tabs as tab, index (tab.id)}
+      <div
+        class="doc-tab"
+        class:is-active={tab.active}
+        class:is-dragging={dragId === tab.id && dragging}
+        data-doc-tab={tab.id}
+      >
         <button
           class="doc-tab-main"
           type="button"
           role="tab"
           aria-selected={tab.active}
           title={tab.path ?? basename(tab.label)}
-          onclick={() => onSelect(tab.id)}
+          onclick={() => onTabClick(tab.id)}
+          onpointerdown={(event) => onTabPointerDown(event, tab.id, index)}
+          onpointermove={onTabPointerMove}
+          onpointerup={onTabPointerUp}
         >
           {#if tab.dirty}
             <span class="dirty-dot" aria-hidden="true"></span>
@@ -109,6 +167,9 @@
   .doc-tab.is-active {
     background: var(--bg);
     color: var(--fg);
+  }
+  .doc-tab.is-dragging {
+    opacity: 0.55;
   }
   .doc-tab-main {
     display: flex;
