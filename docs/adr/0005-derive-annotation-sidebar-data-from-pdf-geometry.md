@@ -53,6 +53,8 @@ Another native-only version of the same bug came from selection identity. When t
 
 A later Chrome repro showed a separate path: pressing the keyboard `Delete` key after selecting an annotation let PDF.js delete the editor directly. That bypassed the app's `Delete Selected` button handler, so the sidebar did not add the pending-delete key or refresh. The annotation disappeared from the page, but its Annotation Sidebar Entry stayed until another UI action caused a refresh.
 
+A repro in the official app (`app/`, after the spike-to-app transplant in ADR 0013) found one more identity/geometry gap: editing a persisted free-text annotation's *text* (no move) reshuffled its position in the sidebar relative to unrelated neighbors on the same page. The sort order is page/top/left as decided above, and a modified persisted annotation is correctly hidden in favor of its live editor stand-in — but that stand-in's `sortTop`/`sortLeft` were being re-measured from the live editor's own DOM rect, which sits a few pixels off from the persisted annotation element's rect (different padding/box model between `.freeTextEditor` and `.freeTextAnnotation`). That skew was enough to cross a neighboring entry's position and visibly reorder the list on a pure text edit that never moved the annotation.
+
 ## Decision
 
 Use PDF geometry as the source of truth for persisted Annotation Sidebar Entries.
@@ -97,6 +99,7 @@ For live annotations:
 - run immediate and delayed sidebar refreshes after create, edit, recolor, move, and delete operations
 - compute DOM bounds for each live editor
 - skip a live editor if it significantly overlaps a persisted annotation on the same page
+- cache each persisted entry's sort geometry (`sortTop`/`sortLeft`) by its persisted key on every sidebar refresh; when a live editor stands in for a persisted annotation, reuse that cached geometry for sorting instead of re-measuring the live editor's own DOM rect
 
 ## Why
 
@@ -120,6 +123,8 @@ The pending-delete key must be captured from the clicked PDF annotation element 
 
 All delete entry points must share one lifecycle. If keyboard delete goes straight to PDF.js, the page can update but the sidebar state will not.
 
+Sort position must be a property of the *annotation identity*, not of whichever DOM element currently represents it. A persisted annotation and its live editor stand-in are the same logical entry with two different possible renderers (`.freeTextAnnotation` vs `.freeTextEditor`, etc.), and those renderers do not share exact box geometry. Re-measuring on every renderer swap turns an identity concept (page position) into a rendering-detail concept, which is exactly the class of bug this ADR already rejects for click-target identity above.
+
 ## Implementation Notes
 
 The spike has helpers for these jobs in `pdf-annotation-spike/src/routes/+page.svelte`:
@@ -141,6 +146,8 @@ The spike has helpers for these jobs in `pdf-annotation-spike/src/routes/+page.s
 - `isDuplicateLiveAnnotation()`: prevents duplicate live entries from one editor operation
 - `cachedAnnotationDetail()`: keeps a useful snippet if a later refresh temporarily has less information
 
+In `app/src/routes/+page.svelte` (the official app, post-transplant): `persistedPositionByKey` is a `Map` from persisted annotation key to its last-known `{ top, left }`, populated every `refreshAnnotationSidebar()` from the persisted entries and consulted by the live-entry `positionForEditor` callback before falling back to a fresh DOM measurement.
+
 ## Consequences
 
 Good:
@@ -149,6 +156,7 @@ Good:
 - entry order is stable and tied to page position
 - clicking an entry can center and mark the target
 - selecting persisted annotations no longer creates duplicate Annotation Sidebar Entries
+- editing an annotation's content in place no longer reorders it relative to unrelated neighbors
 
 Bad:
 
@@ -172,5 +180,6 @@ Regression tests cover:
 - deleting a persisted annotation updates the sidebar without requiring a tool change to `None`
 - deleting a selected annotation with keyboard `Delete` updates the sidebar without requiring a tool change to `None`
 - editing a persisted free-text annotation updates the Annotation Sidebar Entry without changing the count
+- editing a persisted free-text annotation's content keeps its sidebar sort position among unrelated same-page entries (`app/tests/e2e/annotations-sidebar.spec.ts`, "text-editing a persisted free text keeps its sidebar sort position")
 - creating a new annotation adds one Annotation Sidebar Entry without duplicating existing entries
 - focus box appears around the clicked annotation target

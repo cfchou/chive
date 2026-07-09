@@ -32,6 +32,16 @@
   `@wdio/tauri-service@1.0.0` + `@wdio/tauri-plugin@1.0.0` (1.2.0 pairs with an
   incompatible `@wdio/native-utils`). Do not bump casually.
 
+- Read `CONTEXT.md` (repo root) before writing code, comments, commit
+  messages, PR/issue text, or docs that touch PDF/annotation/outline/
+  bookmark concepts — it's the canonical glossary of this project's domain
+  terms (e.g. "Annotation Sidebar Entry", "Persisted"/"Live" Annotation
+  Sidebar Entry, "Chive Bookmark", "Document Outline Entry", "Annotation
+  Focus", "Annotation Snippet"). Use those terms, not ad hoc synonyms, and
+  avoid the terms each entry lists as "Avoid". When a change introduces,
+  renames, or changes the meaning of a domain concept, update `CONTEXT.md`
+  in that same change — it's a living glossary, not a one-time doc.
+
 - Use `docs/adr/*.md` as executable project memory for behavior-sensitive edits:
    - `docs/adr/0003-bundle-pdfjs-wasm-decoders-for-scanned-pdfs.md`
    - `docs/adr/0005-derive-annotation-sidebar-data-from-pdf-geometry.md`
