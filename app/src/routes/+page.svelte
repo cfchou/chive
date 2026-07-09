@@ -3,6 +3,7 @@
   import "../lib/ui/tokens.css";
   import TabStrip from "../lib/ui/TabStrip.svelte";
   import DocumentTabBar from "../lib/ui/DocumentTabBar.svelte";
+  import UnsavedChangesModal from "../lib/ui/UnsavedChangesModal.svelte";
   import Toolbar from "../lib/ui/Toolbar.svelte";
   import ColorPlate from "../lib/ui/ColorPlate.svelte";
   import ToolPopover from "../lib/ui/ToolPopover.svelte";
@@ -26,7 +27,7 @@
   } from "../lib/ui/sidebar-resize";
   import { tabMeta } from "../lib/ui/tab-meta";
   import { DocumentSession } from "$lib/tabs/document-session";
-  import { activeIdAfterClose, findTabIdByPath, moveTab } from "$lib/tabs/tab-state";
+  import { activeIdAfterClose, findTabIdByPath, moveTab, nextTabId, previousTabId } from "$lib/tabs/tab-state";
   import { installAppMenu, isTauriRuntime, type AppMenuControls } from "../lib/tauri/menu";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -299,7 +300,7 @@
       selectedHighlightColor,
       annotationFocusBox,
     }),
-    persistPdf,
+    persistPdf: (path: string) => persistPdf(path).then(() => undefined),
     loadPdf,
     loadPdfBytes,
     savePdfDocumentBytes,
@@ -365,6 +366,7 @@
     document.addEventListener("keydown", handleAnnotationEscapeKey, { capture: true });
     document.addEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
     document.addEventListener("keydown", handleFreeTextEditorKeydown, { capture: true });
+    document.addEventListener("keydown", handleTabSwitchKeys);
     // Container-level listeners live on the persistent stage and delegate to
     // whichever tab is active (its container is the only visible one; the
     // handlers read the active `containerEl`). scroll does not bubble, so it is
@@ -449,13 +451,21 @@
       refreshBookmarkRailLayout();
     });
     if (pdfStageEl) containerResizeObserver.observe(pdfStageEl);
-    void installAppMenu({ openPdf, savePdf, savePdfAs }).then((controls) => {
+    void installAppMenu({
+      openPdf,
+      savePdf: () => void savePdf(),
+      savePdfAs: () => void savePdfAs(),
+      closeActiveTab: requestCloseActiveTab,
+      showNextTab: () => void showAdjacentTab(1),
+      showPreviousTab: () => void showAdjacentTab(-1),
+    }).then((controls) => {
       menuControls = controls;
       void controls?.setSaveEnabled(Boolean(pdfDocument));
     });
     // Track macOS fullscreen so the Document Tab Bar can hide (D10). Best-effort:
     // if the window API/permission is unavailable the bar simply stays visible.
     let unlistenResize: (() => void) | null = null;
+    let unlistenClose: (() => void) | null = null;
     if (isTauriRuntime()) {
       const appWindow = getCurrentWindow();
       const syncFullscreen = () => {
@@ -469,9 +479,15 @@
         .onResized(() => syncFullscreen())
         .then((unlisten) => (unlistenResize = unlisten))
         .catch(() => {});
+      void appWindow
+        .onCloseRequested((event) => void handleWindowCloseRequested(event))
+        .then((unlisten) => (unlistenClose = unlisten))
+        .catch(() => {});
     }
     return () => {
       unlistenResize?.();
+      unlistenClose?.();
+      document.removeEventListener("keydown", handleTabSwitchKeys);
       containerResizeObserver.disconnect();
       pdfStageEl?.removeEventListener("mouseleave", clearRailHoverCue);
       pdfStageEl?.removeEventListener("mousemove", handlePdfContainerMouseMove);
@@ -873,6 +889,87 @@
       to,
     );
     documentSessions = order.map((id) => documentSessions.find((entry) => entry.id === id)!);
+  }
+
+  // ---- Unsaved-changes prompt + tab/window close flow (D3, D9) ----
+
+  type UnsavedChoice = "save" | "discard" | "cancel";
+  let unsavedPrompt = $state<{ label: string; resolve: (choice: UnsavedChoice) => void } | null>(null);
+
+  function promptUnsavedChanges(label: string): Promise<UnsavedChoice> {
+    return new Promise((resolve) => {
+      unsavedPrompt = { label, resolve };
+    });
+  }
+  function resolveUnsavedPrompt(choice: UnsavedChoice) {
+    const pending = unsavedPrompt;
+    unsavedPrompt = null;
+    pending?.resolve(choice);
+  }
+
+  function tabDisplayLabel(session: DocumentSession): string {
+    return session.label.split(/[\\/]/).pop() || session.label;
+  }
+
+  // Close a tab, prompting Save / Don't Save / Cancel when it has unsaved edits.
+  async function requestCloseTab(id: string) {
+    const session = documentSessions.find((entry) => entry.id === id);
+    if (!session) return;
+    if (!tabDirtyState(session)) {
+      await closeTab(id);
+      return;
+    }
+    if (id !== activeSessionId) await switchToTab(id);
+    const choice = await promptUnsavedChanges(tabDisplayLabel(session));
+    if (choice === "cancel") return;
+    if (choice === "save") {
+      const saved = await savePdf();
+      if (!saved) return; // D9: a failed or cancelled save aborts the close
+    }
+    await closeTab(id);
+  }
+
+  async function requestCloseActiveTab() {
+    if (!activeSessionId) {
+      if (isTauriRuntime()) await getCurrentWindow().close();
+      return;
+    }
+    await requestCloseTab(activeSessionId);
+  }
+
+  async function showAdjacentTab(direction: 1 | -1) {
+    const order = documentSessions.map((entry) => entry.id);
+    const target =
+      direction === 1 ? nextTabId(order, activeSessionId) : previousTabId(order, activeSessionId);
+    if (target) await switchToTab(target);
+  }
+
+  // Ctrl+Tab / Ctrl+Shift+Tab cycle Document Tabs (menu accelerators for Tab are
+  // unreliable on macOS; Cmd+Shift+[ / ] are handled by the native menu).
+  function handleTabSwitchKeys(event: KeyboardEvent) {
+    if (event.ctrlKey && !event.metaKey && !event.altKey && event.key === "Tab") {
+      if (documentSessions.length < 2) return;
+      event.preventDefault();
+      void showAdjacentTab(event.shiftKey ? -1 : 1);
+    }
+  }
+
+  // Window close with dirty tabs: prompt for each, aborting on Cancel or a failed
+  // save; otherwise destroy the window once all are resolved.
+  async function handleWindowCloseRequested(event: { preventDefault: () => void }) {
+    const dirty = documentSessions.filter((session) => tabDirtyState(session));
+    if (dirty.length === 0) return;
+    event.preventDefault();
+    for (const session of dirty) {
+      await switchToTab(session.id);
+      const choice = await promptUnsavedChanges(tabDisplayLabel(session));
+      if (choice === "cancel") return;
+      if (choice === "save") {
+        const saved = await savePdf();
+        if (!saved) return;
+      }
+    }
+    if (isTauriRuntime()) await getCurrentWindow().destroy();
   }
 
   async function loadPdfBytes(
@@ -3985,26 +4082,31 @@
     scaleLabel = "Fit Width";
   }
 
-  async function savePdf() {
+  // These return whether the active document is now persisted, so the
+  // unsaved-changes close flow can abort on a failed or cancelled save (D9).
+  async function savePdf(): Promise<boolean> {
     if (!currentPath) {
-      await savePdfAs();
-      return;
+      return savePdfAs();
     }
-    await persistPdf(currentPath);
+    return persistPdf(currentPath);
   }
 
-  async function savePdfAs() {
-    const target = await save({
-      defaultPath: defaultSavePath(),
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-    });
-
-    if (!target) return;
-    await persistPdf(target);
+  async function savePdfAs(): Promise<boolean> {
+    try {
+      const target = await save({
+        defaultPath: defaultSavePath(),
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (!target) return false;
+      return await persistPdf(target);
+    } catch (error) {
+      status = `Save failed: ${formatError(error)}`;
+      return false;
+    }
   }
 
-  async function persistPdf(path: string) {
-    if (!pdfDocument) return;
+  async function persistPdf(path: string): Promise<boolean> {
+    if (!pdfDocument) return false;
 
     isBusy = true;
     status = "Saving annotations into PDF...";
@@ -4015,11 +4117,15 @@
         bytes: Array.from(saved),
       });
       currentPath = path;
+      if (activeSession) activeSession.path = path;
       isDirty = false;
       await refreshAnnotationSidebar();
       status = `Saved ${path}`;
+      syncWindowTitle();
+      return true;
     } catch (error) {
       status = `Save failed: ${formatError(error)}`;
+      return false;
     } finally {
       isBusy = false;
     }
@@ -4463,7 +4569,7 @@
       tabs={documentTabs}
       {trafficLightInset}
       onSelect={(id) => void switchToTab(id)}
-      onClose={(id) => void closeTab(id)}
+      onClose={(id) => void requestCloseTab(id)}
       onNew={() => void openPdf()}
     />
   {/if}
@@ -4704,6 +4810,15 @@
 />
 
 <div class="app-status" role="status" aria-live="polite">{status}</div>
+
+{#if unsavedPrompt}
+  <UnsavedChangesModal
+    label={unsavedPrompt.label}
+    onSave={() => resolveUnsavedPrompt("save")}
+    onDiscard={() => resolveUnsavedPrompt("discard")}
+    onCancel={() => resolveUnsavedPrompt("cancel")}
+  />
+{/if}
 
 <style>
   /* ---- Official-app shell (topbar, workspace, sidebars, reader host) ---- */
