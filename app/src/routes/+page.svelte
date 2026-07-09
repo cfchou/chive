@@ -37,7 +37,7 @@
     type DocumentTabsState,
   } from "$lib/tabs/tab-state";
   import { tabMeta } from "../lib/ui/tab-meta";
-  import { installAppMenu, type AppMenuControls } from "../lib/tauri/menu";
+  import { installAppMenu, isTauriRuntime, type AppMenuControls } from "../lib/tauri/menu";
   import { invoke } from "@tauri-apps/api/core";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { onMount, tick } from "svelte";
@@ -4618,9 +4618,21 @@
     currentPath ? (currentPath.split("/").pop() ?? currentPath) : "No document",
   );
   const documentTabSummaries = $derived(listDocumentTabs());
+  const windowTitle = $derived(
+    documentTabsState.activeId ? (documentTabsState.tabs[documentTabsState.activeId]?.label ?? "Chive") : "Chive",
+  );
 
   $effect(() => {
     void menuControls?.setSaveEnabled(Boolean(pdfDocument));
+  });
+
+  $effect(() => {
+    document.title = windowTitle;
+    if (isTauriRuntime()) {
+      void import("@tauri-apps/api/window").then(({ getCurrentWindow }) =>
+        getCurrentWindow().setTitle(windowTitle),
+      );
+    }
   });
 
   function activateDockTab(tab: SidebarTabId) {

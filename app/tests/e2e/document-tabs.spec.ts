@@ -82,6 +82,30 @@ test("Document Tab Bar shows open documents and switches on click", async ({ pag
   await expect(page.locator(".file")).toHaveText("bar-a.pdf");
 });
 
+test("window title follows the Active Document Tab", async ({ page }) => {
+  await expect(page).toHaveTitle("Chive");
+  await page.waitForFunction(() => Boolean(window.__pdfSpike?.tabs));
+  const [firstId, secondId] = await page.evaluate(async () => {
+    const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
+    const first = await window.__pdfSpike!.tabs.openBytes(bytes, "title-a.pdf");
+    const second = await window.__pdfSpike!.tabs.openBytes(bytes, "title-b.pdf");
+    return [first, second];
+  });
+  await waitForPageReady(page);
+
+  await expect(page).toHaveTitle("title-b.pdf");
+
+  await page.evaluate((id) => window.__pdfSpike!.tabs.activate(id), firstId);
+  await waitForPageReady(page);
+  await expect(page).toHaveTitle("title-a.pdf");
+
+  await page.evaluate((id) => window.__pdfSpike!.tabs.close(id, { force: true }), firstId);
+  await expect(page).toHaveTitle("title-b.pdf");
+
+  await page.evaluate((id) => window.__pdfSpike!.tabs.close(id, { force: true }), secondId);
+  await expect(page).toHaveTitle("Chive");
+});
+
 test("Document Tab Bar reorders tabs by dragging", async ({ page }) => {
   await page.waitForFunction(() => Boolean(window.__pdfSpike?.tabs));
   await page.evaluate(async () => {
