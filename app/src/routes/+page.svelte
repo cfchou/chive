@@ -3,6 +3,7 @@
   import "../lib/ui/tokens.css";
   import TabStrip from "../lib/ui/TabStrip.svelte";
   import DocumentTabBar from "../lib/ui/DocumentTabBar.svelte";
+  import UnsavedChangesModal from "../lib/ui/UnsavedChangesModal.svelte";
   import Toolbar from "../lib/ui/Toolbar.svelte";
   import ColorPlate from "../lib/ui/ColorPlate.svelte";
   import ToolPopover from "../lib/ui/ToolPopover.svelte";
@@ -279,6 +280,7 @@
   let annotationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let viewerLoadToken = 0;
   let documentTabsState = $state<DocumentTabsState>({ order: [], tabs: {}, activeId: null });
+  let pendingDocumentTabClose = $state<{ id: DocumentTabId; label: string } | null>(null);
   const documentTabDrafts = new Map<DocumentTabId, DocumentTabDraft>();
   const documentTabRuntimes = new Map<DocumentTabId, DocumentTabRuntime>();
   const annotationDetailCache = new Map<string, string>();
@@ -1008,7 +1010,13 @@
 
   async function closeDocumentTab(id: DocumentTabId, opts: { force?: boolean } = {}) {
     const dirty = documentTabsState.activeId === id ? isDirty : (documentTabDrafts.get(id)?.dirty ?? false);
-    if (dirty && !opts.force) return "prompted" as const;
+    if (dirty && !opts.force) {
+      const tab = documentTabsState.tabs[id];
+      if (tab) {
+        pendingDocumentTabClose = { id, label: tab.label };
+      }
+      return "prompted" as const;
+    }
 
     const wasActive = documentTabsState.activeId === id;
     const nextState = removeDocumentTabState(documentTabsState, id);
@@ -1042,7 +1050,30 @@
   }
 
   function handleDocumentTabClose(id: DocumentTabId) {
-    void closeDocumentTab(id, { force: true });
+    void closeDocumentTab(id);
+  }
+
+  function cancelPendingDocumentTabClose() {
+    pendingDocumentTabClose = null;
+  }
+
+  async function discardPendingDocumentTabClose() {
+    const pending = pendingDocumentTabClose;
+    if (!pending) return;
+    pendingDocumentTabClose = null;
+    await closeDocumentTab(pending.id, { force: true });
+  }
+
+  async function savePendingDocumentTabClose() {
+    const pending = pendingDocumentTabClose;
+    if (!pending) return;
+    if (documentTabsState.activeId !== pending.id) {
+      await activateDocumentTab(pending.id);
+    }
+    await savePdf();
+    if (isDirty) return;
+    pendingDocumentTabClose = null;
+    await closeDocumentTab(pending.id, { force: true });
   }
 
   async function loadPdf(path: string) {
@@ -4780,6 +4811,14 @@
     onClose={handleDocumentTabClose}
     onOpen={() => void openPdf()}
   />
+  {#if pendingDocumentTabClose}
+    <UnsavedChangesModal
+      label={pendingDocumentTabClose.label}
+      onSave={() => void savePendingDocumentTabClose()}
+      onDiscard={() => void discardPendingDocumentTabClose()}
+      onCancel={cancelPendingDocumentTabClose}
+    />
+  {/if}
   <header class="topbar">
     <div class="brand">
       <span class="file">{fileName}</span>

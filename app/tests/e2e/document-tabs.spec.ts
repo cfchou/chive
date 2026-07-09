@@ -115,6 +115,41 @@ test("Cmd+W closes the Active Document Tab and activates the neighbor", async ({
   await expect(page.getByText("Open a PDF to start reading")).toBeVisible();
 });
 
+test("dirty Document Tab close prompts and Cancel keeps the tab open", async ({ page }) => {
+  const [firstId, secondId] = await page.evaluate(async () => {
+    const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
+    const first = await window.__pdfSpike!.tabs.openBytes(bytes, "dirty-a.pdf");
+    const second = await window.__pdfSpike!.tabs.openBytes(bytes, "dirty-b.pdf");
+    return [first, second];
+  });
+  await waitForPageReady(page);
+
+  await page.evaluate((id) => window.__pdfSpike!.tabs.activate(id), firstId);
+  await waitForPageReady(page);
+  await page.evaluate(() => window.__pdfSpike!.createPageFreeText("Unsaved close prompt"));
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toMatchObject([
+    { id: firstId, label: "dirty-a.pdf", dirty: true, active: true },
+    { id: secondId, label: "dirty-b.pdf", dirty: false, active: false },
+  ]);
+
+  await page.getByRole("button", { name: "Close dirty-a.pdf" }).click();
+  await expect(page.getByText("Do you want to save the changes made to 'dirty-a.pdf'?")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toHaveLength(2);
+
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByText("Do you want to save the changes made to 'dirty-a.pdf'?")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toHaveLength(2);
+
+  await page.getByRole("button", { name: "Close dirty-a.pdf" }).click();
+  await page.getByRole("button", { name: "Don't Save" }).click();
+  await waitForPageReady(page);
+
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toMatchObject([
+    { id: secondId, label: "dirty-b.pdf", active: true },
+  ]);
+  await expect(page.getByRole("tab", { name: "dirty-a.pdf" })).toHaveCount(0);
+});
+
 test("Document Tabs keep undo history across switches", async ({ page }) => {
   const [firstId, secondId] = await page.evaluate(async () => {
     const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
