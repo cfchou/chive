@@ -82,6 +82,39 @@ test("Document Tab Bar shows open documents and switches on click", async ({ pag
   await expect(page.locator(".file")).toHaveText("bar-a.pdf");
 });
 
+test("Cmd+W closes the Active Document Tab and activates the neighbor", async ({ page }) => {
+  const [firstId, secondId] = await page.evaluate(async () => {
+    const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
+    const first = await window.__pdfSpike!.tabs.openBytes(bytes, "close-a.pdf");
+    const second = await window.__pdfSpike!.tabs.openBytes(bytes, "close-b.pdf");
+    return [first, second];
+  });
+  await waitForPageReady(page);
+
+  await page.evaluate(() => {
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "w",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  });
+  await waitForPageReady(page);
+
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toMatchObject([
+    { id: firstId, label: "close-a.pdf", active: true },
+  ]);
+  await expect(page.getByRole("tab", { name: "close-b.pdf" })).toHaveCount(0);
+  await expect(page.locator(".file")).toHaveText("close-a.pdf");
+
+  await page.evaluate((id) => window.__pdfSpike!.tabs.close(id), firstId);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toEqual([]);
+  await expect(page.locator(".file")).toHaveText("No document");
+  await expect(page.getByText("Open a PDF to start reading")).toBeVisible();
+});
+
 test("Document Tabs keep undo history across switches", async ({ page }) => {
   const [firstId, secondId] = await page.evaluate(async () => {
     const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());

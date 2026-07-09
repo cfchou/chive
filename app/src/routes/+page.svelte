@@ -29,6 +29,8 @@
     addTab as addDocumentTabState,
     findByPath as findDocumentTabByPath,
     moveTab as moveDocumentTabState,
+    nextTabId as nextDocumentTabIdFromState,
+    previousTabId as previousDocumentTabIdFromState,
     removeTab as removeDocumentTabState,
     type DocumentTabId,
     type DocumentTabsState,
@@ -374,6 +376,7 @@
     };
     document.addEventListener("selectionchange", rememberSelection);
     document.addEventListener("pointerdown", handleDocumentPointerDown, { capture: true });
+    document.addEventListener("keydown", handleDocumentTabKeyboardKey, { capture: true });
     document.addEventListener("keydown", handleAnnotationEscapeKey, { capture: true });
     document.addEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
     document.addEventListener("keydown", handleAnnotationUndoRedoKey, { capture: true });
@@ -461,6 +464,7 @@
       document.removeEventListener("keydown", handleAnnotationUndoRedoKey, { capture: true });
       document.removeEventListener("keydown", handleAnnotationDeleteKey, { capture: true });
       document.removeEventListener("keydown", handleAnnotationEscapeKey, { capture: true });
+      document.removeEventListener("keydown", handleDocumentTabKeyboardKey, { capture: true });
       document.removeEventListener("pointerdown", handleDocumentPointerDown, { capture: true });
       document.removeEventListener("selectionchange", rememberSelection);
       teardownSpikeDebugApi();
@@ -608,6 +612,38 @@
     void refreshAnnotationSidebar();
     queueEditorStateRefresh(150, 500);
     status = "Edited selected free text. Save to persist it into the PDF.";
+  }
+
+  function handleDocumentTabKeyboardKey(event: KeyboardEvent) {
+    if (event.repeat || event.altKey) return;
+    const key = event.key.toLowerCase();
+    const usesPrimaryModifier = event.metaKey || event.ctrlKey;
+
+    if (usesPrimaryModifier && !event.shiftKey && key === "w") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void closeActiveDocumentTab();
+      return;
+    }
+
+    if (event.ctrlKey && !event.metaKey && key === "tab") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void (event.shiftKey ? showPreviousDocumentTab() : showNextDocumentTab());
+      return;
+    }
+
+    if (event.metaKey && event.shiftKey && !event.ctrlKey) {
+      if (event.key === "]") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void showNextDocumentTab();
+      } else if (event.key === "[") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void showPreviousDocumentTab();
+      }
+    }
   }
 
   async function openPdf() {
@@ -948,6 +984,26 @@
     activeTool = "none";
     status = `Switched to ${tab.label}`;
     syncActiveRuntimeAfterMutation();
+  }
+
+  async function closeActiveDocumentTab() {
+    const id = documentTabsState.activeId;
+    if (!id) return "closed" as const;
+    return closeDocumentTab(id);
+  }
+
+  async function showNextDocumentTab() {
+    const id = nextDocumentTabIdFromState(documentTabsState);
+    if (id && id !== documentTabsState.activeId) {
+      await activateDocumentTab(id);
+    }
+  }
+
+  async function showPreviousDocumentTab() {
+    const id = previousDocumentTabIdFromState(documentTabsState);
+    if (id && id !== documentTabsState.activeId) {
+      await activateDocumentTab(id);
+    }
   }
 
   async function closeDocumentTab(id: DocumentTabId, opts: { force?: boolean } = {}) {
