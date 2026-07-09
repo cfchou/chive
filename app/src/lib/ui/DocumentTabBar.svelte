@@ -91,7 +91,7 @@
   onpointercancel={handleWindowPointerCancel}
 />
 
-<div class="document-tab-bar" role="tablist" aria-label="Open documents">
+<div class="document-tab-bar" role="tablist" aria-label="Open documents" data-tauri-drag-region>
   <div class="document-tabs">
     {#each tabs as tab, index (tab.id)}
       <div

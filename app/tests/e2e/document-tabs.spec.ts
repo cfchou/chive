@@ -72,8 +72,15 @@ test("Document Tab Bar shows open documents and switches on click", async ({ pag
 
   const tabBar = page.getByRole("tablist", { name: "Open documents" });
   await expect(tabBar).toBeVisible();
+  await expect(page.locator(".document-tab-bar")).toHaveAttribute("data-tauri-drag-region", "");
   await expect(page.getByRole("tab", { name: "bar-a.pdf" })).toHaveAttribute("aria-selected", "false");
   await expect(page.getByRole("tab", { name: "bar-b.pdf" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "bar-a.pdf" })).not.toHaveAttribute("data-tauri-drag-region", "");
+  await expect(page.getByRole("button", { name: "Close bar-a.pdf" })).not.toHaveAttribute(
+    "data-tauri-drag-region",
+    "",
+  );
+  await expect(page.getByRole("button", { name: "Open PDF" })).not.toHaveAttribute("data-tauri-drag-region", "");
 
   await page.getByRole("tab", { name: "bar-a.pdf" }).click();
   await waitForPageReady(page);
