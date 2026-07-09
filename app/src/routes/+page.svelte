@@ -280,7 +280,7 @@
   let annotationRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let viewerLoadToken = 0;
   let documentTabsState = $state<DocumentTabsState>({ order: [], tabs: {}, activeId: null });
-  let pendingDocumentTabClose = $state<{ id: DocumentTabId; label: string } | null>(null);
+  let pendingDocumentTabClose = $state<{ id: DocumentTabId; label: string; source: "tab" | "window" } | null>(null);
   let isNativeFullscreen = $state(false);
   const documentTabDrafts = new Map<DocumentTabId, DocumentTabDraft>();
   const documentTabRuntimes = new Map<DocumentTabId, DocumentTabRuntime>();
@@ -1058,7 +1058,7 @@
     if (dirty && !opts.force) {
       const tab = documentTabsState.tabs[id];
       if (tab) {
-        pendingDocumentTabClose = { id, label: tab.label };
+        pendingDocumentTabClose = { id, label: tab.label, source: "tab" };
       }
       return "prompted" as const;
     }
@@ -1105,10 +1105,18 @@
       const tab = documentTabsState.tabs[id];
       if (!tab) continue;
       await activateDocumentTab(id);
-      pendingDocumentTabClose = { id, label: tab.label };
+      pendingDocumentTabClose = { id, label: tab.label, source: "window" };
       return "prompted" as const;
     }
     return "closed" as const;
+  }
+
+  async function continueWindowCloseRequest() {
+    const closeResult = await handleWindowCloseRequest();
+    if (closeResult === "closed" && isTauriRuntime()) {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().close();
+    }
   }
 
   function cancelPendingDocumentTabClose() {
@@ -1120,6 +1128,9 @@
     if (!pending) return;
     pendingDocumentTabClose = null;
     await closeDocumentTab(pending.id, { force: true });
+    if (pending.source === "window") {
+      await continueWindowCloseRequest();
+    }
   }
 
   async function savePendingDocumentTabClose() {
@@ -1132,6 +1143,9 @@
     if (isDirty) return;
     pendingDocumentTabClose = null;
     await closeDocumentTab(pending.id, { force: true });
+    if (pending.source === "window") {
+      await continueWindowCloseRequest();
+    }
   }
 
   async function loadPdf(path: string) {

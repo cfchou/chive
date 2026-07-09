@@ -272,6 +272,48 @@ test("window close request prompts dirty Document Tabs and Cancel aborts close",
   ]);
 });
 
+test("window close request walks dirty Document Tabs until Cancel aborts", async ({ page }) => {
+  await page.waitForFunction(() => Boolean(window.__pdfSpike?.tabs));
+  const [firstId, secondId, thirdId] = await page.evaluate(async () => {
+    const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
+    const first = await window.__pdfSpike!.tabs.openBytes(bytes, "walk-close-a.pdf");
+    const second = await window.__pdfSpike!.tabs.openBytes(bytes, "walk-close-b.pdf");
+    const third = await window.__pdfSpike!.tabs.openBytes(bytes, "walk-close-c.pdf");
+    return [first, second, third];
+  });
+  await waitForPageReady(page);
+
+  await page.evaluate((id) => window.__pdfSpike!.tabs.activate(id), firstId);
+  await waitForPageReady(page);
+  await page.evaluate(() => window.__pdfSpike!.createPageFreeText("First dirty tab"));
+
+  await page.evaluate((id) => window.__pdfSpike!.tabs.activate(id), secondId);
+  await waitForPageReady(page);
+  await page.evaluate(() => window.__pdfSpike!.createPageFreeText("Second dirty tab"));
+
+  const closeResult = await page.evaluate(() => window.__pdfSpike!.requestWindowCloseForTest());
+
+  expect(closeResult).toBe("prompted");
+  await expect(page.getByText("Do you want to save the changes made to 'walk-close-a.pdf'?")).toBeVisible();
+
+  await page.getByRole("button", { name: "Don't Save" }).click();
+  await waitForPageReady(page);
+
+  await expect(page.getByText("Do you want to save the changes made to 'walk-close-b.pdf'?")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toMatchObject([
+    { id: secondId, label: "walk-close-b.pdf", dirty: true, active: true },
+    { id: thirdId, label: "walk-close-c.pdf", dirty: false, active: false },
+  ]);
+
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByText("Do you want to save the changes made to 'walk-close-b.pdf'?")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list())).toMatchObject([
+    { id: secondId, label: "walk-close-b.pdf", dirty: true, active: true },
+    { id: thirdId, label: "walk-close-c.pdf", dirty: false, active: false },
+  ]);
+  await expect(page.getByRole("tab", { name: "walk-close-a.pdf" })).toHaveCount(0);
+});
+
 test("Document Tabs keep undo history across switches", async ({ page }) => {
   const [firstId, secondId] = await page.evaluate(async () => {
     const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
