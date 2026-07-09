@@ -24,6 +24,7 @@
     type SidebarWidths,
   } from "../lib/ui/sidebar-resize";
   import { tabMeta } from "../lib/ui/tab-meta";
+  import { DocumentSession } from "$lib/tabs/document-session";
   import { installAppMenu, type AppMenuControls } from "../lib/tauri/menu";
   import { invoke } from "@tauri-apps/api/core";
   import { open, save } from "@tauri-apps/plugin-dialog";
@@ -171,6 +172,15 @@
   let pdfLinkService: PDFLinkService | null = null;
   let pdfDocument = $state<PdfDocument | null>(null);
   let annotationEditorUIManager: AnnotationEditorUIManager | null = null;
+  // Open documents as Document Sessions (one per tab). Phase A keeps exactly one
+  // session mirroring the single active document; Phase B renders these as tabs
+  // and swaps their live viewers on switch. The shell's own `$state` above still
+  // holds the *active* session's live values.
+  let documentSessions = $state<DocumentSession[]>([]);
+  let activeSessionId = $state<string | null>(null);
+  const activeSession = $derived(
+    activeSessionId ? (documentSessions.find((session) => session.id === activeSessionId) ?? null) : null,
+  );
   let outlineEntries = $state<OutlineEntry[]>([]);
   let outlineStatus = $state("Open a PDF to inspect its outline.");
   let outlineColorMenuId = $state<string | null>(null);
@@ -228,9 +238,9 @@
   // sort position ~30px and reshuffle the sidebar on a pure text edit.
   const persistedPositionByKey = new Map<string, { top: number; left: number }>();
   const debugHarness = createSpikeDebugHarness({
-    getPdfDocument: () => pdfDocument,
-    getPdfViewer: () => pdfViewer,
-    getAnnotationEditorUIManager: () => annotationEditorUIManager,
+    getPdfDocument: () => activeSession?.pdfDocument ?? pdfDocument,
+    getPdfViewer: () => activeSession?.pdfViewer ?? pdfViewer,
+    getAnnotationEditorUIManager: () => activeSession?.annotationEditorUIManager ?? annotationEditorUIManager,
     getDomDocument: () => document,
     getWindow: () => window,
     getStatsSnapshot: () => ({
@@ -575,8 +585,14 @@
     const eventBus = new EventBus();
     const linkService = new PDFLinkService({ eventBus });
     pdfLinkService = linkService;
+    const session = new DocumentSession(crypto.randomUUID(), null, label);
+    session.eventBus = eventBus;
+    session.pdfLinkService = linkService;
+    documentSessions = [session];
+    activeSessionId = session.id;
     eventBus.on("annotationeditoruimanager", (event: { uiManager: AnnotationEditorUIManager }) => {
       annotationEditorUIManager = event.uiManager;
+      session.annotationEditorUIManager = event.uiManager;
     });
 
     pdfViewer = new PDFViewer({
@@ -590,9 +606,13 @@
         "red=#ffb3ab,orange=#ffd1a1,yellow=#fff35c,green=#7cf2aa,cyan=#a5ecf2,blue=#8ecbff,purple=#d7bfff,rose=#ffb6de",
     } as ConstructorParameters<typeof PDFViewer>[0] & { enableHighlightFloatingButton: boolean });
     linkService.setViewer(pdfViewer);
+    session.pdfViewer = pdfViewer;
+    session.containerEl = containerEl;
+    session.viewerEl = viewerEl;
     pdfViewer.setDocument(nextDocument);
     linkService.setDocument(nextDocument, null);
     pdfDocument = nextDocument;
+    session.pdfDocument = nextDocument;
     void loadOutline(nextDocument);
 
     eventBus.on("pagesinit", () => {
@@ -3817,6 +3837,9 @@
       clearTimeout(annotationRefreshTimer);
       annotationRefreshTimer = null;
     }
+    for (const session of documentSessions) session.close();
+    documentSessions = [];
+    activeSessionId = null;
     viewerEl.replaceChildren();
   }
 
