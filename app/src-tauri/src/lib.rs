@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::{Emitter, Manager};
 
 #[tauri::command]
 fn read_pdf(path: String) -> Result<Vec<u8>, String> {
@@ -44,6 +45,25 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init());
+
+    // D11: single-instance enforcement — second launch focuses the existing
+    // window and forwards argv PDF paths as an event to the frontend.
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        let window = app.get_webview_window("main");
+        if let Some(window) = window {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        // Forward argv entries that look like PDF paths to the frontend.
+        let pdf_args: Vec<String> = argv
+            .iter()
+            .filter(|arg| arg.ends_with(".pdf"))
+            .cloned()
+            .collect();
+        if !pdf_args.is_empty() {
+            let _ = app.emit("single-instance-pdf-paths", pdf_args);
+        }
+    }));
 
     #[cfg(feature = "wdio")]
     let builder = builder

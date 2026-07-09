@@ -590,6 +590,15 @@
           void handleWindowCloseRequested(event);
         });
       });
+
+      // D11: listen for single-instance PDF path forwarding.
+      void import("@tauri-apps/api/event").then(({ listen }) => {
+        listen<string[]>("single-instance-pdf-paths", (event) => {
+          for (const path of event.payload) {
+            void openPathAsTab(path);
+          }
+        });
+      });
     }
     return () => {
       containerResizeObserver.disconnect();
