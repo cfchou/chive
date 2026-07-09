@@ -82,6 +82,35 @@ test("Document Tab Bar shows open documents and switches on click", async ({ pag
   await expect(page.locator(".file")).toHaveText("bar-a.pdf");
 });
 
+test("Document Tab Bar reorders tabs by dragging", async ({ page }) => {
+  await page.waitForFunction(() => Boolean(window.__pdfSpike?.tabs));
+  await page.evaluate(async () => {
+    const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
+    await window.__pdfSpike!.tabs.openBytes(bytes, "drag-a.pdf");
+    await window.__pdfSpike!.tabs.openBytes(bytes, "drag-b.pdf");
+    await window.__pdfSpike!.tabs.openBytes(bytes, "drag-c.pdf");
+  });
+  await waitForPageReady(page);
+
+  await expect
+    .poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list().map((tab: { label: string }) => tab.label)))
+    .toEqual(["drag-a.pdf", "drag-b.pdf", "drag-c.pdf"]);
+
+  const firstBox = await page.getByRole("tab", { name: "drag-a.pdf" }).boundingBox();
+  const thirdBox = await page.getByRole("tab", { name: "drag-c.pdf" }).boundingBox();
+  if (!firstBox || !thirdBox) throw new Error("Document Tab boxes not found");
+
+  await page.mouse.move(firstBox.x + firstBox.width / 2, firstBox.y + firstBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(firstBox.x + firstBox.width / 2 + 12, firstBox.y + firstBox.height / 2);
+  await page.mouse.move(thirdBox.x + thirdBox.width + 8, thirdBox.y + thirdBox.height / 2);
+  await page.mouse.up();
+
+  await expect
+    .poll(() => page.evaluate(() => window.__pdfSpike!.tabs.list().map((tab: { label: string }) => tab.label)))
+    .toEqual(["drag-b.pdf", "drag-c.pdf", "drag-a.pdf"]);
+});
+
 test("Cmd+W closes the Active Document Tab and activates the neighbor", async ({ page }) => {
   const [firstId, secondId] = await page.evaluate(async () => {
     const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());

@@ -28,6 +28,11 @@ type OutlineEntry = {
   destinationStatus: string | null;
 };
 
+type DocumentTabSummary = {
+  id: string;
+  active: boolean;
+};
+
 const app = browser as unknown as WdioBrowser;
 const samplePdfPath = path.resolve(process.cwd(), "static/sample.pdf");
 const noOutlinePdfPath = path.resolve(process.cwd(), "static/no-outline.pdf");
@@ -121,7 +126,7 @@ describe("native WKWebView PDF smoke", () => {
     await app.waitUntil(
       async () =>
         app.execute(({ first, second }) => {
-          const tabs = window.__pdfSpike!.tabs.list();
+          const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
           return (
             tabs.length === 2 &&
             tabs.some((tab) => tab.id === first && !tab.active) &&
@@ -139,7 +144,7 @@ describe("native WKWebView PDF smoke", () => {
     await app.waitUntil(
       async () =>
         app.execute(({ first, second }) => {
-          const tabs = window.__pdfSpike!.tabs.list();
+          const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
           return (
             tabs.length === 1 &&
             tabs[0]?.id === first &&

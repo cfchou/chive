@@ -4810,6 +4810,7 @@
     onActivate={(id) => void activateDocumentTab(id)}
     onClose={handleDocumentTabClose}
     onOpen={() => void openPdf()}
+    onReorder={reorderDocumentTab}
   />
   {#if pendingDocumentTabClose}
     <UnsavedChangesModal
