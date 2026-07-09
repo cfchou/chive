@@ -2,6 +2,7 @@
   // ---- Official-app shell imports (dock, tokens, native menu) ----
   import "../lib/ui/tokens.css";
   import TabStrip from "../lib/ui/TabStrip.svelte";
+  import DocumentTabBar from "../lib/ui/DocumentTabBar.svelte";
   import Toolbar from "../lib/ui/Toolbar.svelte";
   import ColorPlate from "../lib/ui/ColorPlate.svelte";
   import ToolPopover from "../lib/ui/ToolPopover.svelte";
@@ -693,6 +694,10 @@
 
   function reorderDocumentTab(from: number, to: number) {
     documentTabsState = moveDocumentTabState(documentTabsState, from, to);
+  }
+
+  function handleDocumentTabClose(id: DocumentTabId) {
+    void closeDocumentTab(id, { force: true });
   }
 
   async function loadPdf(path: string) {
@@ -4091,6 +4096,7 @@
   const fileName = $derived(
     currentPath ? (currentPath.split("/").pop() ?? currentPath) : "No document",
   );
+  const documentTabSummaries = $derived(listDocumentTabs());
 
   $effect(() => {
     void menuControls?.setSaveEnabled(Boolean(pdfDocument));
@@ -4278,6 +4284,12 @@
 </script>
 
 <div class="app">
+  <DocumentTabBar
+    tabs={documentTabSummaries}
+    onActivate={(id) => void activateDocumentTab(id)}
+    onClose={handleDocumentTabClose}
+    onOpen={() => void openPdf()}
+  />
   <header class="topbar">
     <div class="brand">
       <span class="file">{fileName}</span>
@@ -4517,7 +4529,7 @@
     height: 100vh;
     min-width: var(--app-min-width);
     display: grid;
-    grid-template-rows: auto 1fr;
+    grid-template-rows: auto auto 1fr;
     background: var(--surface);
   }
   .topbar {

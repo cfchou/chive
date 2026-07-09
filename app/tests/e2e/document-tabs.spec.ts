@@ -61,3 +61,23 @@ test("Document Tabs restore their own zoom when activated", async ({ page }) => 
   await waitForPageReady(page);
   await expect(page.locator(".zoom-value")).toHaveText(secondZoom ?? "");
 });
+
+test("Document Tab Bar shows open documents and switches on click", async ({ page }) => {
+  await page.evaluate(async () => {
+    const bytes = new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer());
+    await window.__pdfSpike!.tabs.openBytes(bytes, "bar-a.pdf");
+    await window.__pdfSpike!.tabs.openBytes(bytes, "bar-b.pdf");
+  });
+  await waitForPageReady(page);
+
+  const tabBar = page.getByRole("tablist", { name: "Open documents" });
+  await expect(tabBar).toBeVisible();
+  await expect(page.getByRole("tab", { name: "bar-a.pdf" })).toHaveAttribute("aria-selected", "false");
+  await expect(page.getByRole("tab", { name: "bar-b.pdf" })).toHaveAttribute("aria-selected", "true");
+
+  await page.getByRole("tab", { name: "bar-a.pdf" }).click();
+  await waitForPageReady(page);
+
+  await expect(page.getByRole("tab", { name: "bar-a.pdf" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".file")).toHaveText("bar-a.pdf");
+});
