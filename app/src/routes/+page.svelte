@@ -29,6 +29,7 @@
   import { DocumentSession } from "$lib/tabs/document-session";
   import { activeIdAfterClose, findTabIdByPath, moveTab, nextTabId, previousTabId } from "$lib/tabs/tab-state";
   import { installAppMenu, isTauriRuntime, type AppMenuControls } from "../lib/tauri/menu";
+  import { pdfPathsFromArgs } from "../lib/tauri/single-instance";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -504,7 +505,7 @@
       // A second app launch forwards its argv PDF paths here (D11).
       void listen<string[]>("single-instance-open", (event) => {
         void (async () => {
-          for (const path of event.payload) await openPdfFromPath(path);
+          for (const path of pdfPathsFromArgs(event.payload)) await openPdfFromPath(path);
         })();
       })
         .then((unlisten) => (unlistenSingleInstance = unlisten))
