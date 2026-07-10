@@ -46,6 +46,8 @@ export type SpikeDebugApi = {
   /** Undo/redo on the active tab's editor manager (verifies per-tab history). */
   undo: () => void;
   redo: () => void;
+  /** Test-only native drop-path driver; production uses the Tauri drop event. */
+  openDroppedFilesForTest: (paths: string[]) => Promise<void>;
   tabs: TabsDebugApi;
 };
 
