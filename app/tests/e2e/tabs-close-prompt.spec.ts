@@ -86,4 +86,21 @@ test.describe("unsaved-changes close prompt", () => {
     await waitForPageReady(page);
     await expect(tabs.nth(0).locator(".doc-tab-main")).toHaveAttribute("aria-selected", "true");
   });
+
+  test("Ctrl+W without an Active Document Tab leaves the browser shortcut alone", async ({ page }) => {
+    await openApp(page);
+
+    const result = await page.evaluate(() => {
+      const event = new KeyboardEvent("keydown", {
+        key: "w",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = document.dispatchEvent(event);
+      return { dispatched, defaultPrevented: event.defaultPrevented };
+    });
+
+    expect(result).toEqual({ dispatched: true, defaultPrevented: false });
+  });
 });

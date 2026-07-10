@@ -1026,7 +1026,8 @@
       (event.metaKey || event.ctrlKey) &&
       !event.shiftKey &&
       !event.altKey &&
-      event.key.toLowerCase() === "w"
+      event.key.toLowerCase() === "w" &&
+      (activeSessionId !== null || isTauriRuntime())
     ) {
       event.preventDefault();
       void requestCloseActiveTab();
