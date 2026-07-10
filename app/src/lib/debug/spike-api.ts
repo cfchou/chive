@@ -43,6 +43,32 @@ export type SpikeDebugApi = {
   debugSavedBytes: (path: string) => number[];
   stats: () => Record<string, unknown>;
   setTool: (tool: EditorTool) => void;
+  /** Undo/redo on the active tab's editor manager (verifies per-tab history). */
+  undo: () => void;
+  redo: () => void;
+  tabs: TabsDebugApi;
+};
+
+// Multi-tab driving surface for the test suites. Existing members above always
+// target the active tab; these expose the tab list and let specs open, switch,
+// close, and reorder Document Tabs.
+export type TabDebugSummary = {
+  id: string;
+  label: string;
+  path: string | null;
+  dirty: boolean;
+  active: boolean;
+};
+export type TabsDebugApi = {
+  list: () => TabDebugSummary[];
+  /** Open a path in a new tab (Tauri), focusing an existing tab with that path. */
+  open: (path: string) => Promise<string>;
+  /** Open raw bytes in a new tab; pass a path to enable dedupe/focus. */
+  openBytes: (bytes: number[] | Uint8Array, label: string, path?: string | null) => Promise<string>;
+  activate: (id: string) => Promise<void>;
+  /** Close a tab. Phase B force-closes; the unsaved-changes prompt lands later. */
+  close: (id: string, options?: { force?: boolean }) => Promise<"closed" | "prompted">;
+  reorder: (from: number, to: number) => void;
 };
 
 export type SpikeDebugTarget = {

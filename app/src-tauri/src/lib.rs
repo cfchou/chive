@@ -41,7 +41,27 @@ fn backup_path(target: &Path) -> PathBuf {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // Single-instance must be registered first (Tauri requirement). A second
+    // launch focuses the existing window and forwards any PDF paths in its argv
+    // to the frontend, which opens/focuses them as Document Tabs (D11).
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        use tauri::{Emitter, Manager};
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_focus();
+        }
+        let pdf_paths: Vec<String> = argv
+            .into_iter()
+            .filter(|arg| arg.to_lowercase().ends_with(".pdf"))
+            .collect();
+        if !pdf_paths.is_empty() {
+            let _ = app.emit("single-instance-open", pdf_paths);
+        }
+    }));
+
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init());
 

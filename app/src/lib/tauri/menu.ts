@@ -17,6 +17,9 @@ export type AppMenuHandlers = {
   openPdf: () => void | Promise<void>;
   savePdf: () => void | Promise<void>;
   savePdfAs: () => void | Promise<void>;
+  closeActiveTab: () => void | Promise<void>;
+  showNextTab: () => void | Promise<void>;
+  showPreviousTab: () => void | Promise<void>;
 };
 
 export function isTauriRuntime(): boolean {
@@ -83,13 +86,37 @@ export async function installAppMenu(handlers: AppMenuHandlers): Promise<AppMenu
     ],
   });
 
+  // Cmd+W closes the active Document Tab; closing the last tab leaves the
+  // zero-tab empty state, and Cmd+W there closes the window. The stock
+  // CloseWindow item is therefore replaced with Close Tab.
+  const closeTabItem = await MenuItem.new({
+    id: "window-close-tab",
+    text: "Close Tab",
+    accelerator: "CmdOrCtrl+W",
+    action: () => void handlers.closeActiveTab(),
+  });
+  const previousTabItem = await MenuItem.new({
+    id: "window-previous-tab",
+    text: "Show Previous Tab",
+    accelerator: "CmdOrCtrl+Shift+BracketLeft",
+    action: () => void handlers.showPreviousTab(),
+  });
+  const nextTabItem = await MenuItem.new({
+    id: "window-next-tab",
+    text: "Show Next Tab",
+    accelerator: "CmdOrCtrl+Shift+BracketRight",
+    action: () => void handlers.showNextTab(),
+  });
   const windowSubmenu = await Submenu.new({
     text: "Window",
     items: [
       await PredefinedMenuItem.new({ item: "Minimize" }),
       await PredefinedMenuItem.new({ item: "Maximize" }),
       await PredefinedMenuItem.new({ item: "Separator" }),
-      await PredefinedMenuItem.new({ item: "CloseWindow" }),
+      previousTabItem,
+      nextTabItem,
+      await PredefinedMenuItem.new({ item: "Separator" }),
+      closeTabItem,
     ],
   });
 
