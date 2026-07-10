@@ -41,6 +41,14 @@ test.describe("unsaved-changes close prompt", () => {
     await expect(page.locator("[data-doc-tab]")).toHaveCount(2);
   });
 
+  test("the unsaved-changes dialog describes the affected Document Tab", async ({ page }) => {
+    await openTwoTabsWithDirtySecond(page);
+    await closeActiveTab(page);
+
+    await expect(modal(page)).toHaveAttribute("aria-describedby", "unsaved-message");
+    await expect(page.locator("#unsaved-message")).toHaveText("Do you want to save the changes made to “second.pdf”?" );
+  });
+
   test("Don't Save discards and closes the tab", async ({ page }) => {
     await openTwoTabsWithDirtySecond(page);
     await closeActiveTab(page);
