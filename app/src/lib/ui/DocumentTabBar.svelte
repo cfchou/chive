@@ -51,14 +51,17 @@
     }
     return Math.max(0, els.length - 1);
   }
+  function resetDragState() {
+    dragId = null;
+    dragging = false;
+    dragFromIndex = -1;
+  }
   function onTabPointerUp(event: PointerEvent) {
     if (dragId === null) return;
     const wasDragging = dragging;
     const from = dragFromIndex;
     const to = wasDragging ? dropIndexForX(event.clientX) : from;
-    dragId = null;
-    dragging = false;
-    dragFromIndex = -1;
+    resetDragState();
     if (wasDragging) {
       suppressClick = true; // the drag ends on a click we must not treat as select
       if (to !== from && to >= 0) onReorder(from, to);
@@ -98,6 +101,8 @@
           onpointerdown={(event) => onTabPointerDown(event, tab.id, index)}
           onpointermove={onTabPointerMove}
           onpointerup={onTabPointerUp}
+          onpointercancel={resetDragState}
+          onlostpointercapture={resetDragState}
         >
           {#if tab.dirty}
             <span class="dirty-dot" aria-hidden="true"></span>

@@ -553,6 +553,12 @@
   }
 
   function handleAnnotationEscapeKey(event: KeyboardEvent) {
+    if (unsavedPrompt && event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      resolveUnsavedPrompt("cancel");
+      return;
+    }
     if (event.repeat || event.key !== "Escape" || isEditableKeyboardTarget(event.target)) {
       return;
     }
@@ -566,6 +572,7 @@
   }
 
   function handleDocumentPointerDown(event: PointerEvent) {
+    if (!containerEl) return;
     const target = event.target;
     // A pointerdown outside an in-edit free text editor is about to blur it,
     // and pdf.js commits on blur — repair the DOM shape first so Shift+Enter
@@ -4419,7 +4426,7 @@
 
   const fileName = $derived(
     currentPath
-      ? (currentPath.split("/").pop() ?? currentPath)
+      ? (currentPath.split(/[\\/]/).pop() ?? currentPath)
       : activeSession
         ? (activeSession.label.split(/[\\/]/).pop() ?? activeSession.label)
         : "No document",

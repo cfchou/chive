@@ -86,8 +86,9 @@ export async function installAppMenu(handlers: AppMenuHandlers): Promise<AppMenu
     ],
   });
 
-  // Cmd+W closes the active Document Tab (falling back to closing the window on
-  // the last tab), so the stock CloseWindow item is replaced with Close Tab.
+  // Cmd+W closes the active Document Tab; closing the last tab leaves the
+  // zero-tab empty state, and Cmd+W there closes the window. The stock
+  // CloseWindow item is therefore replaced with Close Tab.
   const closeTabItem = await MenuItem.new({
     id: "window-close-tab",
     text: "Close Tab",
