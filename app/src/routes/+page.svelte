@@ -307,7 +307,7 @@
     loadPdfBytes,
     savePdfDocumentBytes,
     refreshAnnotationSidebar,
-    setCurrentPath: (path) => (currentPath = path),
+    setCurrentPath: updateActiveDocumentPath,
     setDirty: (dirty) => (isDirty = dirty),
     setBusy: (busy) => (isBusy = busy),
     setActiveTool: (tool) => (activeTool = tool),
@@ -964,6 +964,14 @@
 
   function tabDisplayLabel(session: DocumentSession): string {
     return session.label.split(/[\\/]/).pop() || session.label;
+  }
+
+  function updateActiveDocumentPath(path: string) {
+    currentPath = path;
+    if (activeSession) {
+      activeSession.path = path;
+      activeSession.label = path;
+    }
   }
 
   // Close a tab, prompting Save / Don't Save / Cancel when it has unsaved edits.
@@ -4171,8 +4179,7 @@
         path,
         bytes: Array.from(saved),
       });
-      currentPath = path;
-      if (activeSession) activeSession.path = path;
+      updateActiveDocumentPath(path);
       isDirty = false;
       await refreshAnnotationSidebar();
       status = `Saved ${path}`;

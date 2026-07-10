@@ -87,6 +87,20 @@ test.describe("multi-document tabs", () => {
     expect(list.find((tab) => tab.active)!.id).toBe(a);
   });
 
+  test("Save As refreshes the active Document Tab path and displayed label", async ({ page }) => {
+    await openApp(page);
+    await loadFixture(page);
+    await createFreeText(page, "Save As label regression");
+
+    const savedPath = "/tmp/chive-save-as-renamed.pdf";
+    await page.evaluate(async (path) => window.__pdfSpike!.saveToPath(path), savedPath);
+
+    await expect.poll(() => tabList(page)).toMatchObject([
+      { path: savedPath, label: savedPath, dirty: false, active: true },
+    ]);
+    await expect(page.getByRole("tab", { name: "chive-save-as-renamed.pdf" })).toBeVisible();
+  });
+
   test("closing the active tab activates a neighbor", async ({ page }) => {
     await openApp(page);
     const bytes = await sampleBytes(page);
