@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { hasPointerDragStarted } from "./pointer-drag";
+  import { hasHorizontalPointerDragStarted } from "./pointer-drag";
 
   // The Document Tab Bar: the strip of open PDFs shown in the window's titlebar
   // area (see CONTEXT.md "Document Tab Bar"). Distinct from the sidebar TabStrip.
@@ -30,7 +30,6 @@
   let dragging = $state(false);
   let dragFromIndex = -1;
   let dragStartX = 0;
-  let dragStartY = 0;
   let suppressClick = false;
 
   function onTabPointerDown(event: PointerEvent, id: string, index: number) {
@@ -39,12 +38,11 @@
     dragging = false;
     dragFromIndex = index;
     dragStartX = event.clientX;
-    dragStartY = event.clientY;
     (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
   }
   function onTabPointerMove(event: PointerEvent) {
     if (dragId === null) return;
-    if (!dragging && hasPointerDragStarted({ clientX: dragStartX, clientY: dragStartY }, event)) dragging = true;
+    if (!dragging && hasHorizontalPointerDragStarted(dragStartX, event.clientX)) dragging = true;
   }
   function dropIndexForX(x: number): number {
     const els = [...(tabsEl?.querySelectorAll<HTMLElement>("[data-doc-tab]") ?? [])];
