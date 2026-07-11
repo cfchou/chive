@@ -1,7 +1,7 @@
 import { browser, expect } from "@wdio/globals";
 import path from "node:path";
 import { Key } from "webdriverio";
-import { FREE_TEXT_MOVE_GRIP_INSET_PX, FREE_TEXT_MOVE_GRIP_SIZE_PX } from "../../src/lib/pdf/free-text-move";
+import { FREE_TEXT_MOVE_GRIP_INSET_PX } from "../../src/lib/pdf/free-text-move";
 
 type WdioBrowser = {
   execute: <T, Arg = unknown>(script: (arg: Arg) => T | Promise<T>, arg?: Arg) => Promise<T>;
@@ -105,11 +105,7 @@ describe("native WKWebView PDF smoke", () => {
     );
   });
 
-  // The embedded driver can click a simple control with W3C actions (the spike
-  // above), but does not deliver a usable free-text drag sequence to route
-  // capture. This synthetic fallback still exercises WKWebView propagation,
-  // grip geometry, manager identity checks, scale conversion, and translation.
-  it("moves editable free text with synthetic pointer events and persists its text and geometry", async () => {
+  it("moves editable free text from its exterior grip and persists its text and geometry", async () => {
     await waitForPdfSpike();
     await app.setWindowSize(1280, 900);
     const initialText = "Native W3C free-text grip";
@@ -153,14 +149,14 @@ describe("native WKWebView PDF smoke", () => {
       { timeout: 10_000, timeoutMsg: "Native free-text editor did not enter editable mode" },
     );
 
-    const before = await app.execute(({ text, inset, size }) => {
+    const before = await app.execute(({ text, inset }) => {
       const internal = [...document.querySelectorAll<HTMLElement>(".freeTextEditor .internal")].find(
         (element) => element.isContentEditable && element.innerText.replace(/\s+/g, " ").includes(text),
       );
       const root = internal?.closest<HTMLElement>(".freeTextEditor");
       if (!root?.id || !internal) throw new Error("Editable native free-text editor not found");
       const rect = root.getBoundingClientRect();
-      const offset = inset + size * 0.8;
+      const offset = inset / 2;
       const grip = {
         x: Math.round(rect.left + offset),
         y: Math.round(rect.top + offset),
@@ -171,11 +167,34 @@ describe("native WKWebView PDF smoke", () => {
         gripTargetsEditor: document.elementFromPoint(grip.x, grip.y)?.closest<HTMLElement>(".freeTextEditor")?.id === root.id,
         rect: { left: rect.left, top: rect.top },
       };
-    }, { text: initialText, inset: FREE_TEXT_MOVE_GRIP_INSET_PX, size: FREE_TEXT_MOVE_GRIP_SIZE_PX });
-    expect(before.gripTargetsEditor).toBe(true);
+    }, { text: initialText, inset: FREE_TEXT_MOVE_GRIP_INSET_PX });
+    expect(before.gripTargetsEditor).toBe(false);
     const delta = { x: 40, y: 24 };
 
-    await app.execute(({ start, movement }) => {
+    const editorMoved = () =>
+      app.execute(({ editorId, expectedText, prior, expectedDelta }) => {
+        const root = document.getElementById(editorId);
+        const internal = root?.querySelector<HTMLElement>(".internal[contenteditable='true'], [contenteditable='true']");
+        if (!(root instanceof HTMLElement) || !internal?.isContentEditable) return false;
+        const rect = root.getBoundingClientRect();
+        return (
+          Math.abs((rect.left - prior.left) - expectedDelta.x) < 2 &&
+          Math.abs((rect.top - prior.top) - expectedDelta.y) < 2 &&
+          internal.contains(document.activeElement) &&
+          internal.innerText.replace(/\s+/g, " ").includes(expectedText)
+        );
+      }, { editorId: before.editorId, expectedText: initialText, prior: before.rect, expectedDelta: delta });
+
+    await browser
+      .action("pointer", { parameters: { pointerType: "mouse" } })
+      .move({ origin: "viewport", x: before.grip.x, y: before.grip.y })
+      .down({ button: 0 })
+      .move({ origin: "viewport", x: before.grip.x + delta.x, y: before.grip.y + delta.y })
+      .up({ button: 0 })
+      .perform();
+    const movedByRealPointer = await app.waitUntil(editorMoved, { timeout: 1_000 }).catch(() => false);
+
+    if (!movedByRealPointer) await app.execute(({ start, movement }) => {
       const target = document.elementFromPoint(start.x, start.y);
       if (!target) throw new Error("Native synthetic grip coordinate has no event target");
       const dispatch = (eventTarget: EventTarget, type: string, clientX: number, clientY: number, buttons: number) => {
@@ -200,22 +219,10 @@ describe("native WKWebView PDF smoke", () => {
       dispatch(window, "pointerup", start.x + movement.x, start.y + movement.y, 0);
     }, { start: before.grip, movement: delta });
 
-    const moved = await app.waitUntil(
-      async () =>
-        app.execute(({ editorId, expectedText, prior, expectedDelta }) => {
-          const root = document.getElementById(editorId);
-          const internal = root?.querySelector<HTMLElement>(".internal[contenteditable='true'], [contenteditable='true']");
-          if (!(root instanceof HTMLElement) || !internal?.isContentEditable) return false;
-          const rect = root.getBoundingClientRect();
-          return (
-            Math.abs((rect.left - prior.left) - expectedDelta.x) < 2 &&
-            Math.abs((rect.top - prior.top) - expectedDelta.y) < 2 &&
-            internal.contains(document.activeElement) &&
-            internal.innerText.replace(/\s+/g, " ").includes(expectedText)
-          );
-        }, { editorId: before.editorId, expectedText: initialText, prior: before.rect, expectedDelta: delta }),
-      { timeout: 10_000, timeoutMsg: "Native synthetic grip drag did not move editable free text" },
-    );
+    const moved = movedByRealPointer || (await app.waitUntil(editorMoved, {
+      timeout: 10_000,
+      timeoutMsg: "Native exterior-grip drag did not move editable free text",
+    }));
     expect(moved).toBe(true);
 
     const appended = await app.execute(({ editorId, text }) => {

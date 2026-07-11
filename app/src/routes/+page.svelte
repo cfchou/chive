@@ -596,6 +596,9 @@
 
   function handleDocumentPointerDown(event: PointerEvent) {
     if (!containerEl) return;
+    if (isSelectedEditableFreeTextMoveGripPointerDown(event)) {
+      return;
+    }
     const target = event.target;
     // A pointerdown outside an in-edit free text editor is about to blur it,
     // and pdf.js commits on blur — repair the DOM shape first so Shift+Enter
@@ -3381,6 +3384,30 @@
     return { editorElement, internal };
   }
 
+  function selectedEditableFreeTextMoveGripPointerDown(event: PointerEvent) {
+    if (event.button !== 0 || !event.isPrimary) return null;
+    const manager = annotationEditorUIManager;
+    const documentSession = activeSession;
+    const selectedEditor = manager?.firstSelectedEditor;
+    if (
+      !manager ||
+      !documentSession ||
+      documentSession.annotationEditorUIManager !== manager ||
+      !isFreeTextEditor(selectedEditor)
+    ) {
+      return null;
+    }
+    const target = editableFreeTextMoveTarget(selectedEditor.id);
+    if (!target || !isFreeTextMoveGripHit(target.editorElement.getBoundingClientRect(), event.clientX, event.clientY)) {
+      return null;
+    }
+    return { documentSession, editorId: selectedEditor.id, manager, target };
+  }
+
+  function isSelectedEditableFreeTextMoveGripPointerDown(event: PointerEvent) {
+    return selectedEditableFreeTextMoveGripPointerDown(event) !== null;
+  }
+
   function freeTextMoveSessionIsCurrent(session: FreeTextMoveSession) {
     return (
       freeTextMoveSession === session &&
@@ -3406,28 +3433,14 @@
   }
 
   function startFreeTextMoveSession(event: PointerEvent) {
-    if (event.button !== 0 || !event.isPrimary) return false;
-    const manager = annotationEditorUIManager;
-    const documentSession = activeSession;
-    const selectedEditor = manager?.firstSelectedEditor;
-    if (
-      !manager ||
-      !documentSession ||
-      documentSession.annotationEditorUIManager !== manager ||
-      !isFreeTextEditor(selectedEditor)
-    ) {
-      return false;
-    }
-    const target = editableFreeTextMoveTarget(selectedEditor.id);
-    if (!target || !isFreeTextMoveGripHit(target.editorElement.getBoundingClientRect(), event.clientX, event.clientY)) {
-      return false;
-    }
+    const grip = selectedEditableFreeTextMoveGripPointerDown(event);
+    if (!grip) return false;
     endFreeTextMoveSession();
     freeTextMoveSession = {
       pointerId: event.pointerId,
-      editorId: selectedEditor.id,
-      manager,
-      documentSession,
+      editorId: grip.editorId,
+      manager: grip.manager,
+      documentSession: grip.documentSession,
       start: { clientX: event.clientX, clientY: event.clientY },
       last: { clientX: event.clientX, clientY: event.clientY },
       thresholdCrossed: false,

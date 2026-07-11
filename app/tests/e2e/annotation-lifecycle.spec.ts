@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { FREE_TEXT_MOVE_GRIP_INSET_PX, FREE_TEXT_MOVE_GRIP_SIZE_PX } from "../../src/lib/pdf/free-text-move";
+import { FREE_TEXT_MOVE_GRIP_INSET_PX } from "../../src/lib/pdf/free-text-move";
 import {
   activateAnnotationByKind,
   activateFirstAnnotationByKind,
@@ -92,9 +92,10 @@ async function setZoomTo100Percent(page: Page) {
 }
 
 function freeTextGripPoint(snapshot: EditableFreeTextSnapshot) {
-  // The grip is intentionally on the selected border rather than the central
-  // editable surface, which must retain its native caret/selection behavior.
-  const offset = FREE_TEXT_MOVE_GRIP_INSET_PX + FREE_TEXT_MOVE_GRIP_SIZE_PX / 2;
+  // The visually clipped corner is outside the editor's DOM box. Its event
+  // target is therefore the PDF page/editor layer rather than the editable
+  // surface; the central surface remains reserved for caret and text selection.
+  const offset = FREE_TEXT_MOVE_GRIP_INSET_PX / 2;
   return { x: Math.round(snapshot.rect.left + offset), y: Math.round(snapshot.rect.top + offset) };
 }
 
@@ -104,6 +105,13 @@ async function dragFreeTextGrip(
   delta: { x: number; y: number },
 ) {
   const start = freeTextGripPoint(snapshot);
+  await expect
+    .poll(() =>
+      page.evaluate(({ editorId, x, y }) => {
+        return document.elementFromPoint(x, y)?.closest<HTMLElement>(".freeTextEditor")?.id !== editorId;
+      }, { editorId: snapshot.editorId, ...start }),
+    )
+    .toBe(true);
   await page.mouse.move(start.x, start.y);
   await page.mouse.down();
   await page.mouse.move(start.x + delta.x, start.y + delta.y, { steps: 8 });
