@@ -29,6 +29,7 @@
   import { DocumentSession } from "$lib/tabs/document-session";
   import { activeIdAfterClose, findTabIdByPath, moveTab, nextTabId, previousTabId } from "$lib/tabs/tab-state";
   import { installAppMenu, isTauriRuntime, type AppMenuControls } from "../lib/tauri/menu";
+  import { pdfPathsFromArgs } from "../lib/tauri/single-instance";
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -307,7 +308,7 @@
     loadPdfBytes,
     savePdfDocumentBytes,
     refreshAnnotationSidebar,
-    setCurrentPath: (path) => (currentPath = path),
+    setCurrentPath: updateActiveDocumentPath,
     setDirty: (dirty) => (isDirty = dirty),
     setBusy: (busy) => (isBusy = busy),
     setActiveTool: (tool) => (activeTool = tool),
@@ -422,6 +423,7 @@
       setTool,
       undo: () => (annotationEditorUIManager as { undo?: () => void } | null)?.undo?.(),
       redo: () => (annotationEditorUIManager as { redo?: () => void } | null)?.redo?.(),
+      openDroppedFilesForTest: openDroppedPdfPaths,
       tabs: {
         list: () =>
           documentSessions.map((session) => ({
@@ -470,15 +472,21 @@
     let unlistenClose: (() => void) | null = null;
     let unlistenDrop: (() => void) | null = null;
     let unlistenSingleInstance: (() => void) | null = null;
+    let fullscreenPollId: number | null = null;
     if (isTauriRuntime()) {
       const appWindow = getCurrentWindow();
       const syncFullscreen = () => {
         void appWindow
           .isFullscreen()
-          .then((value) => (isWindowFullscreen = value))
+          .then((value) => {
+            const fillsScreen =
+              window.innerWidth >= window.screen.width - 2 && window.innerHeight >= window.screen.height - 2;
+            isWindowFullscreen = value || fillsScreen;
+          })
           .catch(() => {});
       };
       syncFullscreen();
+      fullscreenPollId = window.setInterval(syncFullscreen, 250);
       void appWindow
         .onResized(() => syncFullscreen())
         .then((unlisten) => (unlistenResize = unlisten))
@@ -490,17 +498,14 @@
       void getCurrentWebview()
         .onDragDropEvent((event) => {
           if (event.payload.type !== "drop") return;
-          const paths = event.payload.paths.filter((path) => isPdfName(path));
-          void (async () => {
-            for (const path of paths) await openPdfFromPath(path);
-          })();
+          void openDroppedPdfPaths(event.payload.paths);
         })
         .then((unlisten) => (unlistenDrop = unlisten))
         .catch(() => {});
       // A second app launch forwards its argv PDF paths here (D11).
       void listen<string[]>("single-instance-open", (event) => {
         void (async () => {
-          for (const path of event.payload) await openPdfFromPath(path);
+          for (const path of pdfPathsFromArgs(event.payload)) await openPdfFromPath(path);
         })();
       })
         .then((unlisten) => (unlistenSingleInstance = unlisten))
@@ -511,6 +516,7 @@
       unlistenClose?.();
       unlistenDrop?.();
       unlistenSingleInstance?.();
+      if (fullscreenPollId !== null) window.clearInterval(fullscreenPollId);
       document.removeEventListener("keydown", handleTabSwitchKeys);
       containerResizeObserver.disconnect();
       pdfStageEl?.removeEventListener("mouseleave", clearRailHoverCue);
@@ -696,6 +702,11 @@
   function isPdfName(name: string) {
     return name.toLowerCase().endsWith(".pdf");
   }
+
+  async function openDroppedPdfPaths(paths: string[]) {
+    for (const path of paths.filter(isPdfName)) await openPdfFromPath(path);
+  }
+
   function onAppDragOver(event: DragEvent) {
     if (event.dataTransfer) event.preventDefault();
   }
@@ -966,6 +977,14 @@
     return session.label.split(/[\\/]/).pop() || session.label;
   }
 
+  function updateActiveDocumentPath(path: string) {
+    currentPath = path;
+    if (activeSession) {
+      activeSession.path = path;
+      activeSession.label = path;
+    }
+  }
+
   // Close a tab, prompting Save / Don't Save / Cancel when it has unsaved edits.
   async function requestCloseTab(id: string) {
     const session = documentSessions.find((entry) => entry.id === id);
@@ -1002,10 +1021,32 @@
   // Ctrl+Tab / Ctrl+Shift+Tab cycle Document Tabs (menu accelerators for Tab are
   // unreliable on macOS; Cmd+Shift+[ / ] are handled by the native menu).
   function handleTabSwitchKeys(event: KeyboardEvent) {
+    if (
+      !event.repeat &&
+      (event.metaKey || event.ctrlKey) &&
+      !event.shiftKey &&
+      !event.altKey &&
+      event.key.toLowerCase() === "w" &&
+      (activeSessionId !== null || isTauriRuntime())
+    ) {
+      event.preventDefault();
+      void requestCloseActiveTab();
+      return;
+    }
     if (event.ctrlKey && !event.metaKey && !event.altKey && event.key === "Tab") {
       if (documentSessions.length < 2) return;
       event.preventDefault();
       void showAdjacentTab(event.shiftKey ? -1 : 1);
+      return;
+    }
+    if (event.metaKey && event.shiftKey && !event.ctrlKey && !event.altKey) {
+      if (event.key === "]") {
+        event.preventDefault();
+        void showAdjacentTab(1);
+      } else if (event.key === "[") {
+        event.preventDefault();
+        void showAdjacentTab(-1);
+      }
     }
   }
 
@@ -4171,8 +4212,7 @@
         path,
         bytes: Array.from(saved),
       });
-      currentPath = path;
-      if (activeSession) activeSession.path = path;
+      updateActiveDocumentPath(path);
       isDirty = false;
       await refreshAnnotationSidebar();
       status = `Saved ${path}`;

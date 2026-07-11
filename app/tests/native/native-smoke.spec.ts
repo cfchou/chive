@@ -1,8 +1,10 @@
 import { browser, expect } from "@wdio/globals";
 import path from "node:path";
+import { Key } from "webdriverio";
 
 type WdioBrowser = {
   execute: <T, Arg = unknown>(script: (arg: Arg) => T | Promise<T>, arg?: Arg) => Promise<T>;
+  keys: (value: string | string[]) => Promise<void>;
   setWindowSize: (width: number, height: number) => Promise<void>;
   waitUntil: (
     condition: () => Promise<boolean>,
@@ -26,6 +28,13 @@ type OutlineEntry = {
   destinationStatus: string | null;
 };
 
+type DocumentTabSummary = {
+  id: string;
+  label: string;
+  path: string | null;
+  active: boolean;
+};
+
 const app = browser as unknown as WdioBrowser;
 const samplePdfPath = path.resolve(process.cwd(), "static/sample.pdf");
 const noOutlinePdfPath = path.resolve(process.cwd(), "static/no-outline.pdf");
@@ -40,6 +49,28 @@ async function waitForPdfSpike() {
       timeout: 30_000,
       timeoutMsg: "window.__pdfSpike was not initialized in native WKWebView",
     },
+  );
+}
+
+async function setNativeFullscreen(fullscreen: boolean) {
+  return app.execute(async (nextFullscreen) => {
+    type TauriInternals = { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
+    const tauriInternals = (window as Window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__;
+    if (!tauriInternals) throw new Error("window.__TAURI_INTERNALS__ is not available");
+    await tauriInternals.invoke("plugin:window|set_simple_fullscreen", { label: "main", value: nextFullscreen });
+    return true;
+  }, fullscreen);
+}
+
+async function emitTauriEventForTest(event: string, payload: unknown) {
+  await app.execute(
+    async ({ eventName, eventPayload }) => {
+      type TauriInternals = { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
+      const tauriInternals = (window as Window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__;
+      if (!tauriInternals) throw new Error("window.__TAURI_INTERNALS__ is not available");
+      await tauriInternals.invoke("plugin:event|emit", { event: eventName, payload: eventPayload });
+    },
+    { eventName: event, eventPayload: payload },
   );
 }
 
@@ -101,6 +132,150 @@ describe("native WKWebView PDF smoke", () => {
     expect(annotationState.freeTextCount).toBeGreaterThan(0);
     expect(annotationState.inkCount).toBeGreaterThan(0);
     expect(annotationState.usefulHighlight).toBe(true);
+  });
+
+  it("opens dropped Finder PDF paths as Document Tabs", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+
+    await app.execute(
+      async ({ firstPath, secondPath }) => {
+        await (window.__pdfSpike! as any).openDroppedFilesForTest([firstPath, secondPath]);
+      },
+      { firstPath: samplePdfPath, secondPath: noOutlinePdfPath },
+    );
+
+    await app.waitUntil(
+      async () =>
+        app.execute(({ firstPath, secondPath }) => {
+          const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+          return (
+            tabs.length === 2 &&
+            tabs.some((tab) => tab.path === firstPath && tab.label === firstPath && !tab.active) &&
+            tabs.some((tab) => tab.path === secondPath && tab.label === secondPath && tab.active)
+          );
+        }, { firstPath: samplePdfPath, secondPath: noOutlinePdfPath }),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native dropped PDF paths did not open as Document Tabs",
+      },
+    );
+
+    const renderedLabels = await app.execute(() =>
+      [...document.querySelectorAll<HTMLElement>(".doc-tab-label")].map((tab) => tab.textContent?.trim()),
+    );
+    expect(renderedLabels).toEqual(expect.arrayContaining(["sample.pdf", "no-outline.pdf"]));
+
+    await app.execute(async (filePath) => {
+      await (window.__pdfSpike! as any).openDroppedFilesForTest([filePath]);
+    }, samplePdfPath);
+
+    await app.waitUntil(
+      async () =>
+        app.execute((filePath) => {
+          const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+          return tabs.length === 2 && tabs.some((tab) => tab.path === filePath && tab.active);
+        }, samplePdfPath),
+      {
+        timeout: 10_000,
+        timeoutMsg: "duplicate dropped PDF path did not focus the existing Document Tab",
+      },
+    );
+  });
+
+  it("closes the Active Document Tab with Cmd+W and keeps the window open", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+
+    const opened = await app.execute(
+      async ({ firstPath, secondPath }) => {
+        const first = await window.__pdfSpike!.tabs.open(firstPath);
+        const second = await window.__pdfSpike!.tabs.open(secondPath);
+        return { first, second };
+      },
+      { firstPath: samplePdfPath, secondPath: noOutlinePdfPath },
+    );
+
+    await app.waitUntil(
+      async () =>
+        app.execute(({ first, second }) => {
+          const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+          return tabs.length === 2 && tabs.some((tab) => tab.id === first && !tab.active) && tabs.some((tab) => tab.id === second && tab.active);
+        }, opened),
+      { timeout: 30_000, timeoutMsg: "native Document Tabs did not open before Cmd+W" },
+    );
+
+    await app.keys([Key.Command, "w"]);
+
+    await app.waitUntil(
+      async () =>
+        app.execute(({ first, second }) => {
+          const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+          return tabs.length === 1 && tabs[0]?.id === first && tabs[0]?.active === true && !tabs.some((tab) => tab.id === second);
+        }, opened),
+      { timeout: 10_000, timeoutMsg: "Cmd+W did not close only the Active Document Tab" },
+    );
+  });
+
+  it("hides the Document Tab Bar in fullscreen while keyboard tab switching still works", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+
+    const opened = await app.execute(
+      async ({ firstPath, secondPath }) => {
+        const first = await window.__pdfSpike!.tabs.open(firstPath);
+        const second = await window.__pdfSpike!.tabs.open(secondPath);
+        return { first, second };
+      },
+      { firstPath: samplePdfPath, secondPath: noOutlinePdfPath },
+    );
+
+    try {
+      expect(await setNativeFullscreen(true)).toBe(true);
+      await app.waitUntil(
+        async () => app.execute(() => document.querySelector(".doc-tab-bar") === null),
+        { timeout: 10_000, timeoutMsg: "Document Tab Bar stayed mounted in fullscreen" },
+      );
+
+      await app.keys([Key.Command, Key.Shift, "]"]);
+      await app.waitUntil(
+        async () =>
+          app.execute(({ first }) => window.__pdfSpike!.tabs.list().some((tab: DocumentTabSummary) => tab.id === first && tab.active), opened),
+        { timeout: 10_000, timeoutMsg: "Cmd+Shift+] did not switch Document Tabs in fullscreen" },
+      );
+    } finally {
+      await setNativeFullscreen(false);
+    }
+  });
+
+  it("opens second-launch PDF paths in the existing window", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+
+    await emitTauriEventForTest("single-instance-open", [samplePdfPath, noOutlinePdfPath]);
+
+    await app.waitUntil(
+      async () =>
+        app.execute(({ firstPath, secondPath }) => {
+          const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+          return (
+            tabs.length === 2 &&
+            tabs.some((tab) => tab.path === firstPath && tab.label === firstPath && !tab.active) &&
+            tabs.some((tab) => tab.path === secondPath && tab.label === secondPath && tab.active)
+          );
+        }, { firstPath: samplePdfPath, secondPath: noOutlinePdfPath }),
+      { timeout: 30_000, timeoutMsg: "second-launch PDF paths did not open as Document Tabs" },
+    );
+
+    await emitTauriEventForTest("single-instance-open", [samplePdfPath]);
+    await app.waitUntil(
+      async () =>
+        app.execute((filePath) => {
+          const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+          return tabs.length === 2 && tabs.some((tab) => tab.path === filePath && tab.active);
+        }, samplePdfPath),
+      { timeout: 10_000, timeoutMsg: "duplicate second-launch path did not focus the existing Document Tab" },
+    );
   });
 
   it("locates persisted ink rows independently after adjacent ink clicks", async () => {

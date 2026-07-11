@@ -41,6 +41,14 @@ test.describe("unsaved-changes close prompt", () => {
     await expect(page.locator("[data-doc-tab]")).toHaveCount(2);
   });
 
+  test("the unsaved-changes dialog describes the affected Document Tab", async ({ page }) => {
+    await openTwoTabsWithDirtySecond(page);
+    await closeActiveTab(page);
+
+    await expect(modal(page)).toHaveAttribute("aria-describedby", "unsaved-message");
+    await expect(page.locator("#unsaved-message")).toHaveText("Do you want to save the changes made to “second.pdf”?" );
+  });
+
   test("Don't Save discards and closes the tab", async ({ page }) => {
     await openTwoTabsWithDirtySecond(page);
     await closeActiveTab(page);
@@ -77,5 +85,22 @@ test.describe("unsaved-changes close prompt", () => {
     );
     await waitForPageReady(page);
     await expect(tabs.nth(0).locator(".doc-tab-main")).toHaveAttribute("aria-selected", "true");
+  });
+
+  test("Ctrl+W without an Active Document Tab leaves the browser shortcut alone", async ({ page }) => {
+    await openApp(page);
+
+    const result = await page.evaluate(() => {
+      const event = new KeyboardEvent("keydown", {
+        key: "w",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const dispatched = document.dispatchEvent(event);
+      return { dispatched, defaultPrevented: event.defaultPrevented };
+    });
+
+    expect(result).toEqual({ dispatched: true, defaultPrevented: false });
   });
 });

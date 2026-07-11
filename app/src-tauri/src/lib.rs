@@ -39,6 +39,21 @@ fn backup_path(target: &Path) -> PathBuf {
     target.with_extension(format!("{extension}.bak"))
 }
 
+#[cfg(desktop)]
+fn handle_second_instance(app: &tauri::AppHandle, argv: Vec<String>) {
+    use tauri::{Emitter, Manager};
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_focus();
+    }
+    let pdf_paths: Vec<String> = argv
+        .into_iter()
+        .filter(|arg| arg.to_lowercase().ends_with(".pdf"))
+        .collect();
+    if !pdf_paths.is_empty() {
+        let _ = app.emit("single-instance-open", pdf_paths);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -48,17 +63,7 @@ pub fn run() {
     // to the frontend, which opens/focuses them as Document Tabs (D11).
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-        use tauri::{Emitter, Manager};
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.set_focus();
-        }
-        let pdf_paths: Vec<String> = argv
-            .into_iter()
-            .filter(|arg| arg.to_lowercase().ends_with(".pdf"))
-            .collect();
-        if !pdf_paths.is_empty() {
-            let _ = app.emit("single-instance-open", pdf_paths);
-        }
+        handle_second_instance(app, argv);
     }));
 
     let builder = builder

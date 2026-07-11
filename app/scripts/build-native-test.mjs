@@ -11,7 +11,11 @@ const capability = {
   identifier: 'wdio-test',
   description: 'Test-only capability for WDIO Tauri smoke tests',
   windows: ['main'],
-  permissions: ['wdio:default', 'wdio-webdriver:default']
+  permissions: [
+    'wdio:default',
+    'wdio-webdriver:default',
+    'core:window:allow-set-simple-fullscreen'
+  ]
 };
 
 async function run() {

@@ -27,9 +27,16 @@
 <svelte:window onkeydown={onKeydown} />
 
 <div class="modal-backdrop">
-  <div class="modal" role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="unsaved-title">
+  <div
+    class="modal"
+    role="dialog"
+    tabindex="-1"
+    aria-modal="true"
+    aria-labelledby="unsaved-title"
+    aria-describedby="unsaved-message"
+  >
     <h2 id="unsaved-title">Save changes?</h2>
-    <p>Do you want to save the changes made to “{label}”?</p>
+    <p id="unsaved-message">Do you want to save the changes made to “{label}”?</p>
     <div class="modal-actions">
       <button class="btn primary" type="button" data-modal-save bind:this={saveButton} onclick={onSave}>
         Save
@@ -57,7 +64,7 @@
     background: var(--bg);
     color: var(--fg);
     border: 1px solid var(--border);
-    box-shadow: 0 12px 40px rgb(0 0 0 / 0.25);
+    box-shadow: var(--elev-raised);
   }
   .modal h2 {
     margin: 0 0 var(--space-2);
@@ -84,9 +91,12 @@
     cursor: default;
   }
   .btn.primary {
-    background: var(--accent, #2563eb);
+    background: var(--accent);
     border-color: transparent;
-    color: #fff;
+    color: var(--accent-on);
+  }
+  .btn.primary:hover {
+    background: var(--accent-hover);
   }
   .btn:focus-visible {
     outline: none;
