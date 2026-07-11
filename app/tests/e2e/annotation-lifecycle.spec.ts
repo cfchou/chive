@@ -84,7 +84,7 @@ async function enterNewFreeTextEditing(page: Page, text: string) {
   await page.keyboard.press("Enter");
   await expect
     .poll(() => editableFreeTextSnapshot(page, text))
-    .toMatchObject({ internalText: text, isEditable: true, isFocused: true });
+    .toMatchObject({ internalText: text, isEditable: true, isFocused: true, isSelected: true });
   return selectedEditableFreeText(page, text);
 }
 
