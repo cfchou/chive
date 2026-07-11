@@ -7,6 +7,7 @@ import {
   isUsableAbortSignal,
   managerHasValidSignal,
   selectEditorIgnoringPdfjsSignalBug,
+  translateSelectedEditorsByClientDelta,
   unselectAllIgnoringPdfjsSignalBug,
   type AnnotationEditor,
   type AnnotationEditorUIManager,
@@ -120,5 +121,56 @@ describe("pdf.js quirk workarounds", () => {
     assert.equal(guards.annotationKindForEditor(editor({ editorType: 3 })), "freetext");
     assert.equal(guards.annotationKindForEditor(editor({ editorType: "ink" })), "ink");
     assert.equal(guards.annotationKindForEditor(editor({ editorType: 999 })), null);
+  });
+
+  it("converts incremental client-pixel deltas to page units before translating without commit", () => {
+    const calls: [number, number, boolean | undefined][] = [];
+    const target = editor({ id: "selected" });
+    const scaled = manager({
+      firstSelectedEditor: target,
+      translateSelectedEditors: (dx: number, dy: number, noCommit?: boolean) => calls.push([dx, dy, noCommit]),
+      viewParameters: { realScale: 2 },
+    });
+    assert.equal(translateSelectedEditorsByClientDelta(scaled, "selected", 18, -10), true);
+    assert.deepEqual(calls, [[9, -5, true]]);
+
+    const fractionalScale = manager({
+      firstSelectedEditor: target,
+      translateSelectedEditors: (dx: number, dy: number, noCommit?: boolean) => calls.push([dx, dy, noCommit]),
+      viewParameters: { realScale: 1.25 },
+    });
+    assert.equal(translateSelectedEditorsByClientDelta(fractionalScale, "selected", -5, 7.5), true);
+    assert.deepEqual(calls.at(-1), [-4, 6, true]);
+  });
+
+  it("rejects invalid or missing movement prerequisites without translating", () => {
+    const calls: unknown[][] = [];
+    const target = editor({ id: "selected" });
+    for (const realScale of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const candidate = manager({
+        firstSelectedEditor: target,
+        translateSelectedEditors: (...args: unknown[]) => calls.push(args),
+        viewParameters: { realScale },
+      });
+      assert.equal(translateSelectedEditorsByClientDelta(candidate, "selected", 8, 4), false);
+    }
+    assert.equal(
+      translateSelectedEditorsByClientDelta(manager({ firstSelectedEditor: target, viewParameters: { realScale: 1 } }), "selected", 8, 4),
+      false,
+    );
+    assert.deepEqual(calls, []);
+  });
+
+  it("rejects an editor-ID mismatch without translating", () => {
+    let translated = false;
+    const candidate = manager({
+      firstSelectedEditor: editor({ id: "other-editor" }),
+      translateSelectedEditors: () => {
+        translated = true;
+      },
+      viewParameters: { realScale: 1 },
+    });
+    assert.equal(translateSelectedEditorsByClientDelta(candidate, "expected-editor", 8, 4), false);
+    assert.equal(translated, false);
   });
 });

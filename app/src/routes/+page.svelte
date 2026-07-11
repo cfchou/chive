@@ -25,6 +25,8 @@
     type SidebarWidths,
   } from "../lib/ui/sidebar-resize";
   import { tabMeta } from "../lib/ui/tab-meta";
+  import { hasPointerDragStarted } from "../lib/ui/pointer-drag";
+  import { incrementalFreeTextClientDelta, isFreeTextMoveGripHit } from "../lib/pdf/free-text-move";
   import { createLocalStoragePersistence } from "$lib/persistence/app-persistence";
   import { DocumentSession } from "$lib/tabs/document-session";
   import { activeIdAfterClose, findTabIdByPath, moveTab, nextTabId, previousTabId } from "$lib/tabs/tab-state";
@@ -70,6 +72,7 @@
     managerHasValidSignal,
     normalizeFreeTextEditorLines,
     selectEditorIgnoringPdfjsSignalBug,
+    translateSelectedEditorsByClientDelta,
     unselectAllIgnoringPdfjsSignalBug as unselectAllForManagerIgnoringSignalBug,
     type AnnotationEditor,
     type AnnotationEditorLayerRef,
@@ -194,6 +197,19 @@
   const activeSession = $derived(
     activeSessionId ? (documentSessions.find((session) => session.id === activeSessionId) ?? null) : null,
   );
+  type FreeTextMoveSession = {
+    pointerId: number;
+    editorId: string;
+    manager: AnnotationEditorUIManager;
+    documentSession: DocumentSession;
+    start: { clientX: number; clientY: number };
+    last: { clientX: number; clientY: number };
+    thresholdCrossed: boolean;
+    moved: boolean;
+  };
+  // Pointermove updates are intentionally non-reactive; the shell only needs
+  // observable state after a completed free-text move.
+  let freeTextMoveSession: FreeTextMoveSession | null = null;
 
   // Document Tab Bar view-model + titlebar state. In fullscreen the traffic
   // lights auto-hide and (D10) the whole bar hides; keyboard switching still
@@ -512,6 +528,7 @@
         .catch(() => {});
     }
     return () => {
+      endFreeTextMoveSession();
       unlistenResize?.();
       unlistenClose?.();
       unlistenDrop?.();
@@ -875,6 +892,7 @@
     if (id === activeSessionId) return;
     const next = documentSessions.find((session) => session.id === id);
     if (!next) return;
+    endFreeTextMoveSession();
     // Defensive: drop any editor selection on the outgoing manager before we
     // re-point refs (pdfjs-quirks stale-signal guard).
     unselectAllIgnoringPdfjsSignalBug();
@@ -919,6 +937,7 @@
   async function closeTab(id: string): Promise<"closed"> {
     const session = documentSessions.find((entry) => entry.id === id);
     if (!session) return "closed";
+    if (freeTextMoveSession?.documentSession === session) endFreeTextMoveSession();
     const nextActiveId = activeIdAfterClose(
       documentSessions.map((entry) => entry.id),
       id,
@@ -1073,6 +1092,7 @@
     label: string,
     options: { newTab?: boolean; path?: string | null } = {},
   ) {
+    endFreeTextMoveSession();
     const { newTab = false, path = null } = options;
     const loadingTask = pdfjsLib.getDocument({ data: bytes, wasmUrl: pdfjsWasmUrl });
     const nextDocument = await loadingTask.promise;
@@ -3351,6 +3371,118 @@
     event.stopImmediatePropagation();
   }
 
+  function editableFreeTextMoveTarget(editorId: string) {
+    const editorElement = activeElementById(editorId);
+    if (!editorElement?.matches(".freeTextEditor.selectedEditor")) return null;
+    const internal = editorElement.querySelector<HTMLElement>(
+      ".internal[contenteditable='true'], [contenteditable='true']",
+    );
+    if (!internal?.isContentEditable) return null;
+    return { editorElement, internal };
+  }
+
+  function freeTextMoveSessionIsCurrent(session: FreeTextMoveSession) {
+    return (
+      freeTextMoveSession === session &&
+      activeSession === session.documentSession &&
+      annotationEditorUIManager === session.manager &&
+      session.documentSession.annotationEditorUIManager === session.manager &&
+      session.manager.firstSelectedEditor?.id === session.editorId
+    );
+  }
+
+  function endFreeTextMoveSession(refreshAfterMove = false) {
+    const session = freeTextMoveSession;
+    if (!session) return;
+    const shouldRefresh = refreshAfterMove && session.moved && freeTextMoveSessionIsCurrent(session);
+    freeTextMoveSession = null;
+    window.removeEventListener("pointermove", handleFreeTextMovePointerMove, { capture: true });
+    window.removeEventListener("pointerup", handleFreeTextMovePointerUp, { capture: true });
+    window.removeEventListener("pointercancel", handleFreeTextMovePointerCancel, { capture: true });
+    if (shouldRefresh) {
+      syncSelectedEditorState();
+      void refreshAnnotationSidebar();
+    }
+  }
+
+  function startFreeTextMoveSession(event: PointerEvent) {
+    if (event.button !== 0 || !event.isPrimary) return false;
+    const manager = annotationEditorUIManager;
+    const documentSession = activeSession;
+    const selectedEditor = manager?.firstSelectedEditor;
+    if (
+      !manager ||
+      !documentSession ||
+      documentSession.annotationEditorUIManager !== manager ||
+      !isFreeTextEditor(selectedEditor)
+    ) {
+      return false;
+    }
+    const target = editableFreeTextMoveTarget(selectedEditor.id);
+    if (!target || !isFreeTextMoveGripHit(target.editorElement.getBoundingClientRect(), event.clientX, event.clientY)) {
+      return false;
+    }
+    endFreeTextMoveSession();
+    freeTextMoveSession = {
+      pointerId: event.pointerId,
+      editorId: selectedEditor.id,
+      manager,
+      documentSession,
+      start: { clientX: event.clientX, clientY: event.clientY },
+      last: { clientX: event.clientX, clientY: event.clientY },
+      thresholdCrossed: false,
+      moved: false,
+    };
+    window.addEventListener("pointermove", handleFreeTextMovePointerMove, { capture: true });
+    window.addEventListener("pointerup", handleFreeTextMovePointerUp, { capture: true });
+    window.addEventListener("pointercancel", handleFreeTextMovePointerCancel, { capture: true });
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return true;
+  }
+
+  function handleFreeTextMovePointerMove(event: PointerEvent) {
+    const session = freeTextMoveSession;
+    if (!session || event.pointerId !== session.pointerId) return;
+    if (!freeTextMoveSessionIsCurrent(session)) {
+      endFreeTextMoveSession();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (!session.thresholdCrossed) {
+      if (!hasPointerDragStarted(session.start, event)) return;
+      session.thresholdCrossed = true;
+    }
+    const target = editableFreeTextMoveTarget(session.editorId);
+    if (!target) {
+      endFreeTextMoveSession();
+      return;
+    }
+    const delta = incrementalFreeTextClientDelta(session.last, event);
+    if (delta.clientDx === 0 && delta.clientDy === 0) return;
+    target.internal.focus({ preventScroll: true });
+    if (!translateSelectedEditorsByClientDelta(session.manager, session.editorId, delta.clientDx, delta.clientDy)) {
+      endFreeTextMoveSession();
+      return;
+    }
+    session.last = { clientX: event.clientX, clientY: event.clientY };
+    session.moved = true;
+    isDirty = true;
+  }
+
+  function handleFreeTextMovePointerUp(event: PointerEvent) {
+    const session = freeTextMoveSession;
+    if (!session || event.pointerId !== session.pointerId) return;
+    endFreeTextMoveSession(freeTextMoveSessionIsCurrent(session));
+  }
+
+  function handleFreeTextMovePointerCancel(event: PointerEvent) {
+    const session = freeTextMoveSession;
+    if (!session || event.pointerId !== session.pointerId) return;
+    endFreeTextMoveSession(freeTextMoveSessionIsCurrent(session));
+  }
+
   function handlePdfPointerDown(event: PointerEvent) {
     const target = event.target;
     if (!(target instanceof Element)) {
@@ -3367,6 +3499,9 @@
     const editableEditor = target.closest<HTMLElement>(".highlightEditor:not(.disabled), .freeTextEditor, .inkEditor");
     if (target.closest(".editToolbar")) {
       queueEditorStateRefresh(0, 100, 250);
+      return;
+    }
+    if (startFreeTextMoveSession(event)) {
       return;
     }
     const clickedEntry = annotationEntryForPointerTarget(target, event.clientX, event.clientY);
@@ -4146,14 +4281,15 @@
     return selection?.toString() ?? "";
   }
 
-  function moveSelectedAnnotation(x: number, y: number) {
-    if (!annotationEditorUIManager?.firstSelectedEditor) {
+  function moveSelectedAnnotation(clientDx: number, clientDy: number) {
+    const manager = annotationEditorUIManager;
+    const selectedEditor = manager?.firstSelectedEditor;
+    if (!manager || !selectedEditor) {
       return false;
     }
-    const movableManager = annotationEditorUIManager as AnnotationEditorUIManager & {
-      translateSelectedEditors?: (x: number, y: number, noCommit?: boolean) => void;
-    };
-    movableManager.translateSelectedEditors?.(x, y, true);
+    // Debug API inputs are incremental client/CSS pixels, matching browser
+    // pointer deltas rather than pdf.js's private page-unit coordinates.
+    if (!translateSelectedEditorsByClientDelta(manager, selectedEditor.id, clientDx, clientDy)) return false;
     syncSelectedEditorState();
     isDirty = true;
     void refreshAnnotationSidebar();
@@ -4347,6 +4483,7 @@
   // Destroys that session's document and empties its viewer DOM; does not touch
   // the shell's scalar state or the documentSessions list.
   function teardownSessionViewer(session: DocumentSession) {
+    if (freeTextMoveSession?.documentSession === session) endFreeTextMoveSession();
     unselectAllIgnoringPdfjsSignalBug(session.annotationEditorUIManager);
     session.pdfViewer?.setDocument(null as never);
     (session.pdfDocument as { destroy?: () => void } | null)?.destroy?.();
@@ -4402,7 +4539,6 @@
   // ---- Official-app shell: dock state, tab drag-docking, header ----
 
   const EDGE_DOCK_PX = 38;
-  const DRAG_START_PX = 4;
   const dockSides: SidebarSide[] = ["left", "right"];
 
   let dock = $state(createDefaultDockState());
@@ -4524,11 +4660,7 @@
   function handleDragPointerMove(event: PointerEvent) {
     if (!dragSession) return;
     if (!dragSession.started) {
-      const distance = Math.hypot(
-        event.clientX - dragSession.startX,
-        event.clientY - dragSession.startY,
-      );
-      if (distance < DRAG_START_PX) return;
+      if (!hasPointerDragStarted({ clientX: dragSession.startX, clientY: dragSession.startY }, event)) return;
       dragSession.started = true;
       draggingTab = dragSession.tab;
     }
@@ -5346,6 +5478,25 @@
   :global(.annotationEditorLayer :is(.freeTextEditor, .inkEditor, .stampEditor, .signatureEditor).selectedEditor) {
     border: 1px dashed #2387d8 !important;
     outline: 0 !important;
+  }
+
+  /* The grip is visual-only. Route-level coordinate hit testing owns movement
+     behavior so Chromium and WKWebView need not agree on pseudo-element hits. */
+  :global(.annotationEditorLayer .freeTextEditor.selectedEditor:has(.internal[contenteditable='true'])::after) {
+    content: "";
+    position: absolute;
+    top: -6px;
+    left: -6px;
+    z-index: 2;
+    box-sizing: border-box;
+    width: 14px;
+    height: 14px;
+    /* Show only the exterior corner, leaving editable text unobstructed. */
+    clip-path: inset(0 50% 50% 0);
+    border: 1px solid #2387d8;
+    border-radius: 3px;
+    background: radial-gradient(circle, #2387d8 1px, transparent 1.5px) 0 0 / 4px 4px;
+    pointer-events: none;
   }
 
   :global(.annotationEditorLayer :is(.freeTextEditor, .inkEditor, .stampEditor, .signatureEditor).selectedEditor::before) {

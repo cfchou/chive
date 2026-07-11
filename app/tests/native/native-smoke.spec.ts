@@ -1,6 +1,7 @@
 import { browser, expect } from "@wdio/globals";
 import path from "node:path";
 import { Key } from "webdriverio";
+import { FREE_TEXT_MOVE_GRIP_INSET_PX, FREE_TEXT_MOVE_GRIP_SIZE_PX } from "../../src/lib/pdf/free-text-move";
 
 type WdioBrowser = {
   execute: <T, Arg = unknown>(script: (arg: Arg) => T | Promise<T>, arg?: Arg) => Promise<T>;
@@ -41,6 +42,7 @@ const noOutlinePdfPath = path.resolve(process.cwd(), "static/no-outline.pdf");
 const brokenOutlinePdfPath = path.resolve(process.cwd(), "static/broken-outline.pdf");
 const coloredOutlinePdfPath = path.resolve(process.cwd(), "static/colored-outline.pdf");
 const bookmarkPdfPath = "/tmp/pdfspike-native-bookmark.pdf";
+const freeTextGripPdfPath = "/tmp/pdfspike-native-free-text-grip.pdf";
 
 async function waitForPdfSpike() {
   await app.waitUntil(
@@ -75,6 +77,217 @@ async function emitTauriEventForTest(event: string, payload: unknown) {
 }
 
 describe("native WKWebView PDF smoke", () => {
+  it("supports W3C pointer actions against the native Zoom in control", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+    const control = await app.execute(async (filePath) => {
+      await window.__pdfSpike!.loadPath(filePath);
+      const button = document.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]');
+      if (!button) throw new Error("Native Zoom in button not found");
+      const rect = button.getBoundingClientRect();
+      return {
+        before: document.querySelector(".zoom-value")?.textContent?.trim() ?? "",
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+      };
+    }, samplePdfPath);
+
+    await browser
+      .action("pointer", { parameters: { pointerType: "mouse" } })
+      .move({ origin: "viewport", x: control.x, y: control.y })
+      .down({ button: 0 })
+      .up({ button: 0 })
+      .perform();
+
+    await app.waitUntil(
+      async () => app.execute((before) => (document.querySelector(".zoom-value")?.textContent?.trim() ?? "") !== before, control.before),
+      { timeout: 10_000, timeoutMsg: "W3C pointer action did not activate native Zoom in" },
+    );
+  });
+
+  // The embedded driver can click a simple control with W3C actions (the spike
+  // above), but does not deliver a usable free-text drag sequence to route
+  // capture. This synthetic fallback still exercises WKWebView propagation,
+  // grip geometry, manager identity checks, scale conversion, and translation.
+  it("moves editable free text with synthetic pointer events and persists its text and geometry", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+    const initialText = "Native W3C free-text grip";
+    await app.execute(async (filePath) => window.__pdfSpike!.loadPath(filePath), samplePdfPath);
+    await app.waitUntil(
+      async () => app.execute(() => Number(window.__pdfSpike!.stats().pages ?? 0) > 0),
+      { timeout: 30_000, timeoutMsg: "Native sample PDF did not render before free-text creation" },
+    );
+    expect(await app.execute(async (text) => window.__pdfSpike!.createPageFreeText(text), initialText)).toBe(true);
+    await app.waitUntil(
+      async () =>
+        app.execute((text) =>
+          (window.__pdfSpike!.annotationSidebarSummary() as Array<AnnotationEntry & { source?: string }>).some(
+            (candidate) => candidate.kind === "freetext" && candidate.source === "live" && candidate.detail.includes(text),
+          ),
+        initialText),
+      { timeout: 10_000, timeoutMsg: "New live free-text Annotation Sidebar Entry did not appear" },
+    );
+    const activated = await app.execute(async (text) => {
+      const entry = (window.__pdfSpike!.annotationSidebarSummary() as Array<AnnotationEntry & { source?: string }>).find(
+        (candidate) => candidate.kind === "freetext" && candidate.source === "live" && candidate.detail.includes(text),
+      );
+      if (!entry) throw new Error("New live free-text Annotation Sidebar Entry not found");
+      const activatedEditor = await window.__pdfSpike!.activateAnnotationBySourceId(entry.sourceId);
+      const root = document.getElementById(entry.sourceId);
+      if (!(root instanceof HTMLElement)) throw new Error("New live free-text editor root not found");
+      root.focus();
+      return activatedEditor;
+    }, initialText);
+    expect(activated).toBe(true);
+
+    await app.keys(Key.Enter);
+    await app.waitUntil(
+      async () =>
+        app.execute((text) => {
+          const internal = [...document.querySelectorAll<HTMLElement>(".freeTextEditor .internal")].find(
+            (element) => element.isContentEditable && element.innerText.replace(/\s+/g, " ").includes(text),
+          );
+          return Boolean(internal?.contains(document.activeElement));
+        }, initialText),
+      { timeout: 10_000, timeoutMsg: "Native free-text editor did not enter editable mode" },
+    );
+
+    const before = await app.execute(({ text, inset, size }) => {
+      const internal = [...document.querySelectorAll<HTMLElement>(".freeTextEditor .internal")].find(
+        (element) => element.isContentEditable && element.innerText.replace(/\s+/g, " ").includes(text),
+      );
+      const root = internal?.closest<HTMLElement>(".freeTextEditor");
+      if (!root?.id || !internal) throw new Error("Editable native free-text editor not found");
+      const rect = root.getBoundingClientRect();
+      const offset = inset + size * 0.8;
+      const grip = {
+        x: Math.round(rect.left + offset),
+        y: Math.round(rect.top + offset),
+      };
+      return {
+        editorId: root.id,
+        grip,
+        gripTargetsEditor: document.elementFromPoint(grip.x, grip.y)?.closest<HTMLElement>(".freeTextEditor")?.id === root.id,
+        rect: { left: rect.left, top: rect.top },
+      };
+    }, { text: initialText, inset: FREE_TEXT_MOVE_GRIP_INSET_PX, size: FREE_TEXT_MOVE_GRIP_SIZE_PX });
+    expect(before.gripTargetsEditor).toBe(true);
+    const delta = { x: 40, y: 24 };
+
+    await app.execute(({ start, movement }) => {
+      const target = document.elementFromPoint(start.x, start.y);
+      if (!target) throw new Error("Native synthetic grip coordinate has no event target");
+      const dispatch = (eventTarget: EventTarget, type: string, clientX: number, clientY: number, buttons: number) => {
+        eventTarget.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            button: 0,
+            buttons,
+            cancelable: true,
+            clientX,
+            clientY,
+            composed: true,
+            isPrimary: true,
+            pointerId: 71,
+            pointerType: "mouse",
+          }),
+        );
+      };
+      dispatch(target, "pointerdown", start.x, start.y, 1);
+      dispatch(window, "pointermove", start.x + movement.x / 2, start.y + movement.y / 2, 1);
+      dispatch(window, "pointermove", start.x + movement.x, start.y + movement.y, 1);
+      dispatch(window, "pointerup", start.x + movement.x, start.y + movement.y, 0);
+    }, { start: before.grip, movement: delta });
+
+    const moved = await app.waitUntil(
+      async () =>
+        app.execute(({ editorId, expectedText, prior, expectedDelta }) => {
+          const root = document.getElementById(editorId);
+          const internal = root?.querySelector<HTMLElement>(".internal[contenteditable='true'], [contenteditable='true']");
+          if (!(root instanceof HTMLElement) || !internal?.isContentEditable) return false;
+          const rect = root.getBoundingClientRect();
+          return (
+            Math.abs((rect.left - prior.left) - expectedDelta.x) < 2 &&
+            Math.abs((rect.top - prior.top) - expectedDelta.y) < 2 &&
+            internal.contains(document.activeElement) &&
+            internal.innerText.replace(/\s+/g, " ").includes(expectedText)
+          );
+        }, { editorId: before.editorId, expectedText: initialText, prior: before.rect, expectedDelta: delta }),
+      { timeout: 10_000, timeoutMsg: "Native synthetic grip drag did not move editable free text" },
+    );
+    expect(moved).toBe(true);
+
+    const appended = await app.execute(({ editorId, text }) => {
+      const internal = document.getElementById(editorId)?.querySelector<HTMLElement>(".internal[contenteditable='true']");
+      if (!internal) throw new Error("Moved native free-text content lost editability before typing");
+      internal.focus();
+      const line = internal.lastElementChild ?? internal;
+      line.append(document.createTextNode(text));
+      internal.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          data: text,
+          inputType: "insertText",
+        }),
+      );
+      return internal.innerText.replace(/\s+/g, " ");
+    }, { editorId: before.editorId, text: " native persisted" });
+    expect(appended).toContain("native persisted");
+    await app.execute((editorId) => {
+      const internal = document.getElementById(editorId)?.querySelector<HTMLElement>(".internal[contenteditable='true']");
+      if (!internal) throw new Error("Moved native free-text content lost editability before commit");
+      internal.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          key: "Enter",
+        }),
+      );
+    }, before.editorId);
+    await app.execute(async (outputPath) => {
+      await window.__pdfSpike!.saveToPath(outputPath);
+      await window.__pdfSpike!.loadPath(outputPath);
+    }, freeTextGripPdfPath);
+    await app.waitUntil(
+      async () => app.execute(() => Number(window.__pdfSpike!.stats().pages ?? 0) > 0),
+      { timeout: 30_000, timeoutMsg: "Native free-text PDF did not reopen" },
+    );
+
+    const saved = await app.execute(async () => {
+      const annotations = await window.__pdfSpike!.annotationSummary();
+      return annotations
+        .flatMap((page: { annotations: Array<{ rect?: number[] | null; subtype?: string | null; textContent?: string[] | null }> }) => page.annotations)
+        .filter(
+          (annotation: { rect?: number[] | null; subtype?: string | null; textContent?: string[] | null }) =>
+            annotation.subtype === "FreeText" && (annotation.textContent ?? []).join(" ").includes("native persisted"),
+        );
+    });
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.rect).toBeTruthy();
+    const savedGeometry = saved[0]?.rect;
+
+    await app.execute(async (outputPath) => window.__pdfSpike!.loadPath(outputPath), freeTextGripPdfPath);
+    await app.waitUntil(
+      async () => app.execute(() => Number(window.__pdfSpike!.stats().pages ?? 0) > 0),
+      { timeout: 30_000, timeoutMsg: "Native free-text PDF did not reopen a second time" },
+    );
+    const reopened = await app.execute(async () => {
+      const annotations = await window.__pdfSpike!.annotationSummary();
+      return annotations
+        .flatMap((page: { annotations: Array<{ rect?: number[] | null; subtype?: string | null; textContent?: string[] | null }> }) => page.annotations)
+        .filter(
+          (annotation: { rect?: number[] | null; subtype?: string | null; textContent?: string[] | null }) =>
+            annotation.subtype === "FreeText" && (annotation.textContent ?? []).join(" ").includes("native persisted"),
+        );
+    });
+    expect(reopened).toHaveLength(1);
+    expect(reopened[0]?.rect).toEqual(savedGeometry);
+  });
+
   it("loads a PDF, extracts sidebar text, and creates annotation state", async () => {
     await waitForPdfSpike();
     await app.setWindowSize(1280, 900);

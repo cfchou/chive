@@ -50,8 +50,10 @@ export type AnnotationEditorUIManager = {
   highlightSelection: (methodOfCreation?: string, comment?: boolean) => void;
   isDeletedAnnotationElement?: (annotationElementId: string) => boolean;
   setSelected: (editor: AnnotationEditor) => void;
+  translateSelectedEditors?: (dx: number, dy: number, noCommit?: boolean) => void;
   unselectAll: () => void;
   updateParams: (type: number, value: unknown) => void;
+  viewParameters?: { realScale?: number };
 };
 
 // The app-level annotation tool selection; editorModes in the page maps each
@@ -120,6 +122,30 @@ export function unselectAllIgnoringPdfjsSignalBug(manager: AnnotationEditorUIMan
       throw error;
     }
   }
+}
+
+// translateSelectedEditors is a private pdf.js API whose arguments are PDF
+// page units. Keep client/CSS-pixel callers behind this conversion boundary so
+// UI pointer deltas remain scale-correct.
+export function translateSelectedEditorsByClientDelta(
+  manager: AnnotationEditorUIManager | null | undefined,
+  expectedEditorId: string,
+  clientDx: number,
+  clientDy: number,
+) {
+  const realScale = manager?.viewParameters?.realScale;
+  if (
+    !manager ||
+    !Number.isFinite(realScale) ||
+    !realScale ||
+    realScale < 0 ||
+    manager.firstSelectedEditor?.id !== expectedEditorId ||
+    typeof manager.translateSelectedEditors !== "function"
+  ) {
+    return false;
+  }
+  manager.translateSelectedEditors(clientDx / realScale, clientDy / realScale, true);
+  return true;
 }
 
 // pdf.js FreeTextEditor#extractText assumes the contenteditable holds one
