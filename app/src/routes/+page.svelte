@@ -204,6 +204,8 @@
     documentSession: DocumentSession;
     start: { clientX: number; clientY: number };
     last: { clientX: number; clientY: number };
+    appliedClientDelta: { x: number; y: number };
+    dirtyBeforeMove: boolean;
     thresholdCrossed: boolean;
     moved: boolean;
   };
@@ -3443,6 +3445,8 @@
       documentSession: grip.documentSession,
       start: { clientX: event.clientX, clientY: event.clientY },
       last: { clientX: event.clientX, clientY: event.clientY },
+      appliedClientDelta: { x: 0, y: 0 },
+      dirtyBeforeMove: isDirty,
       thresholdCrossed: false,
       moved: false,
     };
@@ -3480,6 +3484,8 @@
       return;
     }
     session.last = { clientX: event.clientX, clientY: event.clientY };
+    session.appliedClientDelta.x += delta.clientDx;
+    session.appliedClientDelta.y += delta.clientDy;
     session.moved = true;
     isDirty = true;
   }
@@ -3493,7 +3499,22 @@
   function handleFreeTextMovePointerCancel(event: PointerEvent) {
     const session = freeTextMoveSession;
     if (!session || event.pointerId !== session.pointerId) return;
-    endFreeTextMoveSession(freeTextMoveSessionIsCurrent(session));
+    if (!freeTextMoveSessionIsCurrent(session)) {
+      endFreeTextMoveSession();
+      return;
+    }
+    const target = editableFreeTextMoveTarget(session.editorId);
+    const { x, y } = session.appliedClientDelta;
+    if (
+      !target ||
+      ((x !== 0 || y !== 0) && !translateSelectedEditorsByClientDelta(session.manager, session.editorId, -x, -y))
+    ) {
+      endFreeTextMoveSession();
+      return;
+    }
+    target.internal.focus({ preventScroll: true });
+    isDirty = session.dirtyBeforeMove;
+    endFreeTextMoveSession();
   }
 
   function handlePdfPointerDown(event: PointerEvent) {

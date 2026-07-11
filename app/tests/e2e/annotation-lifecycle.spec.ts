@@ -65,6 +65,14 @@ async function selectedEditableFreeText(page: Page, expectedText?: string): Prom
   return snapshot;
 }
 
+async function activeDocumentDirty(page: Page) {
+  return page.evaluate(() => {
+    const tab = window.__pdfSpike!.tabs.list().find((candidate: { active: boolean; dirty: boolean }) => candidate.active);
+    if (!tab) throw new Error("Active Document Tab not found");
+    return tab.dirty;
+  });
+}
+
 async function enterNewFreeTextEditing(page: Page, text: string) {
   await createFreeText(page, text);
   await activateFirstAnnotationByKind(page, "freetext");
@@ -792,7 +800,7 @@ test("sub-threshold free-text grip gesture does not move or commit", async ({ pa
   expect(after.rect.top).toBeCloseTo(before.rect.top, 0);
 });
 
-test("free-text grip pointercancel clears without moving or committing", async ({ page }) => {
+test("free-text grip pointercancel rolls back applied movement and preserves dirty state", async ({ page }) => {
   await createFreeText(page, "Pointercancel free-text grip guard");
   await saveAndReopen(page, "/tmp/pdfspike-playwright-pointercancel-guard.pdf");
   await page.evaluate(() => window.__pdfSpike!.setTool("none"));
@@ -805,8 +813,10 @@ test("free-text grip pointercancel clears without moving or committing", async (
   await page.mouse.dblclick(point.x, point.y);
   await expect.poll(() => editableFreeTextSnapshot(page)).toMatchObject({ isEditable: true, isFocused: true });
   const before = await selectedEditableFreeText(page);
+  expect(await activeDocumentDirty(page)).toBe(false);
   const grip = freeTextGripPoint(before);
-  await page.evaluate(({ x, y }) => {
+  const delta = { x: 28, y: 20 };
+  await page.evaluate(({ x, y, movement }) => {
     const target = document.elementFromPoint(x, y);
     if (!target) throw new Error("Grip coordinate has no target");
     target.dispatchEvent(
@@ -823,23 +833,99 @@ test("free-text grip pointercancel clears without moving or committing", async (
       }),
     );
     window.dispatchEvent(
-      new PointerEvent("pointercancel", {
+      new PointerEvent("pointermove", {
         bubbles: true,
-        clientX: x,
-        clientY: y,
+        buttons: 1,
+        clientX: x + movement.x,
+        clientY: y + movement.y,
         composed: true,
         isPrimary: true,
         pointerId: 93,
         pointerType: "mouse",
       }),
     );
-  }, grip);
+  }, { ...grip, movement: delta });
+
+  await expect.poll(() => editableFreeTextSnapshot(page)).toMatchObject({
+    editorId: before.editorId,
+    internalText: before.internalText,
+    isEditable: true,
+    isFocused: true,
+  });
+  const moved = await selectedEditableFreeText(page);
+  expectMovedByClientDelta(before, moved, delta);
+  expect(await activeDocumentDirty(page)).toBe(true);
+
+  await page.evaluate(({ x, y, movement }) => {
+    window.dispatchEvent(
+      new PointerEvent("pointercancel", {
+        bubbles: true,
+        clientX: x + movement.x,
+        clientY: y + movement.y,
+        composed: true,
+        isPrimary: true,
+        pointerId: 93,
+        pointerType: "mouse",
+      }),
+    );
+  }, { ...grip, movement: delta });
 
   const after = await selectedEditableFreeText(page);
   expect(after.editorId).toBe(before.editorId);
   expect(after.isEditable).toBe(true);
+  expect(after.isFocused).toBe(true);
+  expect(after.internalText).toBe(before.internalText);
   expect(after.rect.left).toBeCloseTo(before.rect.left, 0);
   expect(after.rect.top).toBeCloseTo(before.rect.top, 0);
+  expect(await activeDocumentDirty(page)).toBe(false);
+
+  await page.evaluate(({ x, y, movement }) => {
+    window.dispatchEvent(
+      new PointerEvent("pointermove", {
+        bubbles: true,
+        buttons: 1,
+        clientX: x + movement.x * 2,
+        clientY: y + movement.y * 2,
+        composed: true,
+        isPrimary: true,
+        pointerId: 93,
+        pointerType: "mouse",
+      }),
+    );
+  }, { ...grip, movement: delta });
+  const afterStrayMove = await selectedEditableFreeText(page);
+  expect(afterStrayMove.rect.left).toBeCloseTo(before.rect.left, 0);
+  expect(afterStrayMove.rect.top).toBeCloseTo(before.rect.top, 0);
+
+  expect(await page.evaluate(() => window.__pdfSpike!.moveSelected(1, 0))).toBe(true);
+  const dirtyBeforeCancel = await selectedEditableFreeText(page);
+  expect(await activeDocumentDirty(page)).toBe(true);
+  const dirtyGrip = freeTextGripPoint(dirtyBeforeCancel);
+  await page.evaluate(({ x, y, movement }) => {
+    const target = document.elementFromPoint(x, y);
+    if (!target) throw new Error("Dirty grip coordinate has no target");
+    const event = (type: string, clientX: number, clientY: number, buttons: number) =>
+      new PointerEvent(type, {
+        bubbles: true,
+        button: 0,
+        buttons,
+        clientX,
+        clientY,
+        composed: true,
+        isPrimary: true,
+        pointerId: 94,
+        pointerType: "mouse",
+      });
+    target.dispatchEvent(event("pointerdown", x, y, 1));
+    window.dispatchEvent(event("pointermove", x + movement.x, y + movement.y, 1));
+    window.dispatchEvent(event("pointercancel", x + movement.x, y + movement.y, 0));
+  }, { ...dirtyGrip, movement: delta });
+
+  const dirtyAfterCancel = await selectedEditableFreeText(page);
+  expect(dirtyAfterCancel.editorId).toBe(dirtyBeforeCancel.editorId);
+  expect(dirtyAfterCancel.rect.left).toBeCloseTo(dirtyBeforeCancel.rect.left, 0);
+  expect(dirtyAfterCancel.rect.top).toBeCloseTo(dirtyBeforeCancel.rect.top, 0);
+  expect(await activeDocumentDirty(page)).toBe(true);
 });
 
 test("free text editing uses Enter to finish and Shift+Enter for a new line", async ({ page }) => {
