@@ -87,6 +87,7 @@
     formatError,
   } from "$lib/format";
   import { writePdfOutlineState } from "$lib/pdf/outline-byte-writer";
+  import { isPageInView } from "$lib/pdf/page-visibility";
   import {
     countOutlineEntries,
     countUnavailableOutlineEntries,
@@ -2229,7 +2230,16 @@
     try {
       await pdfLinkService.goToDestination(entry.dest as string | unknown[]);
       await new Promise((resolve) => setTimeout(resolve, 100));
-      if (pdfViewer && entry.pageNumber && pdfViewer.currentPageNumber !== entry.pageNumber) {
+      /* pdf.js updates currentPageNumber before it attempts the DOM scroll,
+         so only the rendered geometry can tell whether navigation landed
+         (issue #7); fall back when the target page is missing or not in the
+         viewport. The page-level check cannot detect a failed scroll to a
+         destination further down an already-visible page — scrollToPage
+         could not land any closer in that case anyway. */
+      const targetPageElement = containerEl?.querySelector<HTMLElement>(
+        `.page[data-page-number="${entry.pageNumber}"]`,
+      );
+      if (containerEl && (!targetPageElement || !isPageInView(containerEl, targetPageElement))) {
         await scrollToPage(entry.pageNumber);
       }
       lastActivatedOutlineEntry = entry;

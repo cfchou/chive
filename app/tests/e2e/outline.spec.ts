@@ -95,6 +95,74 @@ test("outline sidebar navigates when zoomed pages overflow horizontally", async 
   expect(Math.abs(landing.pageOffsetTop - landing.scrollTop)).toBeLessThan(landing.clientHeight);
 });
 
+test("outline navigation falls back when pdf.js's own scroll is defeated", async ({ page }) => {
+  await loadFixture(page);
+
+  // Pins the goToOutlineEntry fallback wiring end-to-end. The original
+  // issue #7 defect was a healthy-looking guard wired to a signal that
+  // could never fire (currentPageNumber updates before the DOM scroll), so
+  // a unit test on the predicate alone would not notice the wiring rotting
+  // again. Recreate the broken state deliberately — positioned .pdfViewer
+  // plus horizontal overflow makes pdf.js's scrollIntoView a silent no-op —
+  // and prove navigation still lands via the isPageInView fallback.
+  const zoomIn = page.getByRole("button", { name: "Zoom in" });
+  let overflows = false;
+  for (let attempt = 0; attempt < 4 && !overflows; attempt += 1) {
+    await zoomIn.click();
+    overflows = await page
+      .waitForFunction(
+        () => {
+          const viewer = document.querySelector(".pdfViewer");
+          return viewer instanceof HTMLElement && viewer.scrollWidth > viewer.clientWidth;
+        },
+        undefined,
+        { timeout: 2_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+  }
+  expect(overflows, "zoom clicks never produced horizontal page overflow").toBe(true);
+
+  await page.addStyleTag({ content: ".pdfViewer { position: relative !important; }" });
+  const offsetParentClass = await page.evaluate(() => {
+    const pageElement = document.querySelector<HTMLElement>(".pdfViewer .page");
+    const parent = pageElement?.offsetParent;
+    return parent instanceof HTMLElement ? parent.className : String(parent);
+  });
+  expect(offsetParentClass, "style injection failed to re-position .pdfViewer").toContain("pdfViewer");
+
+  await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    if (!container) throw new Error("Missing .pdf-container");
+    container.scrollTop = 0;
+  });
+
+  await page.getByRole("button", { name: "6. Module Loading and Import Maps 14" }).click();
+  await expect(page.getByText("Navigated to 6. Module Loading and Import Maps.")).toBeVisible();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const container = document.querySelector<HTMLElement>(".pdf-container");
+        if (!container) throw new Error("Missing .pdf-container");
+        return container.scrollTop;
+      }),
+    )
+    .toBeGreaterThan(0);
+
+  const landing = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const target = document.querySelector<HTMLElement>('.page[data-page-number="14"]');
+    if (!container || !target) throw new Error("Missing scroll container or target page");
+    return {
+      scrollTop: container.scrollTop,
+      clientHeight: container.clientHeight,
+      pageOffsetTop: target.offsetTop,
+    };
+  });
+  expect(Math.abs(landing.pageOffsetTop - landing.scrollTop)).toBeLessThan(landing.clientHeight);
+});
+
 test("outline sidebar navigates after the window shrinks at fixed zoom", async ({ page }) => {
   await loadFixture(page);
 
