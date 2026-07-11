@@ -5601,7 +5601,12 @@
 
   .pdfViewer {
     --scale-factor: 1;
-    position: relative;
+    /* Do NOT position .pdfViewer. pdf.js's scrollIntoView walks
+       offsetParents from each .page and must land on the scrollable
+       .pdf-container; a positioned .pdfViewer intercepts the walk and,
+       whenever pages overflow horizontally, silently breaks outline /
+       internal-link navigation (issue #7). Upstream pdf.js leaves it
+       unpositioned too. Pinned by outline.spec.ts. */
   }
 
   :global(.pdfViewer .page) {

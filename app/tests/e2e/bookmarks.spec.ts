@@ -54,7 +54,9 @@ test("bookmark title uses the first words from text at an outline destination", 
   await page.getByRole("tab", { name: "Bookmarks" }).click();
   await addCurrentPageBookmark(page);
 
-  await expect(page.getByRole("button", { name: "TIER NAME ROLE", exact: true })).toBeVisible();
+  // Anchored at the outline destination line itself; before issue #7's
+  // offsetParent fix the anchor mapped one text line low ("TIER NAME ROLE").
+  await expect(page.getByRole("button", { name: "JIT tiers table", exact: true })).toBeVisible();
 });
 
 test("bookmark title uses the first words from the text line at the anchor", async ({ page }) => {
@@ -324,9 +326,9 @@ test("bookmark row navigates after save and reopen", async ({ page }) => {
   await saveAndReopen(page, "/tmp/pdfspike-playwright-bookmark-navigation.pdf");
   await page.getByRole("tab", { name: "Bookmarks" }).click();
 
-  await page.getByRole("button", { name: "TIER NAME ROLE", exact: true }).click();
+  await page.getByRole("button", { name: "JIT tiers table", exact: true }).click();
 
-  await expect(page.getByText("Navigated to TIER NAME ROLE.")).toBeVisible();
+  await expect(page.getByText("Navigated to JIT tiers table.")).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().currentPageNumber)).toBe(13);
 });
 
