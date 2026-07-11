@@ -834,7 +834,11 @@ describe("native WKWebView PDF smoke", () => {
 
   it("scrolls outline navigation when pages overflow horizontally in native WKWebView", async () => {
     await waitForPdfSpike();
-    await app.setWindowSize(1280, 900);
+    // A fixed, deliberately narrow window makes the overflow trigger
+    // deterministic against the app's own contract (at Fit Width, page
+    // width equals window width, so a single 1.1x zoom-in always overflows
+    // it) rather than against an assumed click count.
+    await app.setWindowSize(900, 900);
 
     await app.execute(async (filePath) => {
       await window.__pdfSpike!.loadPath(filePath);
@@ -854,7 +858,7 @@ describe("native WKWebView PDF smoke", () => {
     // issue #7 regression trigger, where pdf.js's scrollIntoView used to
     // silently no-op in exactly this engine-real configuration.
     let overflows = false;
-    for (let attempt = 0; attempt < 4 && !overflows; attempt += 1) {
+    for (let attempt = 0; attempt < 2 && !overflows; attempt += 1) {
       await app.execute(() => {
         const zoomIn = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
           (button) => button.getAttribute("aria-label") === "Zoom in",
@@ -874,7 +878,16 @@ describe("native WKWebView PDF smoke", () => {
         .then(() => true)
         .catch(() => false);
     }
-    expect(overflows).toBe(true);
+    if (!overflows) {
+      const dimensions = await app.execute(() => {
+        const viewer = document.querySelector<HTMLElement>(".pdfViewer");
+        return { clientWidth: viewer?.clientWidth ?? -1, scrollWidth: viewer?.scrollWidth ?? -1 };
+      });
+      throw new Error(
+        `native zoom-in did not produce horizontal page overflow ` +
+          `(pdfViewer clientWidth=${dimensions.clientWidth}, scrollWidth=${dimensions.scrollWidth})`,
+      );
+    }
 
     await app.execute(() => {
       const container = document.querySelector<HTMLElement>(".pdf-container");

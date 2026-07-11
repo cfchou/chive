@@ -52,6 +52,41 @@ export async function expectNavHeadingCountInset(page: Page, panelLabel: string,
   expect(inset).toBeGreaterThanOrEqual(minimumInset);
 }
 
+export async function zoomToHorizontalOverflow(page: Page, viewportWidth = 900) {
+  // Fixing the viewport (rather than relying on the Playwright project
+  // default) makes this deterministic against the app's actual contract: at
+  // Fit Width, page width equals container width, so a single 1.1x zoom-in
+  // click always overflows it. The loop only guards render-timing, not an
+  // uncertain click count.
+  await page.setViewportSize({ width: viewportWidth, height: 720 });
+  const zoomIn = page.getByRole("button", { name: "Zoom in" });
+  let overflows = false;
+  for (let attempt = 0; attempt < 2 && !overflows; attempt += 1) {
+    await zoomIn.click();
+    overflows = await page
+      .waitForFunction(
+        () => {
+          const viewer = document.querySelector<HTMLElement>(".pdfViewer");
+          return Boolean(viewer && viewer.scrollWidth > viewer.clientWidth);
+        },
+        undefined,
+        { timeout: 2_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+  }
+  if (!overflows) {
+    const dimensions = await page.evaluate(() => {
+      const viewer = document.querySelector<HTMLElement>(".pdfViewer");
+      return { clientWidth: viewer?.clientWidth ?? -1, scrollWidth: viewer?.scrollWidth ?? -1 };
+    });
+    throw new Error(
+      `zoom-in did not produce horizontal page overflow at viewport width ${viewportWidth} ` +
+        `(pdfViewer clientWidth=${dimensions.clientWidth}, scrollWidth=${dimensions.scrollWidth})`,
+    );
+  }
+}
+
 export async function scrollPdfToOutlineTitle(page: Page, title: string) {
   await page.evaluate((targetTitle) => {
     type OutlineLike = {

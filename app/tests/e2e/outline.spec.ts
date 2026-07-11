@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { loadFixture, waitForPageReady } from "./helpers/pdf-spike";
-import { installNavigationSidebarHooks, scrollPdfToOutlineTitle } from "./helpers/navigation-sidebar";
+import {
+  installNavigationSidebarHooks,
+  scrollPdfToOutlineTitle,
+  zoomToHorizontalOverflow,
+} from "./helpers/navigation-sidebar";
 
 installNavigationSidebarHooks();
 
@@ -45,23 +49,7 @@ test("outline sidebar navigates when zoomed pages overflow horizontally", async 
   // Regression pin for issue #7: zoom in from Fit Width until the laid-out
   // pages are wider than the reader pane; outline navigation used to
   // silently no-op in that state.
-  const zoomIn = page.getByRole("button", { name: "Zoom in" });
-  let overflows = false;
-  for (let attempt = 0; attempt < 4 && !overflows; attempt += 1) {
-    await zoomIn.click();
-    overflows = await page
-      .waitForFunction(
-        () => {
-          const viewer = document.querySelector(".pdfViewer");
-          return viewer instanceof HTMLElement && viewer.scrollWidth > viewer.clientWidth;
-        },
-        undefined,
-        { timeout: 2_000 },
-      )
-      .then(() => true)
-      .catch(() => false);
-  }
-  expect(overflows, "zoom clicks never produced horizontal page overflow").toBe(true);
+  await zoomToHorizontalOverflow(page);
 
   await page.evaluate(() => {
     const container = document.querySelector<HTMLElement>(".pdf-container");
@@ -105,23 +93,7 @@ test("outline navigation falls back when pdf.js's own scroll is defeated", async
   // again. Recreate the broken state deliberately — positioned .pdfViewer
   // plus horizontal overflow makes pdf.js's scrollIntoView a silent no-op —
   // and prove navigation still lands via the isPageInView fallback.
-  const zoomIn = page.getByRole("button", { name: "Zoom in" });
-  let overflows = false;
-  for (let attempt = 0; attempt < 4 && !overflows; attempt += 1) {
-    await zoomIn.click();
-    overflows = await page
-      .waitForFunction(
-        () => {
-          const viewer = document.querySelector(".pdfViewer");
-          return viewer instanceof HTMLElement && viewer.scrollWidth > viewer.clientWidth;
-        },
-        undefined,
-        { timeout: 2_000 },
-      )
-      .then(() => true)
-      .catch(() => false);
-  }
-  expect(overflows, "zoom clicks never produced horizontal page overflow").toBe(true);
+  await zoomToHorizontalOverflow(page);
 
   await page.addStyleTag({ content: ".pdfViewer { position: relative !important; }" });
   const offsetParentClass = await page.evaluate(() => {
