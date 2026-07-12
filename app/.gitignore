@@ -5,6 +5,7 @@ node_modules
 /package
 /logs
 /test-results
+/coverage
 /src-tauri/capabilities/wdio.json
 /src-tauri/target
 .env

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import { writePdfOutlineState } from "../../src/lib/pdf/outline-byte-writer";
 

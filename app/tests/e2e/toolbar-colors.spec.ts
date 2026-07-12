@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./coverage";
 import { collectPageErrors, getStats, loadFixture, openApp } from "./helpers/pdf-spike";
 
 const pageErrors: string[] = [];

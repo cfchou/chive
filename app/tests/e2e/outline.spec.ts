@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./coverage";
 import { loadFixture, waitForPageReady } from "./helpers/pdf-spike";
 import {
   installNavigationSidebarHooks,
@@ -546,4 +546,3 @@ test("outline sidebar keeps valid items when one outline destination is broken",
   await expect(page.getByText("Navigated to 1. Networking and Resource Loading.")).toBeVisible();
   await expect(page.getByText("Networking and resource loading pipeline")).toBeVisible();
 });
-

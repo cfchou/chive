@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import { DRAG_START_PX, hasHorizontalPointerDragStarted, hasPointerDragStarted } from "../../src/lib/ui/pointer-drag";
 
