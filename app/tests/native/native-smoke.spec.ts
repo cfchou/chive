@@ -832,6 +832,94 @@ describe("native WKWebView PDF smoke", () => {
     );
   });
 
+  it("scrolls outline navigation when pages overflow horizontally in native WKWebView", async () => {
+    await waitForPdfSpike();
+    // A fixed, deliberately narrow window makes the overflow trigger
+    // deterministic against the app's own contract (at Fit Width, page
+    // width equals window width, so a single 1.1x zoom-in always overflows
+    // it) rather than against an assumed click count.
+    await app.setWindowSize(900, 900);
+
+    await app.execute(async (filePath) => {
+      await window.__pdfSpike!.loadPath(filePath);
+    }, samplePdfPath);
+    await app.waitUntil(
+      async () =>
+        app.execute(
+          () => Number(window.__pdfSpike!.stats().pages ?? 0) > 0 && window.__pdfSpike!.outlineSummary().length > 0,
+        ),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native sample PDF did not render with outline",
+      },
+    );
+
+    // Zoom in until the laid-out pages are wider than the reader pane — the
+    // issue #7 regression trigger, where pdf.js's scrollIntoView used to
+    // silently no-op in exactly this engine-real configuration.
+    let overflows = false;
+    for (let attempt = 0; attempt < 2 && !overflows; attempt += 1) {
+      await app.execute(() => {
+        const zoomIn = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.getAttribute("aria-label") === "Zoom in",
+        );
+        if (!zoomIn) throw new Error("Missing native zoom in button");
+        zoomIn.click();
+      });
+      overflows = await app
+        .waitUntil(
+          async () =>
+            app.execute(() => {
+              const viewer = document.querySelector<HTMLElement>(".pdfViewer");
+              return Boolean(viewer && viewer.scrollWidth > viewer.clientWidth);
+            }),
+          { timeout: 2_000 },
+        )
+        .then(() => true)
+        .catch(() => false);
+    }
+    if (!overflows) {
+      const dimensions = await app.execute(() => {
+        const viewer = document.querySelector<HTMLElement>(".pdfViewer");
+        return { clientWidth: viewer?.clientWidth ?? -1, scrollWidth: viewer?.scrollWidth ?? -1 };
+      });
+      throw new Error(
+        `native zoom-in did not produce horizontal page overflow ` +
+          `(pdfViewer clientWidth=${dimensions.clientWidth}, scrollWidth=${dimensions.scrollWidth})`,
+      );
+    }
+
+    await app.execute(() => {
+      const container = document.querySelector<HTMLElement>(".pdf-container");
+      if (!container) throw new Error("Missing native .pdf-container");
+      container.scrollTop = 0;
+      const tab = [...document.querySelectorAll<HTMLButtonElement>(".sidebar-tab")].find(
+        (button) => button.getAttribute("aria-label") === "Outline",
+      );
+      tab?.click();
+      const outlineButton = [...document.querySelectorAll<HTMLButtonElement>(".outline-item")].find((button) =>
+        button.textContent?.includes("3. Styling and Layout"),
+      );
+      if (!outlineButton) throw new Error("Missing Styling and Layout outline button");
+      outlineButton.click();
+    });
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const container = document.querySelector<HTMLElement>(".pdf-container");
+          const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='7']");
+          if (!container || !pageElement || container.scrollTop <= 0) return false;
+          const containerRect = container.getBoundingClientRect();
+          const pageRect = pageElement.getBoundingClientRect();
+          return pageRect.bottom > containerRect.top && pageRect.top < containerRect.bottom;
+        }),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native outline navigation did not scroll under horizontal page overflow",
+      },
+    );
+  });
+
   it("creates, reloads, and navigates PDF-native bookmarks in native WKWebView", async () => {
     await waitForPdfSpike();
     await app.setWindowSize(1280, 900);
@@ -866,6 +954,23 @@ describe("native WKWebView PDF smoke", () => {
       timeout: 30_000,
       timeoutMsg: "native outline navigation failed",
     });
+    // currentPageNumber alone is a false-positive signal: pdf.js updates it
+    // before attempting the DOM scroll (issue #7). Require real geometry.
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const container = document.querySelector<HTMLElement>(".pdf-container");
+          const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='13']");
+          if (!container || !pageElement) return false;
+          const containerRect = container.getBoundingClientRect();
+          const pageRect = pageElement.getBoundingClientRect();
+          return pageRect.bottom > containerRect.top && pageRect.top < containerRect.bottom;
+        }),
+      {
+        timeout: 30_000,
+        timeoutMsg: "native outline navigation did not scroll the target page into view",
+      },
+    );
 
     await app.execute(() => {
       const tab = (label: string) =>

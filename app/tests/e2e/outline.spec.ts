@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { loadFixture, waitForPageReady } from "./helpers/pdf-spike";
-import { installNavigationSidebarHooks, scrollPdfToOutlineTitle } from "./helpers/navigation-sidebar";
+import {
+  installNavigationSidebarHooks,
+  scrollPdfToOutlineTitle,
+  zoomToHorizontalOverflow,
+} from "./helpers/navigation-sidebar";
 
 installNavigationSidebarHooks();
 
@@ -18,6 +22,154 @@ test("outline sidebar navigates to page two", async ({ page }) => {
   await page.getByRole("button", { name: "1. Networking and Resource Loading 2" }).click();
   await expect(page.getByText("Navigated to 1. Networking and Resource Loading.")).toBeVisible();
   await expect(page.getByText("Networking and resource loading pipeline")).toBeVisible();
+});
+
+test("outline pages use the scrollable pdf-container as their offsetParent", async ({ page }) => {
+  await loadFixture(page);
+
+  // Contract pin for issue #7: pdf.js's scrollIntoView walks offsetParents
+  // from each .page and only scrolls if the walk lands on the scrollable
+  // .pdf-container. A positioned .pdfViewer (or any positioned wrapper in
+  // between) intercepts the walk and silently breaks outline navigation
+  // whenever pages overflow horizontally.
+  const offsetParent = await page.evaluate(() => {
+    const pageElement = document.querySelector<HTMLElement>(".pdfViewer .page");
+    if (!pageElement) throw new Error("Missing .page element");
+    const parent = pageElement.offsetParent;
+    return parent instanceof HTMLElement
+      ? { isPdfContainer: parent.classList.contains("pdf-container"), className: parent.className }
+      : { isPdfContainer: false, className: String(parent) };
+  });
+  expect(offsetParent.isPdfContainer, `offsetParent was: ${offsetParent.className}`).toBe(true);
+});
+
+test("outline sidebar navigates when zoomed pages overflow horizontally", async ({ page }) => {
+  await loadFixture(page);
+
+  // Regression pin for issue #7: zoom in from Fit Width until the laid-out
+  // pages are wider than the reader pane; outline navigation used to
+  // silently no-op in that state.
+  await zoomToHorizontalOverflow(page);
+
+  await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    if (!container) throw new Error("Missing .pdf-container");
+    container.scrollTop = 0;
+  });
+
+  await page.getByRole("button", { name: "3. Styling and Layout 7" }).click();
+  await expect(page.getByText("Navigated to 3. Styling and Layout.")).toBeVisible();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const container = document.querySelector<HTMLElement>(".pdf-container");
+        if (!container) throw new Error("Missing .pdf-container");
+        return container.scrollTop;
+      }),
+    )
+    .toBeGreaterThan(0);
+
+  const landing = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const target = document.querySelector<HTMLElement>('.page[data-page-number="7"]');
+    if (!container || !target) throw new Error("Missing scroll container or target page");
+    return {
+      scrollTop: container.scrollTop,
+      clientHeight: container.clientHeight,
+      pageOffsetTop: target.offsetTop,
+    };
+  });
+  expect(Math.abs(landing.pageOffsetTop - landing.scrollTop)).toBeLessThan(landing.clientHeight);
+});
+
+test("outline navigation falls back when pdf.js's own scroll is defeated", async ({ page }) => {
+  await loadFixture(page);
+
+  // Pins the goToOutlineEntry fallback wiring end-to-end. The original
+  // issue #7 defect was a healthy-looking guard wired to a signal that
+  // could never fire (currentPageNumber updates before the DOM scroll), so
+  // a unit test on the predicate alone would not notice the wiring rotting
+  // again. Recreate the broken state deliberately — positioned .pdfViewer
+  // plus horizontal overflow makes pdf.js's scrollIntoView a silent no-op —
+  // and prove navigation still lands via the isPageInView fallback.
+  await zoomToHorizontalOverflow(page);
+
+  await page.addStyleTag({ content: ".pdfViewer { position: relative !important; }" });
+  const offsetParentClass = await page.evaluate(() => {
+    const pageElement = document.querySelector<HTMLElement>(".pdfViewer .page");
+    const parent = pageElement?.offsetParent;
+    return parent instanceof HTMLElement ? parent.className : String(parent);
+  });
+  expect(offsetParentClass, "style injection failed to re-position .pdfViewer").toContain("pdfViewer");
+
+  await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    if (!container) throw new Error("Missing .pdf-container");
+    container.scrollTop = 0;
+  });
+
+  await page.getByRole("button", { name: "6. Module Loading and Import Maps 14" }).click();
+  await expect(page.getByText("Navigated to 6. Module Loading and Import Maps.")).toBeVisible();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const container = document.querySelector<HTMLElement>(".pdf-container");
+        if (!container) throw new Error("Missing .pdf-container");
+        return container.scrollTop;
+      }),
+    )
+    .toBeGreaterThan(0);
+
+  const landing = await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    const target = document.querySelector<HTMLElement>('.page[data-page-number="14"]');
+    if (!container || !target) throw new Error("Missing scroll container or target page");
+    return {
+      scrollTop: container.scrollTop,
+      clientHeight: container.clientHeight,
+      pageOffsetTop: target.offsetTop,
+    };
+  });
+  expect(Math.abs(landing.pageOffsetTop - landing.scrollTop)).toBeLessThan(landing.clientHeight);
+});
+
+test("outline sidebar navigates after the window shrinks at fixed zoom", async ({ page }) => {
+  await loadFixture(page);
+
+  // Same failure mode as the zoomed variant, reached with zero zoom
+  // interaction: the scale stays fixed while the reader pane narrows, so
+  // the laid-out pages overflow horizontally.
+  await page.setViewportSize({ width: 640, height: 720 });
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const viewer = document.querySelector<HTMLElement>(".pdfViewer");
+        if (!viewer) throw new Error("Missing .pdfViewer");
+        return viewer.scrollWidth > viewer.clientWidth;
+      }),
+    )
+    .toBe(true);
+
+  await page.evaluate(() => {
+    const container = document.querySelector<HTMLElement>(".pdf-container");
+    if (!container) throw new Error("Missing .pdf-container");
+    container.scrollTop = 0;
+  });
+
+  await page.getByRole("button", { name: "3. Styling and Layout 7" }).click();
+  await expect(page.getByText("Navigated to 3. Styling and Layout.")).toBeVisible();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const container = document.querySelector<HTMLElement>(".pdf-container");
+        if (!container) throw new Error("Missing .pdf-container");
+        return container.scrollTop;
+      }),
+    )
+    .toBeGreaterThan(0);
 });
 
 test("outline sidebar displays native outline colors", async ({ page }) => {
