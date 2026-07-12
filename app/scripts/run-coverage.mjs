@@ -11,10 +11,14 @@ const { createContext } = reportLib;
 
 const root = process.cwd();
 const coverageDirectory = path.join(root, "coverage");
-const rawCoverageDirectories = [path.join(coverageDirectory, "unit"), path.join(coverageDirectory, "e2e")];
+const rawCoverageDirectories = {
+  unit: path.join(coverageDirectory, "unit"),
+  e2e: path.join(coverageDirectory, "e2e"),
+};
 const baselinePath = path.join(root, "tests", "coverage-baseline.json");
 const acceptBaseline = process.argv.includes("--accept");
 const metrics = ["lines", "statements", "functions", "branches"];
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 function run(command, args, env = process.env) {
   return new Promise((resolve, reject) => {
@@ -27,6 +31,10 @@ function run(command, args, env = process.env) {
   });
 }
 
+function runNpmScript(script, args = [], env = process.env) {
+  return run(npmCommand, ["run", script, "--", ...args], env);
+}
+
 async function jsonFiles(directory) {
   if (!existsSync(directory)) return [];
   const entries = await readdir(directory, { withFileTypes: true });
@@ -35,8 +43,16 @@ async function jsonFiles(directory) {
 
 async function mergeCoverage() {
   const map = createCoverageMap({});
-  for (const directory of rawCoverageDirectories) {
-    for (const file of await jsonFiles(directory)) {
+  for (const [suite, directory] of Object.entries(rawCoverageDirectories)) {
+    const files = await jsonFiles(directory);
+    if (files.length === 0) {
+      throw new Error(
+        `No ${suite === "e2e" ? "browser" : suite} coverage maps were collected. ${
+          suite === "e2e" ? "Ensure VITE_COVERAGE starts an instrumented Vite server." : ""
+        }`.trim(),
+      );
+    }
+    for (const file of files) {
       map.merge(JSON.parse(await readFile(file, "utf8")));
     }
   }
@@ -87,7 +103,7 @@ async function enforceBaseline() {
 
 await rm(coverageDirectory, { recursive: true, force: true });
 await mkdir(coverageDirectory, { recursive: true });
-await run(process.execPath, ["node_modules/vitest/vitest.mjs", "run", "--coverage"]);
-await run(process.execPath, ["node_modules/@playwright/test/cli.js", "test"], { ...process.env, VITE_COVERAGE: "true" });
+await runNpmScript("test:unit", ["--coverage"]);
+await runNpmScript("test:e2e", [], { ...process.env, VITE_COVERAGE: "true" });
 await mergeCoverage();
 await enforceBaseline();

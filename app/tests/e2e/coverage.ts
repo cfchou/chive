@@ -9,12 +9,17 @@ export const test = base.extend({
   page: async ({ page }, use, testInfo) => {
     await use(page);
 
-    if (!coverageEnabled) return;
+    if (!coverageEnabled || testInfo.status !== "passed") return;
 
-    const coverage = await page
-      .evaluate(() => (globalThis as typeof globalThis & { __coverage__?: unknown }).__coverage__)
-      .catch(() => undefined);
-    if (!coverage) return;
+    let coverage: unknown;
+    try {
+      coverage = await page.evaluate(() => (globalThis as typeof globalThis & { __coverage__?: unknown }).__coverage__);
+    } catch (error) {
+      throw new Error("Browser coverage collection failed.", { cause: error });
+    }
+    if (!coverage || typeof coverage !== "object") {
+      throw new Error("Browser coverage is missing. Ensure VITE_COVERAGE starts an instrumented Vite server.");
+    }
 
     await mkdir(coverageDirectory, { recursive: true });
     await writeFile(path.join(coverageDirectory, `${testInfo.testId}.json`), JSON.stringify(coverage));
