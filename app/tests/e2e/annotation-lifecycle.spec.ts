@@ -1,4 +1,5 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+import { FREE_TEXT_MOVE_GRIP_INSET_PX } from "../../src/lib/pdf/free-text-move";
 import {
   activateAnnotationByKind,
   activateFirstAnnotationByKind,
@@ -26,6 +27,113 @@ test.beforeEach(async ({ page }) => {
 test.afterEach(() => {
   expect(pageErrors).toEqual([]);
 });
+
+type EditableFreeTextSnapshot = {
+  editorId: string;
+  freeTextEditorCount: number;
+  internalText: string;
+  isEditable: boolean;
+  isFocused: boolean;
+  isSelected: boolean;
+  rect: { height: number; left: number; top: number; width: number };
+};
+
+async function editableFreeTextSnapshot(page: Page, expectedText?: string): Promise<EditableFreeTextSnapshot | null> {
+  return page.evaluate((text) => {
+    const normalizeText = (value: string) => value.replace(/\s+/g, " ").trim();
+    const internal = [...document.querySelectorAll<HTMLElement>(".freeTextEditor .internal")].find(
+      (element) => element.isContentEditable && (!text || normalizeText(element.innerText).includes(text)),
+    );
+    const editor = internal?.closest<HTMLElement>(".freeTextEditor");
+    if (!editor?.id || !internal) return null;
+    const rect = editor.getBoundingClientRect();
+    return {
+      editorId: editor.id,
+      freeTextEditorCount: document.querySelectorAll(".freeTextEditor").length,
+      internalText: normalizeText(internal.innerText),
+      isEditable: internal.isContentEditable,
+      isFocused: internal.contains(document.activeElement),
+      isSelected: editor.classList.contains("selectedEditor"),
+      rect: { height: rect.height, left: rect.left, top: rect.top, width: rect.width },
+    };
+  }, expectedText);
+}
+
+async function selectedEditableFreeText(page: Page, expectedText?: string): Promise<EditableFreeTextSnapshot> {
+  const snapshot = await editableFreeTextSnapshot(page, expectedText);
+  if (!snapshot) throw new Error("Selected free-text editor in edit mode not found");
+  return snapshot;
+}
+
+async function activeDocumentDirty(page: Page) {
+  return page.evaluate(() => {
+    const tab = window.__pdfSpike!.tabs.list().find((candidate: { active: boolean; dirty: boolean }) => candidate.active);
+    if (!tab) throw new Error("Active Document Tab not found");
+    return tab.dirty;
+  });
+}
+
+async function enterNewFreeTextEditing(page: Page, text: string) {
+  await createFreeText(page, text);
+  await activateFirstAnnotationByKind(page, "freetext");
+  await page.evaluate(() => {
+    const editor = document.querySelector<HTMLElement>(".freeTextEditor.selectedEditor, .freeTextEditor");
+    if (!editor) throw new Error("Selected live free-text editor root not found");
+    editor.focus();
+  });
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => editableFreeTextSnapshot(page, text))
+    .toMatchObject({ internalText: text, isEditable: true, isFocused: true, isSelected: true });
+  return selectedEditableFreeText(page, text);
+}
+
+async function setZoomTo100Percent(page: Page) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const label = await page.locator(".zoom-value").innerText();
+    if (label === "100%") return;
+    const percent = Number.parseInt(label, 10);
+    if (!Number.isFinite(percent)) throw new Error(`Unexpected zoom label: ${label}`);
+    await page.getByRole("button", { name: percent > 100 ? "Zoom out" : "Zoom in" }).click();
+  }
+  await expect(page.locator(".zoom-value")).toHaveText("100%");
+}
+
+function freeTextGripPoint(snapshot: EditableFreeTextSnapshot) {
+  // The visually clipped corner is outside the editor's DOM box. Its event
+  // target is therefore the PDF page/editor layer rather than the editable
+  // surface; the central surface remains reserved for caret and text selection.
+  const offset = FREE_TEXT_MOVE_GRIP_INSET_PX / 2;
+  return { x: Math.round(snapshot.rect.left + offset), y: Math.round(snapshot.rect.top + offset) };
+}
+
+async function dragFreeTextGrip(
+  page: Page,
+  snapshot: EditableFreeTextSnapshot,
+  delta: { x: number; y: number },
+) {
+  const start = freeTextGripPoint(snapshot);
+  await expect
+    .poll(() =>
+      page.evaluate(({ editorId, x, y }) => {
+        return document.elementFromPoint(x, y)?.closest<HTMLElement>(".freeTextEditor")?.id !== editorId;
+      }, { editorId: snapshot.editorId, ...start }),
+    )
+    .toBe(true);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x + delta.x, start.y + delta.y, { steps: 8 });
+  await page.mouse.up();
+}
+
+function expectMovedByClientDelta(
+  before: EditableFreeTextSnapshot,
+  after: EditableFreeTextSnapshot,
+  delta: { x: number; y: number },
+) {
+  expect(after.rect.left - before.rect.left).toBeCloseTo(delta.x, 0);
+  expect(after.rect.top - before.rect.top).toBeCloseTo(delta.y, 0);
+}
 
 test("creates, recolors, saves, reopens, and deletes a highlight", async ({ page }) => {
   const baseline = (await pageAnnotations(page)).filter((entry) => entry.subtype === "Highlight").length;
@@ -487,6 +595,337 @@ test("creates, edits, moves, saves, and deletes free text", async ({ page }) => 
 
   annotations = await pageAnnotations(page);
   expect(annotations.filter((entry) => entry.subtype === "FreeText")).toHaveLength(baseline);
+});
+
+test("selected editable free text renders a compact upper-left move grip", async ({ page }) => {
+  const editor = await enterNewFreeTextEditing(page, "Visible free-text move grip");
+  const grip = await page.evaluate((editorId) => {
+    const root = document.getElementById(editorId);
+    if (!(root instanceof HTMLElement)) throw new Error("Selected free-text editor root not found");
+    const style = getComputedStyle(root, "::after");
+    return {
+      content: style.content,
+      height: style.height,
+      left: style.left,
+      pointerEvents: style.pointerEvents,
+      position: style.position,
+      top: style.top,
+      width: style.width,
+    };
+  }, editor.editorId);
+  expect(grip).toEqual({
+    content: '""',
+    height: "14px",
+    left: "-6px",
+    pointerEvents: "none",
+    position: "absolute",
+    top: "-6px",
+    width: "14px",
+  });
+});
+
+test("moves an editable live free text from its grip at 100% without losing editing state", async ({ page }) => {
+  await setZoomTo100Percent(page);
+  const initialText = "Live grip move at 100%";
+  const before = await enterNewFreeTextEditing(page, initialText);
+  const delta = { x: 42, y: 28 };
+
+  await dragFreeTextGrip(page, before, delta);
+
+  await expect
+    .poll(() => editableFreeTextSnapshot(page, initialText))
+    .toMatchObject({ editorId: before.editorId, internalText: initialText, isEditable: true, isFocused: true, isSelected: true });
+  const moved = await selectedEditableFreeText(page, initialText);
+  expectMovedByClientDelta(before, moved, delta);
+  expect(moved.freeTextEditorCount).toBe(before.freeTextEditorCount);
+
+  await page.keyboard.type(" plus persisted text");
+  await page.keyboard.press("Enter");
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-live-grip-100.pdf");
+
+  const saved = (await pageAnnotations(page)).filter(
+    (annotation) => annotation.subtype === "FreeText" && (annotation.textContent ?? []).join(" ").includes("plus persisted text"),
+  );
+  expect(saved).toHaveLength(1);
+  expect(saved[0]?.rect).toBeTruthy();
+  const savedGeometry = saved[0]?.rect;
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-live-grip-100.pdf");
+  const reopened = (await pageAnnotations(page)).filter(
+    (annotation) => annotation.subtype === "FreeText" && (annotation.textContent ?? []).join(" ").includes("plus persisted text"),
+  );
+  expect(reopened).toHaveLength(1);
+  expect(reopened[0]?.rect).toEqual(savedGeometry);
+});
+
+test("moves an editable live free text from its grip at a non-default zoom without double scaling", async ({ page }) => {
+  await setZoomTo100Percent(page);
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await expect(page.locator(".zoom-value")).not.toHaveText("100%");
+
+  const initialText = "Live grip move after zoom";
+  const before = await enterNewFreeTextEditing(page, initialText);
+  const delta = { x: 38, y: 24 };
+  await dragFreeTextGrip(page, before, delta);
+
+  await expect
+    .poll(() => editableFreeTextSnapshot(page, initialText))
+    .toMatchObject({ editorId: before.editorId, internalText: initialText, isEditable: true, isFocused: true, isSelected: true });
+  const moved = await selectedEditableFreeText(page, initialText);
+  expectMovedByClientDelta(before, moved, delta);
+
+  await page.keyboard.type(" plus persisted text");
+  await page.keyboard.press("Enter");
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-live-grip-zoom.pdf");
+
+  const saved = (await pageAnnotations(page)).filter(
+    (annotation) => annotation.subtype === "FreeText" && (annotation.textContent ?? []).join(" ").includes("plus persisted text"),
+  );
+  expect(saved).toHaveLength(1);
+  expect(saved[0]?.rect).toBeTruthy();
+  const savedGeometry = saved[0]?.rect;
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-live-grip-zoom.pdf");
+  const reopened = (await pageAnnotations(page)).filter(
+    (annotation) => annotation.subtype === "FreeText" && (annotation.textContent ?? []).join(" ").includes("plus persisted text"),
+  );
+  expect(reopened).toHaveLength(1);
+  expect(reopened[0]?.rect).toEqual(savedGeometry);
+});
+
+test("moves a persisted free text from its grip after converting it to a live editor", async ({ page }) => {
+  const baseline = (await pageAnnotations(page)).filter((annotation) => annotation.subtype === "FreeText").length;
+  const initialText = "Persisted grip move";
+  await createFreeText(page, initialText);
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-persisted-grip.pdf");
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+  const originalPdfGeometry = (await pageAnnotations(page)).find(
+    (annotation) => annotation.subtype === "FreeText" && (annotation.textContent ?? []).join(" ").includes(initialText),
+  )?.rect;
+  expect(originalPdfGeometry).toBeTruthy();
+
+  const point = await page.evaluate((text) => {
+    const annotation = [...document.querySelectorAll<HTMLElement>(".page[data-page-number='1'] .freeTextAnnotation")].at(-1);
+    if (!annotation) throw new Error("Persisted free text annotation not found");
+    if (!annotation.innerText.includes(text)) throw new Error("Newest persisted free text annotation has unexpected text");
+    const rect = annotation.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  }, initialText);
+  await page.mouse.dblclick(point.x, point.y);
+
+  await expect
+    .poll(() => editableFreeTextSnapshot(page))
+    .toMatchObject({ isEditable: true, isFocused: true });
+  const before = await selectedEditableFreeText(page);
+  expect(before.internalText).toContain(initialText);
+  const delta = { x: 36, y: 26 };
+  await dragFreeTextGrip(page, before, delta);
+
+  await expect
+    .poll(() => editableFreeTextSnapshot(page))
+    .toMatchObject({ editorId: before.editorId, isEditable: true, isFocused: true, isSelected: true });
+  const moved = await selectedEditableFreeText(page);
+  expectMovedByClientDelta(before, moved, delta);
+
+  await page.keyboard.type(" and edited");
+  await page.keyboard.press("Enter");
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-persisted-grip.pdf");
+
+  const saved = (await pageAnnotations(page)).filter(
+    (annotation) => annotation.subtype === "FreeText" && (annotation.textContent ?? []).join(" ").includes("and edited"),
+  );
+  expect(saved).toHaveLength(1);
+  expect((await pageAnnotations(page)).filter((annotation) => annotation.subtype === "FreeText")).toHaveLength(baseline + 1);
+  expect(saved[0]?.rect).toBeTruthy();
+  expect(saved[0]?.rect).not.toEqual(originalPdfGeometry);
+});
+
+test("central free-text editing drag selects text without moving the annotation", async ({ page }) => {
+  await createFreeText(page, "Central drag selects this editable free text without moving it");
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-central-drag-guard.pdf");
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+  const point = await page.evaluate(() => {
+    const annotation = [...document.querySelectorAll<HTMLElement>(".page[data-page-number='1'] .freeTextAnnotation")].at(-1);
+    if (!annotation) throw new Error("Persisted free text annotation not found");
+    const rect = annotation.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.mouse.dblclick(point.x, point.y);
+  await expect.poll(() => editableFreeTextSnapshot(page)).toMatchObject({ isEditable: true, isFocused: true });
+  const before = await selectedEditableFreeText(page);
+  const drag = await page.evaluate(() => {
+    const internal = [...document.querySelectorAll<HTMLElement>(".freeTextEditor .internal")].find(
+      (element) => element.isContentEditable,
+    );
+    if (!internal) throw new Error("Editable free text content not found");
+    const rect = internal.getBoundingClientRect();
+    return {
+      start: { x: Math.round(rect.left + rect.width * 0.2), y: Math.round(rect.top + rect.height / 2) },
+      end: { x: Math.round(rect.left + rect.width * 0.8), y: Math.round(rect.top + rect.height / 2) },
+    };
+  });
+  await page.mouse.move(drag.start.x, drag.start.y);
+  await page.mouse.down();
+  await page.mouse.move(drag.end.x, drag.end.y, { steps: 6 });
+  await page.mouse.up();
+
+  expect(await page.evaluate(() => document.getSelection()?.toString().replace(/\s+/g, " ").trim() ?? "")).not.toBe("");
+  const after = await selectedEditableFreeText(page);
+  expect(after.editorId).toBe(before.editorId);
+  expect(after.rect.left).toBeCloseTo(before.rect.left, 0);
+  expect(after.rect.top).toBeCloseTo(before.rect.top, 0);
+});
+
+test("sub-threshold free-text grip gesture does not move or commit", async ({ page }) => {
+  await createFreeText(page, "Sub-threshold free-text grip guard");
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-sub-threshold-guard.pdf");
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+  const point = await page.evaluate(() => {
+    const annotation = [...document.querySelectorAll<HTMLElement>(".page[data-page-number='1'] .freeTextAnnotation")].at(-1);
+    if (!annotation) throw new Error("Persisted free text annotation not found");
+    const rect = annotation.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.mouse.dblclick(point.x, point.y);
+  await expect.poll(() => editableFreeTextSnapshot(page)).toMatchObject({ isEditable: true, isFocused: true });
+  const before = await selectedEditableFreeText(page);
+  const grip = freeTextGripPoint(before);
+  await page.mouse.move(grip.x, grip.y);
+  await page.mouse.down();
+  await page.mouse.move(grip.x + 2, grip.y + 2);
+  await page.mouse.up();
+
+  const after = await selectedEditableFreeText(page);
+  expect(after.editorId).toBe(before.editorId);
+  expect(after.isEditable).toBe(true);
+  expect(after.rect.left).toBeCloseTo(before.rect.left, 0);
+  expect(after.rect.top).toBeCloseTo(before.rect.top, 0);
+});
+
+test("free-text grip pointercancel rolls back applied movement and preserves dirty state", async ({ page }) => {
+  await createFreeText(page, "Pointercancel free-text grip guard");
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-pointercancel-guard.pdf");
+  await page.evaluate(() => window.__pdfSpike!.setTool("none"));
+  const point = await page.evaluate(() => {
+    const annotation = [...document.querySelectorAll<HTMLElement>(".page[data-page-number='1'] .freeTextAnnotation")].at(-1);
+    if (!annotation) throw new Error("Persisted free text annotation not found");
+    const rect = annotation.getBoundingClientRect();
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+  });
+  await page.mouse.dblclick(point.x, point.y);
+  await expect.poll(() => editableFreeTextSnapshot(page)).toMatchObject({ isEditable: true, isFocused: true });
+  const before = await selectedEditableFreeText(page);
+  expect(await activeDocumentDirty(page)).toBe(false);
+  const grip = freeTextGripPoint(before);
+  const delta = { x: 28, y: 20 };
+  await page.evaluate(({ x, y, movement }) => {
+    const target = document.elementFromPoint(x, y);
+    if (!target) throw new Error("Grip coordinate has no target");
+    target.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        button: 0,
+        buttons: 1,
+        clientX: x,
+        clientY: y,
+        composed: true,
+        isPrimary: true,
+        pointerId: 93,
+        pointerType: "mouse",
+      }),
+    );
+    window.dispatchEvent(
+      new PointerEvent("pointermove", {
+        bubbles: true,
+        buttons: 1,
+        clientX: x + movement.x,
+        clientY: y + movement.y,
+        composed: true,
+        isPrimary: true,
+        pointerId: 93,
+        pointerType: "mouse",
+      }),
+    );
+  }, { ...grip, movement: delta });
+
+  await expect.poll(() => editableFreeTextSnapshot(page)).toMatchObject({
+    editorId: before.editorId,
+    internalText: before.internalText,
+    isEditable: true,
+    isFocused: true,
+  });
+  const moved = await selectedEditableFreeText(page);
+  expectMovedByClientDelta(before, moved, delta);
+  expect(await activeDocumentDirty(page)).toBe(true);
+
+  await page.evaluate(({ x, y, movement }) => {
+    window.dispatchEvent(
+      new PointerEvent("pointercancel", {
+        bubbles: true,
+        clientX: x + movement.x,
+        clientY: y + movement.y,
+        composed: true,
+        isPrimary: true,
+        pointerId: 93,
+        pointerType: "mouse",
+      }),
+    );
+  }, { ...grip, movement: delta });
+
+  const after = await selectedEditableFreeText(page);
+  expect(after.editorId).toBe(before.editorId);
+  expect(after.isEditable).toBe(true);
+  expect(after.isFocused).toBe(true);
+  expect(after.internalText).toBe(before.internalText);
+  expect(after.rect.left).toBeCloseTo(before.rect.left, 0);
+  expect(after.rect.top).toBeCloseTo(before.rect.top, 0);
+  expect(await activeDocumentDirty(page)).toBe(false);
+
+  await page.evaluate(({ x, y, movement }) => {
+    window.dispatchEvent(
+      new PointerEvent("pointermove", {
+        bubbles: true,
+        buttons: 1,
+        clientX: x + movement.x * 2,
+        clientY: y + movement.y * 2,
+        composed: true,
+        isPrimary: true,
+        pointerId: 93,
+        pointerType: "mouse",
+      }),
+    );
+  }, { ...grip, movement: delta });
+  const afterStrayMove = await selectedEditableFreeText(page);
+  expect(afterStrayMove.rect.left).toBeCloseTo(before.rect.left, 0);
+  expect(afterStrayMove.rect.top).toBeCloseTo(before.rect.top, 0);
+
+  expect(await page.evaluate(() => window.__pdfSpike!.moveSelected(1, 0))).toBe(true);
+  const dirtyBeforeCancel = await selectedEditableFreeText(page);
+  expect(await activeDocumentDirty(page)).toBe(true);
+  const dirtyGrip = freeTextGripPoint(dirtyBeforeCancel);
+  await page.evaluate(({ x, y, movement }) => {
+    const target = document.elementFromPoint(x, y);
+    if (!target) throw new Error("Dirty grip coordinate has no target");
+    const event = (type: string, clientX: number, clientY: number, buttons: number) =>
+      new PointerEvent(type, {
+        bubbles: true,
+        button: 0,
+        buttons,
+        clientX,
+        clientY,
+        composed: true,
+        isPrimary: true,
+        pointerId: 94,
+        pointerType: "mouse",
+      });
+    target.dispatchEvent(event("pointerdown", x, y, 1));
+    window.dispatchEvent(event("pointermove", x + movement.x, y + movement.y, 1));
+    window.dispatchEvent(event("pointercancel", x + movement.x, y + movement.y, 0));
+  }, { ...dirtyGrip, movement: delta });
+
+  const dirtyAfterCancel = await selectedEditableFreeText(page);
+  expect(dirtyAfterCancel.editorId).toBe(dirtyBeforeCancel.editorId);
+  expect(dirtyAfterCancel.rect.left).toBeCloseTo(dirtyBeforeCancel.rect.left, 0);
+  expect(dirtyAfterCancel.rect.top).toBeCloseTo(dirtyBeforeCancel.rect.top, 0);
+  expect(await activeDocumentDirty(page)).toBe(true);
 });
 
 test("free text editing uses Enter to finish and Shift+Enter for a new line", async ({ page }) => {
