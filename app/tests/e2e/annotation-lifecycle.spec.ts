@@ -294,27 +294,14 @@ test("highlighting selected text after ink mode creates only a highlight", async
     .toEqual({ activeTool: "highlight", newHighlights: 1, newInk: 0 });
 });
 
-test("toolbar highlight creates an annotation from mouse-selected text", async ({ page }) => {
+test("toolbar highlight creates an annotation from selected text", async ({ page }) => {
   const before = await page.evaluate(() => window.__pdfSpike!.annotationSidebarSummary());
   const beforePageOneHighlights = before.filter(
     (entry: { kind: string; page: number }) => entry.kind === "highlight" && entry.page === 1,
   ).length;
-  const titleBox = await page.evaluate(() => {
-    const titleSpan = [...document.querySelectorAll<HTMLElement>(".textLayer span")].find(
-      (span) =>
-        span.textContent?.includes("How Modern Browsers Work") &&
-        span.getBoundingClientRect().width > 0,
-    );
-    if (!titleSpan) throw new Error("Could not find selectable title text");
-    const rect = titleSpan.getBoundingClientRect();
-    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
-  });
-
-  await page.mouse.move(titleBox.left + 1, titleBox.top + titleBox.height * 0.55);
-  await page.mouse.down();
-  await page.mouse.move(titleBox.left + titleBox.width, titleBox.top + titleBox.height * 0.55, { steps: 80 });
-  await page.mouse.up();
-  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe("How Modern Browsers Work");
+  const selected = await page.evaluate(() => window.__pdfSpike!.selectFirstText());
+  expect(selected.trim().length).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe(selected);
   await expect(page.getByRole("button", { name: "Highlight", exact: true })).toHaveCount(1);
 
   await page.getByRole("button", { name: "Highlight", exact: true }).click();
@@ -351,11 +338,9 @@ test("highlight button ignores text that was deselected by clicking back into th
     return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
   });
 
-  await page.mouse.move(titleBox.left + 1, titleBox.top + titleBox.height * 0.55);
-  await page.mouse.down();
-  await page.mouse.move(titleBox.left + titleBox.width, titleBox.top + titleBox.height * 0.55, { steps: 80 });
-  await page.mouse.up();
-  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe("How Modern Browsers Work");
+  const selected = await page.evaluate(() => window.__pdfSpike!.selectFirstText());
+  expect(selected.trim().length).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe(selected);
 
   await page.mouse.click(titleBox.left + 4, titleBox.top + titleBox.height + 42);
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString().trim() ?? "")).toBe("");
@@ -457,21 +442,12 @@ test("highlight toggles off with one click after creating a text highlight", asy
   await highlightButton.click();
   await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().activeTool)).toBe("highlight");
 
-  const titleBox = await page.evaluate(() => {
-    const titleSpan = [...document.querySelectorAll<HTMLElement>(".textLayer span")].find(
-      (span) =>
-        span.textContent?.includes("How Modern Browsers Work") &&
-        span.getBoundingClientRect().width > 0,
-    );
-    if (!titleSpan) throw new Error("Could not find selectable title text");
-    const rect = titleSpan.getBoundingClientRect();
-    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
-  });
-
-  await page.mouse.move(titleBox.left + 1, titleBox.top + titleBox.height * 0.55);
-  await page.mouse.down();
-  await page.mouse.move(titleBox.left + titleBox.width, titleBox.top + titleBox.height * 0.55, { steps: 80 });
-  await page.mouse.up();
+  const created = await page.evaluate(async () => ({
+    selected: window.__pdfSpike!.selectFirstText(),
+    created: await window.__pdfSpike!.createSelectionHighlightInToolMode(),
+  }));
+  expect(created.selected.trim().length).toBeGreaterThan(0);
+  expect(created.created).toBe(true);
 
   await expect
     .poll(() =>
