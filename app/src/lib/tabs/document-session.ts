@@ -8,7 +8,7 @@
 // the session needs no reactivity of its own. The active tab's live values are
 // held in the shell component's `$state`; on switch the shell captures those
 // into the outgoing session's `snapshot` and restores them from the incoming
-// session. Keeping it rune-free also keeps it unit-testable under `tsx --test`.
+// session. Keeping it rune-free also keeps it unit-testable under Vitest.
 
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { EventBus, PDFLinkService, PDFViewer } from "pdfjs-dist/web/pdf_viewer.mjs";

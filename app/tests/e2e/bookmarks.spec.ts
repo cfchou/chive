@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./coverage";
 import { execFile } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
@@ -961,4 +961,3 @@ test("bookmark color can be edited and persists through native outline color", a
     .toBe("#3b82f6");
   await expect(page.locator(".bookmark-page-marker")).toHaveCSS("background-color", "rgb(59, 130, 246)");
 });
-

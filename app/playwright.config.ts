@@ -1,5 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const coverageEnabled = process.env.VITE_COVERAGE === "true";
+const port = coverageEnabled ? 1432 : 1430;
+const baseURL = `http://127.0.0.1:${port}`;
+
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: false,
@@ -9,13 +13,13 @@ export default defineConfig({
     timeout: 10_000,
   },
   use: {
-    baseURL: "http://127.0.0.1:1430",
+    baseURL,
     trace: "on-first-retry",
   },
   webServer: {
-    command: "npm run dev -- --host 127.0.0.1",
-    url: "http://127.0.0.1:1430",
-    reuseExistingServer: !process.env.CI,
+    command: `npm run dev -- --host 127.0.0.1 --port ${port}`,
+    url: baseURL,
+    reuseExistingServer: !process.env.CI && !coverageEnabled,
     timeout: 120_000,
   },
   projects: [

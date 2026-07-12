@@ -1,11 +1,40 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
+import istanbul from "vite-plugin-istanbul";
 
 const host = process.env.TAURI_DEV_HOST;
+const coverageEnabled = process.env.VITE_COVERAGE === "true";
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [sveltekit()],
+  plugins: [
+    sveltekit(),
+    ...(coverageEnabled
+      ? [
+          istanbul({
+            cwd: process.cwd(),
+            include: ["src/**/*.ts", "src/**/*.svelte"],
+            exclude: ["src/lib/debug/**"],
+            extension: [".ts", ".svelte"],
+            requireEnv: true,
+            checkProd: true,
+          }),
+        ]
+      : []),
+  ],
+
+  test: {
+    include: ["tests/unit/**/*.test.ts"],
+    environment: "node",
+    coverage: {
+      provider: "istanbul",
+      reportsDirectory: "coverage/unit",
+      reporter: ["json"],
+      include: ["src/**/*.ts"],
+      exclude: ["src/lib/debug/**"],
+      all: true,
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

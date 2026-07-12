@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./coverage";
 import { createFreeText, loadFixture, openApp, waitForPageReady } from "./helpers/pdf-spike";
 
 test.describe("Document Tab review regressions", () => {
