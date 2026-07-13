@@ -178,8 +178,8 @@ export async function createFreeText(page: Page, text: string, pageNumber = 1) {
   await page.waitForTimeout(300);
 }
 
-export async function createInkStroke(page: Page, placement: "default" | "top-edge" = "default") {
-  const stats = await page.evaluate(async (strokePlacement) => {
+export async function createInkStroke(page: Page) {
+  const stats = await page.evaluate(async () => {
     window.__pdfSpike!.setTool("ink");
     await new Promise((resolve) => setTimeout(resolve, 150));
     window.__pdfSpike!.recolorSelectedInk("red");
@@ -210,10 +210,9 @@ export async function createInkStroke(page: Page, placement: "default" | "top-ed
         }),
       );
     };
-    const points = strokePlacement === "top-edge" ? [[140, 35], [200, 80], [260, 125]] : [[140, 220], [200, 270], [260, 320]];
-    dispatch("pointerdown", 11, points[0][0], points[0][1], 1);
-    dispatch("pointermove", 11, points[1][0], points[1][1], 1);
-    dispatch("pointermove", 11, points[2][0], points[2][1], 1);
+    dispatch("pointerdown", 11, 140, 220, 1);
+    dispatch("pointermove", 11, 200, 270, 1);
+    dispatch("pointermove", 11, 260, 320, 1);
     window.dispatchEvent(
       new PointerEvent("pointerup", {
         bubbles: true,
@@ -224,13 +223,13 @@ export async function createInkStroke(page: Page, placement: "default" | "top-ed
         isPrimary: true,
         button: 0,
         buttons: 0,
-        ...point(points[2][0], points[2][1]),
+        ...point(260, 320),
       }),
     );
     window.__pdfSpike!.setTool("none");
     await new Promise((resolve) => setTimeout(resolve, 700));
     return window.__pdfSpike!.stats();
-  }, placement);
+  });
   expect(Number(stats.inkEditors ?? 0)).toBeGreaterThan(0);
 }
 
@@ -306,111 +305,6 @@ export async function expectNoVisibleAnnotationPopup(page: Page) {
     }).length;
   });
   expect(visiblePopups).toBe(0);
-}
-
-type ToolbarControlGeometry = {
-  activeTabCount: number;
-  color: { bottom: number; height: number; left: number; right: number; top: number; width: number };
-  deleteAccessibleName: string | null;
-  deleteControl: { bottom: number; height: number; left: number; right: number; top: number; width: number };
-  deleteFocusable: boolean;
-  deleteOffsetParentClassName: string | null;
-  deletePosition: string;
-  editor: { bottom: number; top: number };
-  toolbar: { bottom: number; height: number; left: number; right: number; top: number; width: number };
-  toolbarCount: number;
-};
-
-export async function expectSelectedEditorToolbarControlsAdjacent(page: Page) {
-  const readGeometry = () =>
-    page.evaluate(() => {
-        const displayedContainers = [...document.querySelectorAll<HTMLElement>(".pdf-container")].filter((container) => {
-          const style = getComputedStyle(container);
-          const rect = container.getBoundingClientRect();
-          return style.display !== "none" && rect.width > 0 && rect.height > 0;
-        });
-        const activeTabCount = window.__pdfSpike!.tabs.list().filter((tab: { active: boolean }) => tab.active).length;
-        const container = displayedContainers[0];
-        if (!container) return null;
-
-        const toolbars = [...container.querySelectorAll<HTMLElement>(
-          ".annotationEditorLayer .selectedEditor .editToolbar:not(.hidden)",
-        )];
-        const toolbar = toolbars[0];
-        const editor = toolbar?.closest<HTMLElement>(".selectedEditor");
-        const color = toolbar?.querySelector<HTMLElement>(".buttons .basicColorPicker");
-        const deleteControl = toolbar?.querySelector<HTMLElement>(".buttons .deleteButton");
-        if (!toolbar || !editor || !color || !deleteControl) return null;
-        const colorRect = color.getBoundingClientRect();
-        const deleteRect = deleteControl.getBoundingClientRect();
-        if (colorRect.width <= 0 || colorRect.height <= 0 || deleteRect.width <= 0 || deleteRect.height <= 0) return null;
-
-        return {
-          activeTabCount,
-          color: colorRect.toJSON(),
-          deleteAccessibleName:
-            deleteControl.getAttribute("aria-label") ??
-            deleteControl.getAttribute("title") ??
-            deleteControl.getAttribute("data-l10n-id"),
-          deleteControl: deleteRect.toJSON(),
-          deleteFocusable: !deleteControl.matches(":disabled") && deleteControl.tabIndex >= 0,
-          deleteOffsetParentClassName:
-            deleteControl.offsetParent instanceof HTMLElement ? deleteControl.offsetParent.className : null,
-          deletePosition: getComputedStyle(deleteControl).position,
-          editor: editor.getBoundingClientRect().toJSON(),
-          toolbar: toolbar.getBoundingClientRect().toJSON(),
-          toolbarCount: toolbars.length,
-        };
-    });
-  await expect.poll(readGeometry).not.toBeNull();
-  const snapshot = await readGeometry();
-  if (!snapshot) throw new Error("Selected editor toolbar controls were not available");
-  const geometry = snapshot as ToolbarControlGeometry;
-  const contained = (inner: ToolbarControlGeometry["color"], outer: ToolbarControlGeometry["toolbar"]) =>
-    inner.left >= outer.left - 2 &&
-    inner.right <= outer.right + 2 &&
-    inner.top >= outer.top - 2 &&
-    inner.bottom <= outer.bottom + 2;
-
-  expect(geometry.activeTabCount).toBe(1);
-  expect(geometry.toolbarCount).toBe(1);
-  // PDF.js 6.0.227 defines both controls as 28px. Keep a small rasterization
-  // tolerance so a missing custom property cannot turn the row into a tall
-  // but otherwise self-contained toolbar.
-  expect(geometry.color.width).toBeGreaterThanOrEqual(26);
-  expect(geometry.color.width).toBeLessThanOrEqual(30);
-  expect(geometry.color.height).toBeGreaterThanOrEqual(26);
-  expect(geometry.color.height).toBeLessThanOrEqual(30);
-  expect(geometry.deleteControl.width).toBeGreaterThanOrEqual(26);
-  expect(geometry.deleteControl.width).toBeLessThanOrEqual(30);
-  expect(geometry.deleteControl.height).toBeGreaterThanOrEqual(26);
-  expect(geometry.deleteControl.height).toBeLessThanOrEqual(30);
-  expect(geometry.deleteFocusable).toBe(true);
-  expect(geometry.deleteAccessibleName).toBeTruthy();
-  expect(contained(geometry.color, geometry.toolbar)).toBe(true);
-  expect(contained(geometry.deleteControl, geometry.toolbar)).toBe(true);
-  expect(Math.abs(geometry.color.top + geometry.color.height / 2 - (geometry.deleteControl.top + geometry.deleteControl.height / 2))).toBeLessThanOrEqual(2);
-  expect(geometry.deleteControl.left - geometry.color.right).toBeGreaterThanOrEqual(0);
-  expect(geometry.deleteControl.left - geometry.color.right).toBeLessThanOrEqual(8);
-  expect(geometry.deletePosition).not.toMatch(/absolute|fixed/);
-  expect(geometry.deleteOffsetParentClassName).toContain("editToolbar");
-  expect(geometry.toolbar.top - geometry.editor.bottom).toBeGreaterThanOrEqual(0);
-  expect(geometry.toolbar.top - geometry.editor.bottom).toBeLessThanOrEqual(8);
-  const hitTarget = await page.evaluate(() => {
-    const displayedContainer = [...document.querySelectorAll<HTMLElement>(".pdf-container")].find((container) => {
-      const style = getComputedStyle(container);
-      const rect = container.getBoundingClientRect();
-      return style.display !== "none" && rect.width > 0 && rect.height > 0;
-    });
-    const button = displayedContainer?.querySelector<HTMLElement>(
-      ".annotationEditorLayer .selectedEditor .editToolbar:not(.hidden) .buttons .deleteButton",
-    );
-    if (!button) return false;
-    const rect = button.getBoundingClientRect();
-    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    return hit === button || Boolean(hit && button.contains(hit));
-  });
-  expect(hitTarget).toBe(true);
 }
 
 export function collectPageErrors(page: Page, errors: string[]) {

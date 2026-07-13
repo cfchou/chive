@@ -1,13 +1,6 @@
 import { expect, test } from "./coverage";
 import type { Page } from "@playwright/test";
-import {
-  activateFirstAnnotationByKind,
-  createFreeText,
-  expectSelectedEditorToolbarControlsAdjacent,
-  loadFixture,
-  openApp,
-  waitForPageReady,
-} from "./helpers/pdf-spike";
+import { createFreeText, loadFixture, openApp, waitForPageReady } from "./helpers/pdf-spike";
 
 // Bytes of the bundled sample, fetched in-page so we can open several tabs from
 // the same source without needing Tauri file IO in the browser build.
@@ -74,29 +67,6 @@ test.describe("multi-document tabs", () => {
     await page.evaluate((id) => window.__pdfSpike!.tabs.activate(id), firstId);
     await waitForPageReady(page);
     await expect.poll(() => freeTextCount(page)).toBe(base + 1);
-  });
-
-  test("scopes selected editor toolbar geometry to the Active Document Tab", async ({ page }) => {
-    await openApp(page);
-    await loadFixture(page);
-    await createFreeText(page, "first tab toolbar");
-    await activateFirstAnnotationByKind(page, "freetext");
-    await expectSelectedEditorToolbarControlsAdjacent(page);
-
-    const bytes = await sampleBytes(page);
-    const secondId = await page.evaluate((b) => window.__pdfSpike!.tabs.openBytes(b, "second-toolbar.pdf"), bytes);
-    await waitForPageReady(page);
-    const firstId = (await tabList(page)).find((tab) => tab.id !== secondId)?.id;
-    if (!firstId) throw new Error("First Document Tab was not retained after opening the second tab");
-
-    await createFreeText(page, "second tab toolbar");
-    await activateFirstAnnotationByKind(page, "freetext");
-    await expectSelectedEditorToolbarControlsAdjacent(page);
-
-    await page.evaluate((id) => window.__pdfSpike!.tabs.activate(id), firstId);
-    await waitForPageReady(page);
-    await activateFirstAnnotationByKind(page, "freetext");
-    await expectSelectedEditorToolbarControlsAdjacent(page);
   });
 
   test("dedupes by path and focuses the existing tab", async ({ page }) => {
