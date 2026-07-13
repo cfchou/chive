@@ -4543,6 +4543,8 @@
     pdfLinkService = null;
     pdfDocument = null;
     annotationEditorUIManager = null;
+    currentPath = "";
+    isDirty = false;
     outlineEntries = [];
     outlineStatus = "Open a PDF to inspect its outline.";
     collapsedOutlineIds = [];

@@ -564,6 +564,22 @@ describe("native WKWebView PDF smoke", () => {
         }, opened),
       { timeout: 10_000, timeoutMsg: "Cmd+W did not close only the Active Document Tab" },
     );
+
+    await app.waitUntil(
+      async () => app.execute(() => document.querySelector(".topbar .file")?.textContent?.trim() === "sample.pdf"),
+      { timeout: 10_000, timeoutMsg: "Cmd+W did not refresh the toolbar filename for the remaining Document Tab" },
+    );
+
+    await app.keys([Key.Command, "w"]);
+
+    await app.waitUntil(
+      async () => app.execute(() => (window.__pdfSpike!.tabs.list() as DocumentTabSummary[]).length === 0),
+      { timeout: 10_000, timeoutMsg: "Cmd+W did not close the final Document Tab" },
+    );
+    await app.waitUntil(
+      async () => app.execute(() => document.querySelector(".topbar .file")?.textContent?.trim() === "No document"),
+      { timeout: 10_000, timeoutMsg: "Cmd+W left a stale toolbar filename after closing the final Document Tab" },
+    );
   });
 
   it("hides the Document Tab Bar in fullscreen while keyboard tab switching still works", async () => {
