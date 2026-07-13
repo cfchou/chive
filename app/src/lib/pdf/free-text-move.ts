@@ -1,7 +1,7 @@
 export const FREE_TEXT_MOVE_GRIP_SIZE_PX = 14;
-// The visual grip straddles the selected border; its rendered corner stays
-// outside the editable surface while this hit box remains touch-friendly.
-export const FREE_TEXT_MOVE_GRIP_INSET_PX = -6;
+// The full visual and hit target are tangent to the editor's upper-left
+// border, leaving the editable surface unobstructed.
+export const FREE_TEXT_MOVE_GRIP_INSET_PX = -FREE_TEXT_MOVE_GRIP_SIZE_PX;
 
 export type FreeTextMoveRect = {
   left: number;
