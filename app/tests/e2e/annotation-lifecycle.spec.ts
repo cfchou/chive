@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "./coverage";
+import { PNG } from "pngjs";
 import { FREE_TEXT_MOVE_GRIP_INSET_PX, FREE_TEXT_MOVE_GRIP_SIZE_PX } from "../../src/lib/pdf/free-text-move";
 import {
   activateAnnotationByKind,
@@ -99,6 +100,75 @@ async function setZoomTo100Percent(page: Page) {
   await expect(page.locator(".zoom-value")).toHaveText("100%");
 }
 
+async function setZoomToIssue13Scale(page: Page) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const percent = Number.parseInt(await page.locator(".zoom-value").innerText(), 10);
+    if (percent >= 180) break;
+    await page.getByRole("button", { name: "Zoom in" }).click();
+  }
+  const zoomPercent = Number.parseInt(await page.locator(".zoom-value").innerText(), 10);
+  expect(zoomPercent).toBeGreaterThanOrEqual(180);
+  expect(zoomPercent).toBeLessThanOrEqual(190);
+}
+
+async function expectDeleteGlyphPaintedAndHitTested(page: Page, selector: string) {
+  const deleteButton = page.locator(selector);
+  await expect(deleteButton).toBeVisible();
+  const screenshot = PNG.sync.read(await deleteButton.screenshot());
+  const colorCounts = new Map<string, number>();
+  for (let offset = 0; offset < screenshot.data.length; offset += 4) {
+    const [red, green, blue, alpha] = screenshot.data.subarray(offset, offset + 4);
+    if (alpha < 200) continue;
+    const key = `${red},${green},${blue}`;
+    colorCounts.set(key, (colorCounts.get(key) ?? 0) + 1);
+  }
+  const background = [...colorCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0];
+  if (!background) throw new Error("Delete control screenshot had no opaque background pixels");
+  const [backgroundRed, backgroundGreen, backgroundBlue] = background.split(",").map(Number);
+  const glyphPixels: Array<{ x: number; y: number }> = [];
+  for (let y = 0; y < screenshot.height; y += 1) {
+    for (let x = 0; x < screenshot.width; x += 1) {
+      const offset = (y * screenshot.width + x) * 4;
+      const [red, green, blue, alpha] = screenshot.data.subarray(offset, offset + 4);
+      const contrast =
+        Math.abs(red - backgroundRed) + Math.abs(green - backgroundGreen) + Math.abs(blue - backgroundBlue);
+      if (alpha >= 200 && contrast > 120 && x >= 4 && x <= 23 && y >= 4 && y <= 23) {
+        glyphPixels.push({ x, y });
+      }
+    }
+  }
+  expect(glyphPixels.length).toBeGreaterThan(30);
+  expect(glyphPixels.length).toBeLessThan(200);
+
+  const hitBounds = await deleteButton.evaluate((button) => {
+    const rect = button.getBoundingClientRect();
+    const hits: Array<{ x: number; y: number }> = [];
+    for (let y = 0; y < window.innerHeight; y += 2) {
+      for (let x = Math.max(0, Math.floor(rect.left) - 16); x <= Math.min(window.innerWidth, Math.ceil(rect.right) + 16); x += 2) {
+        const hit = document.elementFromPoint(x, y);
+        if (hit === button || button.contains(hit)) hits.push({ x, y });
+      }
+    }
+    return {
+      button: rect.toJSON(),
+      hit: {
+        bottom: Math.max(...hits.map(({ y }) => y)),
+        left: Math.min(...hits.map(({ x }) => x)),
+        right: Math.max(...hits.map(({ x }) => x)),
+        top: Math.min(...hits.map(({ y }) => y)),
+      },
+      centerTargetsDelete:
+        document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest(".deleteButton") ===
+        button,
+    };
+  });
+  expect(hitBounds.centerTargetsDelete).toBe(true);
+  expect(hitBounds.hit.left).toBeGreaterThanOrEqual(Math.floor(hitBounds.button.left));
+  expect(hitBounds.hit.right).toBeLessThanOrEqual(Math.ceil(hitBounds.button.right));
+  expect(hitBounds.hit.top).toBeGreaterThanOrEqual(Math.floor(hitBounds.button.top));
+  expect(hitBounds.hit.bottom).toBeLessThanOrEqual(Math.ceil(hitBounds.button.bottom));
+}
+
 function freeTextGripPoint(snapshot: EditableFreeTextSnapshot) {
   // The full grip is outside the editor's DOM box. Its event target is
   // therefore the PDF page/editor layer rather than the editable surface;
@@ -167,6 +237,86 @@ test("creates, recolors, saves, reopens, and deletes a highlight", async ({ page
 
   annotations = await pageAnnotations(page);
   expect(annotations.filter((entry) => entry.subtype === "Highlight")).toHaveLength(baseline);
+});
+
+test("paints and hit-tests the persisted Highlight Annotation delete glyph inside its toolbar", async ({ page }) => {
+  await page.setViewportSize({ width: 1643, height: 654 });
+  await page.reload();
+  await openApp(page);
+  await loadFixture(page);
+
+  await createHighlight(page);
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-issue-13-highlight.pdf");
+
+  await setZoomToIssue13Scale(page);
+
+  const highlight = page.locator(".page[data-page-number='1'] .highlightAnnotation").last();
+  const highlightRect = await highlight.boundingBox();
+  if (!highlightRect) throw new Error("Persisted Highlight Annotation was not rendered");
+  await page.mouse.dblclick(highlightRect.x + highlightRect.width / 2, highlightRect.y + highlightRect.height / 2);
+  await expectDeleteGlyphPaintedAndHitTested(
+    page,
+    ".pdf-container:not([style*='display: none']) .highlightEditor.selectedEditor .editToolbar:not(.hidden) .deleteButton",
+  );
+});
+
+test("keeps the Free Text Annotation delete glyph visible and clickable at a scrolled page edge", async ({ page }) => {
+  await page.setViewportSize({ width: 1643, height: 654 });
+  await page.reload();
+  await openApp(page);
+  await loadFixture(page);
+  await createFreeText(page, "Issue 13 Free Text toolbar");
+  await activateFirstAnnotationByKind(page, "freetext");
+  await setZoomToIssue13Scale(page);
+  const moved = await page.evaluate(() => {
+    const editor = document.querySelector<HTMLElement>(".freeTextEditor.selectedEditor");
+    const pdfPage = editor?.closest<HTMLElement>(".page");
+    if (!editor || !pdfPage) throw new Error("Selected Free Text Annotation editor was not rendered");
+    const editorRect = editor.getBoundingClientRect();
+    const pageRect = pdfPage.getBoundingClientRect();
+    return window.__pdfSpike!.moveSelected(0, pageRect.top + 12 - editorRect.top);
+  });
+  expect(moved).toBe(true);
+  const scrollTop = await page.evaluate(() => {
+    const container = [...document.querySelectorAll<HTMLElement>(".pdf-container")].find((candidate) => {
+      const rect = candidate.getBoundingClientRect();
+      return getComputedStyle(candidate).display !== "none" && rect.width > 0 && rect.height > 0;
+    });
+    if (!container) throw new Error("Displayed Active Document Tab container not found");
+    container.scrollTop = Math.min(20, container.scrollHeight - container.clientHeight);
+    return container.scrollTop;
+  });
+  expect(scrollTop).toBeGreaterThan(0);
+
+  await expectDeleteGlyphPaintedAndHitTested(
+    page,
+    ".pdf-container:not([style*='display: none']) .freeTextEditor.selectedEditor .editToolbar:not(.hidden) .deleteButton",
+  );
+});
+
+test("keeps the Ink Annotation delete glyph visible and clickable after zooming and scrolling", async ({ page }) => {
+  await page.setViewportSize({ width: 1643, height: 654 });
+  await page.reload();
+  await openApp(page);
+  await loadFixture(page);
+  await createInkStroke(page);
+  await activateFirstAnnotationByKind(page, "ink");
+  await setZoomToIssue13Scale(page);
+  const scrollTop = await page.evaluate(() => {
+    const container = [...document.querySelectorAll<HTMLElement>(".pdf-container")].find((candidate) => {
+      const rect = candidate.getBoundingClientRect();
+      return getComputedStyle(candidate).display !== "none" && rect.width > 0 && rect.height > 0;
+    });
+    if (!container) throw new Error("Displayed Active Document Tab container not found");
+    container.scrollTop = Math.min(250, container.scrollHeight - container.clientHeight);
+    return container.scrollTop;
+  });
+  expect(scrollTop).toBeGreaterThan(0);
+
+  await expectDeleteGlyphPaintedAndHitTested(
+    page,
+    ".pdf-container:not([style*='display: none']) .inkEditor.selectedEditor .editToolbar:not(.hidden) .deleteButton",
+  );
 });
 
 test("keeps multiple live highlights independently selectable and colored", async ({ page }) => {

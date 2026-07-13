@@ -1,5 +1,6 @@
 import { browser, expect } from "@wdio/globals";
 import path from "node:path";
+import { PNG } from "pngjs";
 import { Key } from "webdriverio";
 import { FREE_TEXT_MOVE_GRIP_INSET_PX, FREE_TEXT_MOVE_GRIP_SIZE_PX } from "../../src/lib/pdf/free-text-move";
 
@@ -7,6 +8,7 @@ type WdioBrowser = {
   execute: <T, Arg = unknown>(script: (arg: Arg) => T | Promise<T>, arg?: Arg) => Promise<T>;
   keys: (value: string | string[]) => Promise<void>;
   setWindowSize: (width: number, height: number) => Promise<void>;
+  takeScreenshot: () => Promise<string>;
   waitUntil: (
     condition: () => Promise<boolean>,
     options?: { timeout?: number; timeoutMsg?: string },
@@ -52,6 +54,88 @@ async function waitForPdfSpike() {
       timeoutMsg: "window.__pdfSpike was not initialized in native WKWebView",
     },
   );
+}
+
+async function expectNativeSelectedDeleteGlyph(editorClass: "highlightEditor" | "freeTextEditor" | "inkEditor") {
+  const readGeometry = () =>
+    app.execute((targetEditorClass) => {
+      const button = document.querySelector<HTMLElement>(
+        `.${targetEditorClass}.selectedEditor .editToolbar:not(.hidden) .deleteButton`,
+      );
+      if (!button) return null;
+      const rect = button.getBoundingClientRect();
+      const hits: Array<{ x: number; y: number }> = [];
+      for (let y = 0; y < innerHeight; y += 2) {
+        for (let x = Math.max(0, Math.floor(rect.left) - 16); x <= Math.min(innerWidth, Math.ceil(rect.right) + 16); x += 2) {
+          const hit = document.elementFromPoint(x, y);
+          if (hit === button || button.contains(hit)) hits.push({ x, y });
+        }
+      }
+      return {
+        button: rect.toJSON(),
+        centerTargetsDelete:
+          document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest(".deleteButton") ===
+          button,
+        hit: {
+          bottom: Math.max(...hits.map(({ y }) => y)),
+          left: Math.min(...hits.map(({ x }) => x)),
+          right: Math.max(...hits.map(({ x }) => x)),
+          top: Math.min(...hits.map(({ y }) => y)),
+        },
+        viewport: { height: innerHeight, width: innerWidth },
+      };
+    }, editorClass);
+  let geometry = await readGeometry();
+  await app.waitUntil(
+    async () => {
+      geometry = await readGeometry();
+      return Boolean(geometry);
+    },
+    { timeout: 10_000, timeoutMsg: `Native selected ${editorClass} delete control was not rendered` },
+  );
+  if (!geometry) throw new Error(`Native selected ${editorClass} delete control was not rendered`);
+
+  const screenshot = PNG.sync.read(Buffer.from(await app.takeScreenshot(), "base64"));
+  const scaleX = screenshot.width / geometry.viewport.width;
+  const scaleY = screenshot.height / geometry.viewport.height;
+  const glyphPixels: Array<{ x: number; y: number }> = [];
+  const left = Math.floor(geometry.button.left * scaleX);
+  const right = Math.ceil(geometry.button.right * scaleX);
+  const top = Math.floor(geometry.button.top * scaleY);
+  const bottom = Math.ceil(geometry.button.bottom * scaleY);
+  const colorCounts = new Map<string, number>();
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const offset = (y * screenshot.width + x) * 4;
+      const [red, green, blue, alpha] = screenshot.data.subarray(offset, offset + 4);
+      if (alpha < 200) continue;
+      const key = `${red},${green},${blue}`;
+      colorCounts.set(key, (colorCounts.get(key) ?? 0) + 1);
+    }
+  }
+  const background = [...colorCounts.entries()].sort((leftColor, rightColor) => rightColor[1] - leftColor[1])[0]?.[0];
+  if (!background) throw new Error("Native delete control screenshot had no opaque background pixels");
+  const [backgroundRed, backgroundGreen, backgroundBlue] = background.split(",").map(Number);
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const offset = (y * screenshot.width + x) * 4;
+      const [red, green, blue, alpha] = screenshot.data.subarray(offset, offset + 4);
+      const contrast =
+        Math.abs(red - backgroundRed) + Math.abs(green - backgroundGreen) + Math.abs(blue - backgroundBlue);
+      const relativeX = (x - left) / scaleX;
+      const relativeY = (y - top) / scaleY;
+      if (alpha >= 200 && contrast > 120 && relativeX >= 4 && relativeX <= 23 && relativeY >= 4 && relativeY <= 23) {
+        glyphPixels.push({ x: relativeX, y: relativeY });
+      }
+    }
+  }
+  expect(glyphPixels.length).toBeGreaterThan(30 * scaleX * scaleY);
+  expect(glyphPixels.length).toBeLessThan(200 * scaleX * scaleY);
+  expect(geometry.centerTargetsDelete).toBe(true);
+  expect(geometry.hit.left).toBeGreaterThanOrEqual(Math.floor(geometry.button.left));
+  expect(geometry.hit.right).toBeLessThanOrEqual(Math.ceil(geometry.button.right));
+  expect(geometry.hit.top).toBeGreaterThanOrEqual(Math.floor(geometry.button.top));
+  expect(geometry.hit.bottom).toBeLessThanOrEqual(Math.ceil(geometry.button.bottom));
 }
 
 async function setNativeFullscreen(fullscreen: boolean) {
@@ -136,6 +220,7 @@ describe("native WKWebView PDF smoke", () => {
       return activatedEditor;
     }, initialText);
     expect(activated).toBe(true);
+    await expectNativeSelectedDeleteGlyph("freeTextEditor");
 
     await app.keys(Key.Enter);
     await app.waitUntil(
@@ -301,6 +386,7 @@ describe("native WKWebView PDF smoke", () => {
     expect(atEdge.gripFullyWithinPage).toBe(true);
     expect(atEdge.gripFullyWithinViewport).toBe(true);
     expect(atEdge.gripTargetsEditor).toBe(false);
+    await expectNativeSelectedDeleteGlyph("freeTextEditor");
 
     const edgeNudge = { x: 8, y: 8 };
     const edgeEditorMoved = () =>
@@ -579,6 +665,40 @@ describe("native WKWebView PDF smoke", () => {
     expect(annotationState.usefulHighlight).toBe(true);
   });
 
+  it("paints and hit-tests the persisted Highlight Annotation delete glyph inside its native toolbar", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1643, 654);
+    await app.execute(async (filePath) => window.__pdfSpike!.loadPath(filePath), samplePdfPath);
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const entries = window.__pdfSpike!.annotationSidebarSummary() as AnnotationEntry[];
+          return Number(window.__pdfSpike!.stats().pages ?? 0) > 0 && entries.some((entry) => entry.kind === "highlight");
+        }),
+      { timeout: 30_000, timeoutMsg: "Native sample PDF did not expose a persisted Highlight Annotation" },
+    );
+    await app.execute(async () => {
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const percent = Number.parseInt(document.querySelector(".zoom-value")?.textContent ?? "0", 10);
+        if (percent >= 180) return;
+        const zoomIn = document.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]');
+        if (!zoomIn) throw new Error("Native Zoom in button not found");
+        zoomIn.click();
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+    });
+    const activated = await app.execute(async () => {
+      window.__pdfSpike!.setTool("none");
+      const entry = (window.__pdfSpike!.annotationSidebarSummary() as AnnotationEntry[]).find(
+        (candidate) => candidate.kind === "highlight",
+      );
+      if (!entry) throw new Error("Native persisted Highlight Annotation Sidebar Entry not found");
+      return window.__pdfSpike!.activateAnnotationBySourceId(entry.sourceId);
+    });
+    expect(activated).toBe(true);
+    await expectNativeSelectedDeleteGlyph("highlightEditor");
+  });
+
   it("opens dropped Finder PDF paths as Document Tabs", async () => {
     await waitForPdfSpike();
     await app.setWindowSize(1280, 900);
@@ -782,6 +902,7 @@ describe("native WKWebView PDF smoke", () => {
         }));
     });
 
+    let inkToolbarVerified = false;
     const activateInk = async (entry: (typeof inks)[number]) => {
       const activated = await app.execute(
         async (sourceId) => window.__pdfSpike!.activateAnnotationBySourceId(sourceId),
@@ -867,7 +988,7 @@ describe("native WKWebView PDF smoke", () => {
         });
         throw new Error(`native ink row did not focus: ${entry.sourceId}; details=${JSON.stringify(stats)}; ${error}`);
       }
-      return app.execute(({ expectedTop, expectedBottom, expectedPersistedKey }) => {
+      const selection = await app.execute(({ expectedTop, expectedBottom, expectedPersistedKey }) => {
         const stats = window.__pdfSpike!.stats();
         const box = stats.annotationFocusBox as { top: number; height: number } | null;
         const selectedEditorBox = () => {
@@ -910,6 +1031,11 @@ describe("native WKWebView PDF smoke", () => {
         expectedBottom: entry.expected.bottom,
         expectedPersistedKey: `${entry.page}:${entry.sourceId}`,
       });
+      if (selection.selectedAnnotationKind === "ink" && !inkToolbarVerified) {
+        await expectNativeSelectedDeleteGlyph("inkEditor");
+        inkToolbarVerified = true;
+      }
+      return selection;
     };
 
     const inkAt = (pageNumber: number, index: number) => {

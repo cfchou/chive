@@ -5521,6 +5521,20 @@
     pointer-events: auto !important;
   }
 
+  :global(.annotationEditorLayer :is(.highlightEditor, .freeTextEditor, .inkEditor) .editToolbar > .buttons > .deleteButton) {
+    position: relative;
+    overflow: hidden;
+  }
+
+  :global(.annotationEditorLayer :is(.highlightEditor, .freeTextEditor, .inkEditor) .editToolbar > .buttons > .deleteButton::before) {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+
   :global(.annotationEditorLayer :is(.freeTextEditor, .inkEditor, .stampEditor, .signatureEditor).selectedEditor) {
     border: 1px dashed #2387d8 !important;
     outline: 0 !important;
