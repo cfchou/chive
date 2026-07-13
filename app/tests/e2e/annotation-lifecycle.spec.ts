@@ -8,6 +8,7 @@ import {
   createFreeText,
   createHighlight,
   createInkStroke,
+  expectSelectedEditorToolbarControlsAdjacent,
   expectNoVisibleAnnotationPopup,
   loadFixture,
   openApp,
@@ -571,6 +572,86 @@ test("creates, edits, moves, saves, and deletes free text", async ({ page }) => 
 
   annotations = await pageAnnotations(page);
   expect(annotations.filter((entry) => entry.subtype === "FreeText")).toHaveLength(baseline);
+});
+
+test("keeps the selected free-text editor toolbar controls adjacent", async ({ page }) => {
+  await createFreeText(page, "Issue 13 free-text toolbar");
+  await activateFirstAnnotationByKind(page, "freetext");
+
+  await expectSelectedEditorToolbarControlsAdjacent(page);
+});
+
+test("keeps selected free-text toolbar controls adjacent through zoom and scrolling", async ({ page }) => {
+  await createFreeText(page, "Issue 13 zoom and scroll");
+  await activateFirstAnnotationByKind(page, "freetext");
+
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await expect(page.locator(".zoom-value")).not.toHaveText("100%");
+  await expectSelectedEditorToolbarControlsAdjacent(page);
+
+  const scrollTop = await page.evaluate(() => {
+    const container = [...document.querySelectorAll<HTMLElement>(".pdf-container")].find((candidate) => {
+      const style = getComputedStyle(candidate);
+      const rect = candidate.getBoundingClientRect();
+      return style.display !== "none" && rect.width > 0 && rect.height > 0;
+    });
+    if (!container) throw new Error("Displayed Active Document Tab container not found");
+    container.scrollTop = Math.min(250, container.scrollHeight - container.clientHeight);
+    return container.scrollTop;
+  });
+  expect(scrollTop).toBeGreaterThan(0);
+  await expectSelectedEditorToolbarControlsAdjacent(page);
+
+  await setZoomTo100Percent(page);
+  await expectSelectedEditorToolbarControlsAdjacent(page);
+});
+
+async function moveSelectedFreeTextNearVerticalPageEdge(page: Page, edge: "top" | "bottom") {
+  const moved = await page.evaluate((targetEdge) => {
+    const container = [...document.querySelectorAll<HTMLElement>(".pdf-container")].find((candidate) => {
+      const style = getComputedStyle(candidate);
+      const rect = candidate.getBoundingClientRect();
+      return style.display !== "none" && rect.width > 0 && rect.height > 0;
+    });
+    const editor = container?.querySelector<HTMLElement>(".freeTextEditor.selectedEditor");
+    const pdfPage = editor?.closest<HTMLElement>(".page");
+    if (!container || !editor || !pdfPage) throw new Error("Selected free-text editor in the Active Document Tab not found");
+    const editorRect = editor.getBoundingClientRect();
+    const pageRect = pdfPage.getBoundingClientRect();
+    const targetTop = targetEdge === "top" ? pageRect.top + 8 : pageRect.bottom - editorRect.height - 8;
+    const moved = window.__pdfSpike!.moveSelected(0, targetTop - editorRect.top);
+    editor.scrollIntoView({ block: "center" });
+    return moved;
+  }, edge);
+  expect(moved).toBe(true);
+}
+
+test("keeps the free-text toolbar grouped at page edges and preserves delete lifecycle", async ({ page }) => {
+  const baselineFreeTextCount = (await pageAnnotations(page)).filter((entry) => entry.subtype === "FreeText").length;
+  await createFreeText(page, "Issue 13 edge placement");
+  await activateFirstAnnotationByKind(page, "freetext");
+
+  await moveSelectedFreeTextNearVerticalPageEdge(page, "top");
+  await expectSelectedEditorToolbarControlsAdjacent(page);
+  await moveSelectedFreeTextNearVerticalPageEdge(page, "bottom");
+  await expectSelectedEditorToolbarControlsAdjacent(page);
+
+  const beforeDelete = await page.evaluate(
+    () => window.__pdfSpike!.annotationSidebarSummary().filter((entry: { kind: string }) => entry.kind === "freetext").length,
+  );
+  await page
+    .locator(".pdf-container:not([style*='display: none']) .freeTextEditor.selectedEditor .editToolbar:not(.hidden) .deleteButton")
+    .click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => window.__pdfSpike!.annotationSidebarSummary().filter((entry: { kind: string }) => entry.kind === "freetext").length,
+      ),
+    )
+    .toBe(beforeDelete - 1);
+  await saveAndReopen(page, "/tmp/pdfspike-playwright-issue-13-edge-delete.pdf");
+  expect((await pageAnnotations(page)).filter((entry) => entry.subtype === "FreeText")).toHaveLength(baselineFreeTextCount);
 });
 
 test("selected editable free text renders a full exterior upper-left move grip", async ({ page }) => {
@@ -1272,6 +1353,29 @@ test("creates, moves, recolors, and deletes ink annotation", async ({ page }) =>
 
   annotations = await pageAnnotations(page);
   expect(annotations.filter((entry) => entry.subtype === "Ink")).toHaveLength(baseline);
+});
+
+test("keeps an edge-created ink toolbar controls adjacent through zoom and scrolling", async ({ page }) => {
+  await createInkStroke(page, "top-edge");
+  await activateFirstAnnotationByKind(page, "ink");
+  await expectSelectedEditorToolbarControlsAdjacent(page);
+
+  await page.getByRole("button", { name: "Zoom in" }).click();
+  await expect(page.locator(".zoom-value")).not.toHaveText("100%");
+  await expectSelectedEditorToolbarControlsAdjacent(page);
+
+  const scrollTop = await page.evaluate(() => {
+    const container = [...document.querySelectorAll<HTMLElement>(".pdf-container")].find((candidate) => {
+      const style = getComputedStyle(candidate);
+      const rect = candidate.getBoundingClientRect();
+      return style.display !== "none" && rect.width > 0 && rect.height > 0;
+    });
+    if (!container) throw new Error("Displayed Active Document Tab container not found");
+    container.scrollTop = Math.min(20, container.scrollHeight - container.clientHeight);
+    return container.scrollTop;
+  });
+  expect(scrollTop).toBeGreaterThan(0);
+  await expectSelectedEditorToolbarControlsAdjacent(page);
 });
 
 test("selected ink keeps recolored value after clicking inside it", async ({ page }) => {
