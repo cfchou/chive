@@ -88,11 +88,11 @@ test.describe("unsaved-changes close prompt", () => {
     const editorId = await prepareEditableFreeTextAtViewportCenter(page);
 
     await closeActiveTab(page);
-    await expect(page.locator(".modal")).toBeVisible();
+    await expect(modal(page)).toBeVisible();
 
     const result = await page.evaluate((id) => {
       const editor = document.getElementById(id);
-      const prompt = document.querySelector<HTMLElement>(".modal");
+      const prompt = document.querySelector<HTMLElement>("dialog.modal");
       if (!(editor instanceof HTMLElement) || !(prompt instanceof HTMLElement)) {
         throw new Error("Expected editable free-text editor and close prompt");
       }
@@ -121,7 +121,7 @@ test.describe("unsaved-changes close prompt", () => {
     expect(result.saveButtonHasFocus).toBe(true);
 
     await page.locator("[data-modal-cancel]").click();
-    await expect(page.locator(".modal")).toHaveCount(0);
+    await expect(modal(page)).toHaveCount(0);
     await expect(page.locator("[data-doc-tab]")).toHaveCount(2);
   });
 
