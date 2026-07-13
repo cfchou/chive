@@ -65,8 +65,9 @@ async function expectNativeSelectedDeleteGlyph(editorClass: "highlightEditor" | 
       if (!button) return null;
       const rect = button.getBoundingClientRect();
       const hits: Array<{ x: number; y: number }> = [];
-      for (let y = 0; y < innerHeight; y += 2) {
-        for (let x = 0; x < innerWidth; x += 2) {
+      const scanStep = Math.max(4, Math.floor(Math.min(rect.width, rect.height) / 4));
+      for (let y = 0; y < innerHeight; y += scanStep) {
+        for (let x = 0; x < innerWidth; x += scanStep) {
           const hit = document.elementFromPoint(x, y);
           if (hit === button || button.contains(hit)) hits.push({ x, y });
         }
@@ -126,12 +127,27 @@ async function expectNativeSelectedDeleteGlyph(editorClass: "highlightEditor" | 
       const relativeX = (x - left) / scaleX;
       const relativeY = (y - top) / scaleY;
       if (alpha >= 200 && contrast > 120 && relativeX >= 4 && relativeX <= 23 && relativeY >= 4 && relativeY <= 23) {
-        glyphPixels.push({ x: relativeX, y: relativeY });
+        glyphPixels.push({ x: (x + 0.5) / scaleX, y: (y + 0.5) / scaleY });
       }
     }
   }
   expect(glyphPixels.length).toBeGreaterThan(30 * scaleX * scaleY);
   expect(glyphPixels.length).toBeLessThan(200 * scaleX * scaleY);
+  const glyphTargetsDelete = await app.execute(
+    ({ targetEditorClass, paintedGlyphPoints }) => {
+      const button = document.querySelector<HTMLElement>(
+        `.${targetEditorClass}.selectedEditor .editToolbar:not(.hidden) .deleteButton`,
+      );
+      return Boolean(
+        button &&
+          paintedGlyphPoints.every(
+            ({ x, y }) => document.elementFromPoint(x, y)?.closest(".deleteButton") === button,
+          ),
+      );
+    },
+    { targetEditorClass: editorClass, paintedGlyphPoints: glyphPixels },
+  );
+  expect(glyphTargetsDelete).toBe(true);
   expect(geometry.centerTargetsDelete).toBe(true);
   expect(geometry.hit.left).toBeGreaterThanOrEqual(Math.floor(geometry.button.left));
   expect(geometry.hit.right).toBeLessThanOrEqual(Math.ceil(geometry.button.right));

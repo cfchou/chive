@@ -115,6 +115,8 @@ async function expectDeleteGlyphPaintedAndHitTested(page: Page, selector: string
   const deleteButton = page.locator(selector);
   await expect(deleteButton).toBeVisible();
   const screenshot = PNG.sync.read(await deleteButton.screenshot());
+  const buttonBox = await deleteButton.boundingBox();
+  if (!buttonBox) throw new Error("Delete control had no viewport bounds");
   const colorCounts = new Map<string, number>();
   for (let offset = 0; offset < screenshot.data.length; offset += 4) {
     const [red, green, blue, alpha] = screenshot.data.subarray(offset, offset + 4);
@@ -139,12 +141,19 @@ async function expectDeleteGlyphPaintedAndHitTested(page: Page, selector: string
   }
   expect(glyphPixels.length).toBeGreaterThan(30);
   expect(glyphPixels.length).toBeLessThan(200);
+  const scaleX = screenshot.width / buttonBox.width;
+  const scaleY = screenshot.height / buttonBox.height;
+  const glyphHitPoints = glyphPixels.map(({ x, y }) => ({
+    x: buttonBox.x + (x + 0.5) / scaleX,
+    y: buttonBox.y + (y + 0.5) / scaleY,
+  }));
 
-  const hitBounds = await deleteButton.evaluate((button) => {
+  const hitBounds = await deleteButton.evaluate((button, paintedGlyphPoints) => {
     const rect = button.getBoundingClientRect();
     const hits: Array<{ x: number; y: number }> = [];
-    for (let y = 0; y < window.innerHeight; y += 2) {
-      for (let x = 0; x < window.innerWidth; x += 2) {
+    const scanStep = Math.max(4, Math.floor(Math.min(rect.width, rect.height) / 4));
+    for (let y = 0; y < window.innerHeight; y += scanStep) {
+      for (let x = 0; x < window.innerWidth; x += scanStep) {
         const hit = document.elementFromPoint(x, y);
         if (hit === button || button.contains(hit)) hits.push({ x, y });
       }
@@ -161,9 +170,13 @@ async function expectDeleteGlyphPaintedAndHitTested(page: Page, selector: string
       centerTargetsDelete:
         document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest(".deleteButton") ===
         button,
+      glyphTargetsDelete: paintedGlyphPoints.every(
+        ({ x, y }) => document.elementFromPoint(x, y)?.closest(".deleteButton") === button,
+      ),
     };
-  });
+  }, glyphHitPoints);
   expect(hitBounds.centerTargetsDelete).toBe(true);
+  expect(hitBounds.glyphTargetsDelete).toBe(true);
   expect(hitBounds.hit.left).toBeGreaterThanOrEqual(Math.floor(hitBounds.button.left));
   expect(hitBounds.hit.right).toBeLessThanOrEqual(Math.ceil(hitBounds.button.right));
   expect(hitBounds.hit.top).toBeGreaterThanOrEqual(Math.floor(hitBounds.button.top));
