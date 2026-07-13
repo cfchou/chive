@@ -19,7 +19,7 @@ export default async function globalSetup(config: FullConfig) {
 
   let identity: { app?: unknown; root?: unknown };
   try {
-    const response = await fetch(identityURL);
+    const response = await fetch(identityURL, { signal: AbortSignal.timeout(5_000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     identity = await response.json();
   } catch (error) {
