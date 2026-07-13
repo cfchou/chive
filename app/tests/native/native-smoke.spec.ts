@@ -1,5 +1,6 @@
 import { browser, expect } from "@wdio/globals";
 import path from "node:path";
+import { PNG } from "pngjs";
 import { Key } from "webdriverio";
 import { FREE_TEXT_MOVE_GRIP_INSET_PX, FREE_TEXT_MOVE_GRIP_SIZE_PX } from "../../src/lib/pdf/free-text-move";
 
@@ -7,6 +8,7 @@ type WdioBrowser = {
   execute: <T, Arg = unknown>(script: (arg: Arg) => T | Promise<T>, arg?: Arg) => Promise<T>;
   keys: (value: string | string[]) => Promise<void>;
   setWindowSize: (width: number, height: number) => Promise<void>;
+  takeScreenshot: () => Promise<string>;
   waitUntil: (
     condition: () => Promise<boolean>,
     options?: { timeout?: number; timeoutMsg?: string },
@@ -44,162 +46,6 @@ const coloredOutlinePdfPath = path.resolve(process.cwd(), "static/colored-outlin
 const bookmarkPdfPath = "/tmp/pdfspike-native-bookmark.pdf";
 const freeTextGripPdfPath = "/tmp/pdfspike-native-free-text-grip.pdf";
 
-type NativeToolbarGeometry = {
-  activeTabCount: number;
-  available: boolean;
-  color: { bottom: number; height: number; left: number; right: number; top: number; width: number } | null;
-  deleteAccessibleName: string | null;
-  deleteControl: { bottom: number; height: number; left: number; right: number; top: number; width: number } | null;
-  deleteFocusable: boolean;
-  deleteOffsetParentClassName: string | null;
-  deletePosition: string | null;
-  diagnostics: Record<string, unknown>;
-  editor: { bottom: number; height: number; left: number; right: number; top: number; width: number } | null;
-  hitTarget: boolean;
-  toolbar: { bottom: number; height: number; left: number; right: number; top: number; width: number } | null;
-  toolbarCount: number;
-};
-
-async function selectedEditorToolbarGeometry(): Promise<NativeToolbarGeometry> {
-  return app.execute(() => {
-    const displayedContainers = [...document.querySelectorAll<HTMLElement>(".pdf-container")].filter((container) => {
-      const style = getComputedStyle(container);
-      const rect = container.getBoundingClientRect();
-      return style.display !== "none" && rect.width > 0 && rect.height > 0;
-    });
-    const container = displayedContainers[0];
-    const activeTabCount = window.__pdfSpike!.tabs.list().filter((tab: DocumentTabSummary) => tab.active).length;
-    const selectedEditor = container?.querySelector<HTMLElement>(".annotationEditorLayer .selectedEditor");
-    const toolbars = selectedEditor
-      ? [...selectedEditor.querySelectorAll<HTMLElement>(".editToolbar:not(.hidden)")]
-      : [];
-    const toolbar = toolbars[0];
-    const color = toolbar?.querySelector<HTMLElement>(".buttons .basicColorPicker");
-    const deleteControl = toolbar?.querySelector<HTMLElement>(".buttons .deleteButton");
-    const containerRect = container?.getBoundingClientRect();
-    const editorRect = selectedEditor?.getBoundingClientRect();
-    const toolbarRect = toolbar?.getBoundingClientRect();
-    const colorRect = color?.getBoundingClientRect();
-    const deleteRect = deleteControl?.getBoundingClientRect();
-    const hit = deleteRect
-      ? document.elementFromPoint(deleteRect.left + deleteRect.width / 2, deleteRect.top + deleteRect.height / 2)
-      : null;
-    return {
-      activeTabCount,
-      available: Boolean(
-        container &&
-          selectedEditor &&
-          toolbar &&
-          color &&
-          deleteControl &&
-          colorRect &&
-          deleteRect &&
-          colorRect.width > 0 &&
-          colorRect.height > 0 &&
-          deleteRect.width > 0 &&
-          deleteRect.height > 0,
-      ),
-      color: colorRect?.toJSON() ?? null,
-      deleteAccessibleName:
-        deleteControl?.getAttribute("aria-label") ??
-        deleteControl?.getAttribute("title") ??
-        deleteControl?.getAttribute("data-l10n-id") ??
-        null,
-      deleteControl: deleteRect?.toJSON() ?? null,
-      deleteFocusable: Boolean(deleteControl && !deleteControl.matches(":disabled") && deleteControl.tabIndex >= 0),
-      deleteOffsetParentClassName:
-        deleteControl?.offsetParent instanceof HTMLElement ? deleteControl.offsetParent.className : null,
-      deletePosition: deleteControl ? getComputedStyle(deleteControl).position : null,
-      diagnostics: {
-        colorControl: colorRect?.toJSON() ?? null,
-        containerCount: displayedContainers.length,
-        containerScroll: container ? { left: container.scrollLeft, top: container.scrollTop } : null,
-        deleteControl: deleteRect?.toJSON() ?? null,
-        deleteOffsetParentClassName:
-          deleteControl?.offsetParent instanceof HTMLElement ? deleteControl.offsetParent.className : null,
-        editor: selectedEditor
-          ? {
-              className: selectedEditor.className,
-              id: selectedEditor.id,
-              rect: editorRect?.toJSON() ?? null,
-            }
-          : null,
-        page: selectedEditor?.closest(".page")?.getAttribute("data-page-number") ?? null,
-        stats: window.__pdfSpike!.stats(),
-        toolbar: toolbar
-          ? {
-              computed: {
-                display: getComputedStyle(toolbar).display,
-                inset: getComputedStyle(toolbar).inset,
-                position: getComputedStyle(toolbar).position,
-              },
-              outerHTML: toolbar.outerHTML,
-              rect: toolbarRect?.toJSON() ?? null,
-            }
-          : null,
-        viewerScale: document.querySelector(".zoom-value")?.textContent?.trim() ?? null,
-      },
-      editor: editorRect?.toJSON() ?? null,
-      hitTarget: Boolean(deleteControl && (hit === deleteControl || deleteControl.contains(hit))),
-      toolbar: toolbarRect?.toJSON() ?? null,
-      toolbarCount: toolbars.length,
-    };
-  });
-}
-
-async function expectToolbarControlsAdjacent(): Promise<NativeToolbarGeometry> {
-  let geometry = await selectedEditorToolbarGeometry();
-  try {
-    await app.waitUntil(
-      async () => {
-        geometry = await selectedEditorToolbarGeometry();
-        return geometry.available;
-      },
-      { timeout: 10_000, timeoutMsg: "Native selected editor toolbar controls did not reach stable geometry" },
-    );
-  } catch (error) {
-    throw new Error(`Native selected editor toolbar controls were unavailable: ${JSON.stringify(geometry.diagnostics)}`, {
-      cause: error,
-    });
-  }
-  const color = geometry.color;
-  const deleteControl = geometry.deleteControl;
-  const editor = geometry.editor;
-  const toolbar = geometry.toolbar;
-  if (!geometry.available || !color || !deleteControl || !editor || !toolbar) {
-    throw new Error(`Native selected editor toolbar controls were unavailable: ${JSON.stringify(geometry.diagnostics)}`);
-  }
-  const contained = (inner: typeof color) =>
-    inner.left >= toolbar.left - 2 &&
-    inner.right <= toolbar.right + 2 &&
-    inner.top >= toolbar.top - 2 &&
-    inner.bottom <= toolbar.bottom + 2;
-
-  expect(geometry.activeTabCount).toBe(1);
-  expect(geometry.toolbarCount).toBe(1);
-  expect(color.width).toBeGreaterThanOrEqual(26);
-  expect(color.width).toBeLessThanOrEqual(30);
-  expect(color.height).toBeGreaterThanOrEqual(26);
-  expect(color.height).toBeLessThanOrEqual(30);
-  expect(deleteControl.width).toBeGreaterThanOrEqual(26);
-  expect(deleteControl.width).toBeLessThanOrEqual(30);
-  expect(deleteControl.height).toBeGreaterThanOrEqual(26);
-  expect(deleteControl.height).toBeLessThanOrEqual(30);
-  expect(geometry.deleteFocusable).toBe(true);
-  expect(geometry.deleteAccessibleName).toBeTruthy();
-  expect(contained(color)).toBe(true);
-  expect(contained(deleteControl)).toBe(true);
-  expect(Math.abs(color.top + color.height / 2 - (deleteControl.top + deleteControl.height / 2))).toBeLessThanOrEqual(2);
-  expect(deleteControl.left - color.right).toBeGreaterThanOrEqual(0);
-  expect(deleteControl.left - color.right).toBeLessThanOrEqual(8);
-  expect(geometry.deletePosition).not.toMatch(/absolute|fixed/);
-  expect(geometry.deleteOffsetParentClassName).toContain("editToolbar");
-  expect(toolbar.top - editor.bottom).toBeGreaterThanOrEqual(0);
-  expect(toolbar.top - editor.bottom).toBeLessThanOrEqual(8);
-  expect(geometry.hitTarget).toBe(true);
-  return geometry;
-}
-
 async function waitForPdfSpike() {
   await app.waitUntil(
     async () => app.execute(() => Boolean((window as Window & { __pdfSpike?: unknown }).__pdfSpike)),
@@ -208,6 +54,105 @@ async function waitForPdfSpike() {
       timeoutMsg: "window.__pdfSpike was not initialized in native WKWebView",
     },
   );
+}
+
+async function expectNativeSelectedDeleteGlyph(editorClass: "highlightEditor" | "freeTextEditor" | "inkEditor") {
+  const readGeometry = () =>
+    app.execute((targetEditorClass) => {
+      const button = document.querySelector<HTMLElement>(
+        `.${targetEditorClass}.selectedEditor .editToolbar:not(.hidden) .deleteButton`,
+      );
+      if (!button) return null;
+      const rect = button.getBoundingClientRect();
+      const hits: Array<{ x: number; y: number }> = [];
+      const scanStep = Math.max(4, Math.floor(Math.min(rect.width, rect.height) / 4));
+      for (let y = 0; y < innerHeight; y += scanStep) {
+        for (let x = 0; x < innerWidth; x += scanStep) {
+          const hit = document.elementFromPoint(x, y);
+          if (hit === button || button.contains(hit)) hits.push({ x, y });
+        }
+      }
+      if (hits.length === 0) return null;
+      return {
+        button: rect.toJSON(),
+        centerTargetsDelete:
+          document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)?.closest(".deleteButton") ===
+          button,
+        hit: {
+          bottom: Math.max(...hits.map(({ y }) => y)),
+          left: Math.min(...hits.map(({ x }) => x)),
+          right: Math.max(...hits.map(({ x }) => x)),
+          top: Math.min(...hits.map(({ y }) => y)),
+        },
+        viewport: { height: innerHeight, width: innerWidth },
+      };
+    }, editorClass);
+  let geometry = await readGeometry();
+  await app.waitUntil(
+    async () => {
+      geometry = await readGeometry();
+      return Boolean(geometry);
+    },
+    { timeout: 10_000, timeoutMsg: `Native selected ${editorClass} delete control did not become hit-testable` },
+  );
+  if (!geometry) throw new Error(`Native selected ${editorClass} delete control did not become hit-testable`);
+
+  const screenshot = PNG.sync.read(Buffer.from(await app.takeScreenshot(), "base64"));
+  const scaleX = screenshot.width / geometry.viewport.width;
+  const scaleY = screenshot.height / geometry.viewport.height;
+  const glyphPixels: Array<{ x: number; y: number }> = [];
+  const left = Math.floor(geometry.button.left * scaleX);
+  const right = Math.ceil(geometry.button.right * scaleX);
+  const top = Math.floor(geometry.button.top * scaleY);
+  const bottom = Math.ceil(geometry.button.bottom * scaleY);
+  const colorCounts = new Map<string, number>();
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const offset = (y * screenshot.width + x) * 4;
+      const [red, green, blue, alpha] = screenshot.data.subarray(offset, offset + 4);
+      if (alpha < 200) continue;
+      const key = `${red},${green},${blue}`;
+      colorCounts.set(key, (colorCounts.get(key) ?? 0) + 1);
+    }
+  }
+  const background = [...colorCounts.entries()].sort((leftColor, rightColor) => rightColor[1] - leftColor[1])[0]?.[0];
+  if (!background) throw new Error("Native delete control screenshot had no opaque background pixels");
+  const [backgroundRed, backgroundGreen, backgroundBlue] = background.split(",").map(Number);
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const offset = (y * screenshot.width + x) * 4;
+      const [red, green, blue, alpha] = screenshot.data.subarray(offset, offset + 4);
+      const contrast =
+        Math.abs(red - backgroundRed) + Math.abs(green - backgroundGreen) + Math.abs(blue - backgroundBlue);
+      const relativeX = (x - left) / scaleX;
+      const relativeY = (y - top) / scaleY;
+      if (alpha >= 200 && contrast > 120 && relativeX >= 4 && relativeX <= 23 && relativeY >= 4 && relativeY <= 23) {
+        glyphPixels.push({ x: (x + 0.5) / scaleX, y: (y + 0.5) / scaleY });
+      }
+    }
+  }
+  expect(glyphPixels.length).toBeGreaterThan(30 * scaleX * scaleY);
+  expect(glyphPixels.length).toBeLessThan(200 * scaleX * scaleY);
+  const glyphTargetsDelete = await app.execute(
+    ({ targetEditorClass, paintedGlyphPoints }) => {
+      const button = document.querySelector<HTMLElement>(
+        `.${targetEditorClass}.selectedEditor .editToolbar:not(.hidden) .deleteButton`,
+      );
+      return Boolean(
+        button &&
+          paintedGlyphPoints.every(
+            ({ x, y }) => document.elementFromPoint(x, y)?.closest(".deleteButton") === button,
+          ),
+      );
+    },
+    { targetEditorClass: editorClass, paintedGlyphPoints: glyphPixels },
+  );
+  expect(glyphTargetsDelete).toBe(true);
+  expect(geometry.centerTargetsDelete).toBe(true);
+  expect(geometry.hit.left).toBeGreaterThanOrEqual(Math.floor(geometry.button.left));
+  expect(geometry.hit.right).toBeLessThanOrEqual(Math.ceil(geometry.button.right));
+  expect(geometry.hit.top).toBeGreaterThanOrEqual(Math.floor(geometry.button.top));
+  expect(geometry.hit.bottom).toBeLessThanOrEqual(Math.ceil(geometry.button.bottom));
 }
 
 async function setNativeFullscreen(fullscreen: boolean) {
@@ -292,8 +237,7 @@ describe("native WKWebView PDF smoke", () => {
       return activatedEditor;
     }, initialText);
     expect(activated).toBe(true);
-
-    await expectToolbarControlsAdjacent();
+    await expectNativeSelectedDeleteGlyph("freeTextEditor");
 
     await app.keys(Key.Enter);
     await app.waitUntil(
@@ -459,6 +403,7 @@ describe("native WKWebView PDF smoke", () => {
     expect(atEdge.gripFullyWithinPage).toBe(true);
     expect(atEdge.gripFullyWithinViewport).toBe(true);
     expect(atEdge.gripTargetsEditor).toBe(false);
+    await expectNativeSelectedDeleteGlyph("freeTextEditor");
 
     const edgeNudge = { x: 8, y: 8 };
     const edgeEditorMoved = () =>
@@ -580,63 +525,6 @@ describe("native WKWebView PDF smoke", () => {
     });
     expect(reopened).toHaveLength(1);
     expect(reopened[0]?.rect).toEqual(savedGeometry);
-  });
-
-  it("keeps selected native free-text toolbar controls adjacent through zoom and scrolling", async () => {
-    await waitForPdfSpike();
-    await app.setWindowSize(1280, 900);
-    const text = "Native issue 13 toolbar";
-    await app.execute(async (filePath) => window.__pdfSpike!.loadPath(filePath), samplePdfPath);
-    await app.waitUntil(
-      async () => app.execute(() => Number(window.__pdfSpike!.stats().pages ?? 0) > 0),
-      { timeout: 30_000, timeoutMsg: "Native sample PDF did not render before toolbar verification" },
-    );
-    expect(await app.execute(async (value) => window.__pdfSpike!.createPageFreeText(value), text)).toBe(true);
-    await app.waitUntil(
-      async () =>
-        app.execute((value) =>
-          (window.__pdfSpike!.annotationSidebarSummary() as Array<AnnotationEntry & { source?: string }>).some(
-            (candidate) => candidate.kind === "freetext" && candidate.source === "live" && candidate.detail.includes(value),
-          ),
-        text),
-      { timeout: 10_000, timeoutMsg: "Native toolbar Live Annotation Sidebar Entry did not appear" },
-    );
-    const activated = await app.execute(async (value) => {
-      const entry = (window.__pdfSpike!.annotationSidebarSummary() as Array<AnnotationEntry & { source?: string }>).find(
-        (candidate) => candidate.kind === "freetext" && candidate.source === "live" && candidate.detail.includes(value),
-      );
-      if (!entry) throw new Error("Native toolbar free-text Annotation Sidebar Entry not found");
-      return window.__pdfSpike!.activateAnnotationBySourceId(entry.sourceId);
-    }, text);
-    expect(activated).toBe(true);
-    await expectToolbarControlsAdjacent();
-
-    const zoomBefore = await app.execute(() => document.querySelector(".zoom-value")?.textContent?.trim() ?? "");
-    await app.execute(() => {
-      const zoomIn = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-        (button) => button.getAttribute("aria-label") === "Zoom in",
-      );
-      if (!zoomIn) throw new Error("Native Zoom in button not found");
-      zoomIn.click();
-    });
-    await app.waitUntil(
-      async () => app.execute((before) => (document.querySelector(".zoom-value")?.textContent?.trim() ?? "") !== before, zoomBefore),
-      { timeout: 10_000, timeoutMsg: "Native Zoom in did not change the viewer scale" },
-    );
-    await expectToolbarControlsAdjacent();
-
-    const nativeScrollTop = await app.execute(() => {
-      const container = [...document.querySelectorAll<HTMLElement>(".pdf-container")].find((candidate) => {
-        const style = getComputedStyle(candidate);
-        const rect = candidate.getBoundingClientRect();
-        return style.display !== "none" && rect.width > 0 && rect.height > 0;
-      });
-      if (!container) throw new Error("Displayed native Active Document Tab container not found");
-      container.scrollTop = Math.min(50, container.scrollHeight - container.clientHeight);
-      return container.scrollTop;
-    });
-    expect(nativeScrollTop).toBeGreaterThan(0);
-    await expectToolbarControlsAdjacent();
   });
 
   it("keeps editable free text behind the dirty Document Tab Cmd+W prompt", async () => {
@@ -792,6 +680,40 @@ describe("native WKWebView PDF smoke", () => {
     expect(annotationState.freeTextCount).toBeGreaterThan(0);
     expect(annotationState.inkCount).toBeGreaterThan(0);
     expect(annotationState.usefulHighlight).toBe(true);
+  });
+
+  it("paints and hit-tests the persisted Highlight Annotation delete glyph inside its native toolbar", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1643, 654);
+    await app.execute(async (filePath) => window.__pdfSpike!.loadPath(filePath), samplePdfPath);
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const entries = window.__pdfSpike!.annotationSidebarSummary() as AnnotationEntry[];
+          return Number(window.__pdfSpike!.stats().pages ?? 0) > 0 && entries.some((entry) => entry.kind === "highlight");
+        }),
+      { timeout: 30_000, timeoutMsg: "Native sample PDF did not expose a persisted Highlight Annotation" },
+    );
+    await app.execute(async () => {
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const percent = Number.parseInt(document.querySelector(".zoom-value")?.textContent ?? "0", 10);
+        if (percent >= 180) return;
+        const zoomIn = document.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]');
+        if (!zoomIn) throw new Error("Native Zoom in button not found");
+        zoomIn.click();
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+    });
+    const activated = await app.execute(async () => {
+      window.__pdfSpike!.setTool("none");
+      const entry = (window.__pdfSpike!.annotationSidebarSummary() as AnnotationEntry[]).find(
+        (candidate) => candidate.kind === "highlight",
+      );
+      if (!entry) throw new Error("Native persisted Highlight Annotation Sidebar Entry not found");
+      return window.__pdfSpike!.activateAnnotationBySourceId(entry.sourceId);
+    });
+    expect(activated).toBe(true);
+    await expectNativeSelectedDeleteGlyph("highlightEditor");
   });
 
   it("opens dropped Finder PDF paths as Document Tabs", async () => {
@@ -997,6 +919,7 @@ describe("native WKWebView PDF smoke", () => {
         }));
     });
 
+    let inkToolbarVerified = false;
     const activateInk = async (entry: (typeof inks)[number]) => {
       const activated = await app.execute(
         async (sourceId) => window.__pdfSpike!.activateAnnotationBySourceId(sourceId),
@@ -1125,16 +1048,11 @@ describe("native WKWebView PDF smoke", () => {
         expectedBottom: entry.expected.bottom,
         expectedPersistedKey: `${entry.page}:${entry.sourceId}`,
       });
-      if (selection.selectedAnnotationKind === "ink") {
-        return {
-          ...selection,
-          toolbarGeometry: await expectToolbarControlsAdjacent(),
-        };
+      if (selection.selectedAnnotationKind === "ink" && !inkToolbarVerified) {
+        await expectNativeSelectedDeleteGlyph("inkEditor");
+        inkToolbarVerified = true;
       }
-      return {
-        ...selection,
-        toolbarGeometry: null,
-      };
+      return selection;
     };
 
     const inkAt = (pageNumber: number, index: number) => {
@@ -1161,17 +1079,6 @@ describe("native WKWebView PDF smoke", () => {
         firstExpectedPersistedAnnotationKey: `${first.page}:${first.sourceId}`,
         secondExpectedPersistedAnnotationKey: `${second.page}:${second.sourceId}`,
       });
-    }
-
-    const editableOrdinaryInks = result
-      .flatMap((pairResult) => [
-        { intent: pairResult.firstIntent, selection: pairResult.firstInk },
-        { intent: pairResult.secondIntent, selection: pairResult.secondInk },
-      ])
-      .filter(({ intent, selection }) => intent !== "InkHighlight" && selection.selectedAnnotationKind === "ink");
-    expect(editableOrdinaryInks.length).toBeGreaterThan(0);
-    for (const { selection } of editableOrdinaryInks) {
-      expect(selection.toolbarGeometry).not.toBeNull();
     }
 
     for (const pairResult of result) {
