@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "./coverage";
-import { FREE_TEXT_MOVE_GRIP_INSET_PX } from "../../src/lib/pdf/free-text-move";
+import { FREE_TEXT_MOVE_GRIP_INSET_PX, FREE_TEXT_MOVE_GRIP_SIZE_PX } from "../../src/lib/pdf/free-text-move";
 import {
   activateAnnotationByKind,
   activateFirstAnnotationByKind,
@@ -100,10 +100,10 @@ async function setZoomTo100Percent(page: Page) {
 }
 
 function freeTextGripPoint(snapshot: EditableFreeTextSnapshot) {
-  // The visually clipped corner is outside the editor's DOM box. Its event
-  // target is therefore the PDF page/editor layer rather than the editable
-  // surface; the central surface remains reserved for caret and text selection.
-  const offset = FREE_TEXT_MOVE_GRIP_INSET_PX / 2;
+  // The full grip is outside the editor's DOM box. Its event target is
+  // therefore the PDF page/editor layer rather than the editable surface;
+  // the central surface remains reserved for caret and text selection.
+  const offset = FREE_TEXT_MOVE_GRIP_INSET_PX + FREE_TEXT_MOVE_GRIP_SIZE_PX / 2;
   return { x: Math.round(snapshot.rect.left + offset), y: Math.round(snapshot.rect.top + offset) };
 }
 
@@ -573,13 +573,28 @@ test("creates, edits, moves, saves, and deletes free text", async ({ page }) => 
   expect(annotations.filter((entry) => entry.subtype === "FreeText")).toHaveLength(baseline);
 });
 
-test("selected editable free text renders a compact upper-left move grip", async ({ page }) => {
+test("selected editable free text renders a full exterior upper-left move grip", async ({ page }) => {
   const editor = await enterNewFreeTextEditing(page, "Visible free-text move grip");
   const grip = await page.evaluate((editorId) => {
     const root = document.getElementById(editorId);
     if (!(root instanceof HTMLElement)) throw new Error("Selected free-text editor root not found");
     const style = getComputedStyle(root, "::after");
+    const internal = root.querySelector<HTMLElement>(".internal[contenteditable='true'], [contenteditable='true']");
+    if (!internal) throw new Error("Selected free-text editor content not found");
+    const rootRect = root.getBoundingClientRect();
+    const internalRect = internal.getBoundingClientRect();
+    const left = rootRect.left + Number.parseFloat(style.left);
+    const top = rootRect.top + Number.parseFloat(style.top);
+    const width = Number.parseFloat(style.width);
+    const height = Number.parseFloat(style.height);
+    const center = { x: Math.round(left + width / 2), y: Math.round(top + height / 2) };
     return {
+      backgroundColor: style.backgroundColor,
+      backgroundImage: style.backgroundImage,
+      borderTopColor: style.borderTopColor,
+      borderTopStyle: style.borderTopStyle,
+      borderTopWidth: style.borderTopWidth,
+      clipPath: style.clipPath,
       content: style.content,
       height: style.height,
       left: style.left,
@@ -587,17 +602,114 @@ test("selected editable free text renders a compact upper-left move grip", async
       position: style.position,
       top: style.top,
       width: style.width,
+      doesNotCoverEditableText: left + width <= internalRect.left && top + height <= internalRect.top,
+      exteriorTarget: document.elementFromPoint(center.x, center.y)?.closest<HTMLElement>(".freeTextEditor")?.id !== root.id,
     };
   }, editor.editorId);
-  expect(grip).toEqual({
-    content: '""',
-    height: "14px",
-    left: "-6px",
-    pointerEvents: "none",
-    position: "absolute",
-    top: "-6px",
-    width: "14px",
-  });
+  expect(grip.content).toBe('""');
+  expect(grip.height).toBe("14px");
+  expect(grip.left).toBe("-14px");
+  expect(grip.pointerEvents).toBe("none");
+  expect(grip.position).toBe("absolute");
+  expect(grip.top).toBe("-14px");
+  expect(grip.width).toBe("14px");
+  expect(grip.clipPath).toBe("none");
+  expect(grip.borderTopStyle).toBe("solid");
+  expect(grip.borderTopWidth).toBe("1px");
+  expect(grip.borderTopColor).toBe("rgb(35, 135, 216)");
+  expect(grip.backgroundImage).toContain("radial-gradient");
+  expect(grip.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+  expect(grip.doesNotCoverEditableText).toBe(true);
+  expect(grip.exteriorTarget).toBe(true);
+
+  await page.emulateMedia({ forcedColors: "active" });
+  await expect.poll(() => page.evaluate(() => matchMedia("(forced-colors: active)").matches)).toBe(true);
+  const forcedColorsGrip = await page.evaluate((editorId) => {
+    const root = document.getElementById(editorId);
+    if (!(root instanceof HTMLElement)) throw new Error("Selected free-text editor root not found");
+    const style = getComputedStyle(root, "::after");
+    return {
+      backgroundColor: style.backgroundColor,
+      backgroundImage: style.backgroundImage,
+      borderTopStyle: style.borderTopStyle,
+      borderTopWidth: style.borderTopWidth,
+      boxShadow: style.boxShadow,
+      height: style.height,
+      width: style.width,
+    };
+  }, editor.editorId);
+  expect(forcedColorsGrip.height).toBe("14px");
+  expect(forcedColorsGrip.width).toBe("14px");
+  expect(forcedColorsGrip.borderTopStyle).toBe("solid");
+  expect(forcedColorsGrip.borderTopWidth).toBe("2px");
+  expect(forcedColorsGrip.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+  expect(forcedColorsGrip.backgroundImage).toBe("none");
+  expect(forcedColorsGrip.boxShadow).toBe("none");
+});
+
+test("free-text exterior grip stays visible and draggable at the upper-left page edge", async ({ page }) => {
+  const initialText = "Upper-left page edge grip";
+  const before = await enterNewFreeTextEditing(page, initialText);
+  const edgeDelta = await page.evaluate(({ editorId, size }) => {
+    const root = document.getElementById(editorId);
+    const pageElement = root?.closest<HTMLElement>(".page");
+    if (!(root instanceof HTMLElement) || !pageElement) throw new Error("Selected free-text page edge target not found");
+    const rootRect = root.getBoundingClientRect();
+    const pageRect = pageElement.getBoundingClientRect();
+    const gap = size + 2;
+    return {
+      x: Math.round(pageRect.left + gap - rootRect.left),
+      y: Math.round(pageRect.top + gap - rootRect.top),
+    };
+  }, { editorId: before.editorId, size: FREE_TEXT_MOVE_GRIP_SIZE_PX });
+
+  await dragFreeTextGrip(page, before, edgeDelta);
+  await expect
+    .poll(() => editableFreeTextSnapshot(page, initialText))
+    .toMatchObject({ editorId: before.editorId, internalText: initialText, isEditable: true, isFocused: true, isSelected: true });
+
+  const atEdge = await page.evaluate((editorId) => {
+    const root = document.getElementById(editorId);
+    const pageElement = root?.closest<HTMLElement>(".page");
+    if (!(root instanceof HTMLElement) || !pageElement) throw new Error("Selected free-text page edge target not found");
+    const rootRect = root.getBoundingClientRect();
+    const pageRect = pageElement.getBoundingClientRect();
+    const style = getComputedStyle(root, "::after");
+    const grip = {
+      left: rootRect.left + Number.parseFloat(style.left),
+      top: rootRect.top + Number.parseFloat(style.top),
+      width: Number.parseFloat(style.width),
+      height: Number.parseFloat(style.height),
+    };
+    const center = { x: Math.round(grip.left + grip.width / 2), y: Math.round(grip.top + grip.height / 2) };
+    return {
+      gripFullyWithinPage:
+        grip.left >= pageRect.left &&
+        grip.top >= pageRect.top &&
+        grip.left + grip.width <= pageRect.right &&
+        grip.top + grip.height <= pageRect.bottom,
+      gripFullyWithinViewport:
+        grip.left >= 0 && grip.top >= 0 && grip.left + grip.width <= innerWidth && grip.top + grip.height <= innerHeight,
+      gripTargetsEditor: document.elementFromPoint(center.x, center.y)?.closest<HTMLElement>(".freeTextEditor")?.id === editorId,
+      rootLeftGap: rootRect.left - pageRect.left,
+      rootTopGap: rootRect.top - pageRect.top,
+    };
+  }, before.editorId);
+  expect(atEdge.rootLeftGap).toBeGreaterThanOrEqual(FREE_TEXT_MOVE_GRIP_SIZE_PX);
+  expect(atEdge.rootLeftGap).toBeLessThanOrEqual(FREE_TEXT_MOVE_GRIP_SIZE_PX + 4);
+  expect(atEdge.rootTopGap).toBeGreaterThanOrEqual(FREE_TEXT_MOVE_GRIP_SIZE_PX);
+  expect(atEdge.rootTopGap).toBeLessThanOrEqual(FREE_TEXT_MOVE_GRIP_SIZE_PX + 4);
+  expect(atEdge.gripFullyWithinPage).toBe(true);
+  expect(atEdge.gripFullyWithinViewport).toBe(true);
+  expect(atEdge.gripTargetsEditor).toBe(false);
+
+  const edgeSnapshot = await selectedEditableFreeText(page, initialText);
+  const nudge = { x: 8, y: 8 };
+  await dragFreeTextGrip(page, edgeSnapshot, nudge);
+  await expect
+    .poll(() => editableFreeTextSnapshot(page, initialText))
+    .toMatchObject({ editorId: before.editorId, internalText: initialText, isEditable: true, isFocused: true, isSelected: true });
+  expectMovedByClientDelta(edgeSnapshot, await selectedEditableFreeText(page, initialText), nudge);
 });
 
 test("moves an editable live free text from its grip at 100% without losing editing state", async ({ page }) => {
