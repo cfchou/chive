@@ -149,6 +149,7 @@ async function expectDeleteGlyphPaintedAndHitTested(page: Page, selector: string
         if (hit === button || button.contains(hit)) hits.push({ x, y });
       }
     }
+    if (hits.length === 0) throw new Error("Delete button produced no hit-test samples");
     return {
       button: rect.toJSON(),
       hit: {

@@ -71,6 +71,7 @@ async function expectNativeSelectedDeleteGlyph(editorClass: "highlightEditor" | 
           if (hit === button || button.contains(hit)) hits.push({ x, y });
         }
       }
+      if (hits.length === 0) throw new Error("Native delete button produced no hit-test samples");
       return {
         button: rect.toJSON(),
         centerTargetsDelete:
