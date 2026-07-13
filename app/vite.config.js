@@ -1,14 +1,35 @@
+import { realpathSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 import istanbul from "vite-plugin-istanbul";
+import { resolvePorts } from "./scripts/dev-ports.mjs";
 
 const host = process.env.TAURI_DEV_HOST;
 const coverageEnabled = process.env.VITE_COVERAGE === "true";
+const { e2ePort, hmrPort } = resolvePorts();
+
+// Dev-server-only identity endpoint so a test run can verify that the server
+// it is about to reuse serves *this* checkout, not another worktree's (issue #14).
+const appRoot = realpathSync(path.dirname(fileURLToPath(import.meta.url)));
+/** @returns {import("vite").Plugin} */
+const identityPlugin = () => ({
+  name: "chive-dev-identity",
+  apply: "serve",
+  configureServer(server) {
+    server.middlewares.use("/__chive/identity", (_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ app: "chive", root: appRoot }));
+    });
+  },
+});
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [
     sveltekit(),
+    identityPlugin(),
     ...(coverageEnabled
       ? [
           istanbul({
@@ -42,14 +63,14 @@ export default defineConfig(async () => ({
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
-    port: 1430,
+    port: e2ePort,
     strictPort: true,
     host: host || false,
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1431,
+          port: hmrPort,
         }
       : undefined,
     watch: {

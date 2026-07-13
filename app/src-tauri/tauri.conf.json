@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.chifeng.chive",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run dev -- --port 1430",
     "devUrl": "http://localhost:1430",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../build"

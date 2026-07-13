@@ -1,7 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
+import { resolvePorts } from "./scripts/dev-ports.mjs";
 
 const coverageEnabled = process.env.VITE_COVERAGE === "true";
-const port = coverageEnabled ? 1432 : 1430;
+const { e2ePort, coveragePort } = resolvePorts();
+const port = coverageEnabled ? coveragePort : e2ePort;
 const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
@@ -12,6 +14,8 @@ export default defineConfig({
   expect: {
     timeout: 10_000,
   },
+  // Refuses to run against a server that belongs to another worktree.
+  globalSetup: "./tests/e2e/global-setup.ts",
   use: {
     baseURL,
     trace: "on-first-retry",
