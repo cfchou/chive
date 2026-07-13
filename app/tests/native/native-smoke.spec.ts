@@ -66,12 +66,12 @@ async function expectNativeSelectedDeleteGlyph(editorClass: "highlightEditor" | 
       const rect = button.getBoundingClientRect();
       const hits: Array<{ x: number; y: number }> = [];
       for (let y = 0; y < innerHeight; y += 2) {
-        for (let x = Math.max(0, Math.floor(rect.left) - 16); x <= Math.min(innerWidth, Math.ceil(rect.right) + 16); x += 2) {
+        for (let x = 0; x < innerWidth; x += 2) {
           const hit = document.elementFromPoint(x, y);
           if (hit === button || button.contains(hit)) hits.push({ x, y });
         }
       }
-      if (hits.length === 0) throw new Error("Native delete button produced no hit-test samples");
+      if (hits.length === 0) return null;
       return {
         button: rect.toJSON(),
         centerTargetsDelete:
@@ -92,9 +92,9 @@ async function expectNativeSelectedDeleteGlyph(editorClass: "highlightEditor" | 
       geometry = await readGeometry();
       return Boolean(geometry);
     },
-    { timeout: 10_000, timeoutMsg: `Native selected ${editorClass} delete control was not rendered` },
+    { timeout: 10_000, timeoutMsg: `Native selected ${editorClass} delete control did not become hit-testable` },
   );
-  if (!geometry) throw new Error(`Native selected ${editorClass} delete control was not rendered`);
+  if (!geometry) throw new Error(`Native selected ${editorClass} delete control did not become hit-testable`);
 
   const screenshot = PNG.sync.read(Buffer.from(await app.takeScreenshot(), "base64"));
   const scaleX = screenshot.width / geometry.viewport.width;

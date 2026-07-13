@@ -144,7 +144,7 @@ async function expectDeleteGlyphPaintedAndHitTested(page: Page, selector: string
     const rect = button.getBoundingClientRect();
     const hits: Array<{ x: number; y: number }> = [];
     for (let y = 0; y < window.innerHeight; y += 2) {
-      for (let x = Math.max(0, Math.floor(rect.left) - 16); x <= Math.min(window.innerWidth, Math.ceil(rect.right) + 16); x += 2) {
+      for (let x = 0; x < window.innerWidth; x += 2) {
         const hit = document.elementFromPoint(x, y);
         if (hit === button || button.contains(hit)) hits.push({ x, y });
       }
