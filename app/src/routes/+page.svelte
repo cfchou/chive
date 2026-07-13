@@ -5519,6 +5519,28 @@
     pointer-events: auto !important;
   }
 
+  /* Issue #13: pdfjs-dist@6.0.227 editor controls must remain one in-flow row. */
+  :global(.annotationEditorLayer .editToolbar > .buttons) {
+    display: flex !important;
+    flex-flow: row nowrap !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+
+  :global(.annotationEditorLayer .editToolbar > .buttons > :is(.basicColorPicker, .deleteButton)) {
+    width: var(--editor-toolbar-height, 28px) !important;
+    height: var(--editor-toolbar-height, 28px) !important;
+  }
+
+  :global(.annotationEditorLayer .editToolbar > .buttons > .deleteButton) {
+    position: static !important;
+    inset: auto !important;
+    transform: none !important;
+    flex: 0 0 var(--editor-toolbar-height, 28px) !important;
+    align-self: center !important;
+    margin: 0 !important;
+  }
+
   :global(.annotationEditorLayer :is(.freeTextEditor, .inkEditor, .stampEditor, .signatureEditor).selectedEditor) {
     border: 1px dashed #2387d8 !important;
     outline: 0 !important;
