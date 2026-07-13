@@ -4543,6 +4543,8 @@
     pdfLinkService = null;
     pdfDocument = null;
     annotationEditorUIManager = null;
+    currentPath = "";
+    isDirty = false;
     outlineEntries = [];
     outlineStatus = "Open a PDF to inspect its outline.";
     collapsedOutlineIds = [];
@@ -5551,18 +5553,27 @@
   :global(.annotationEditorLayer .freeTextEditor.selectedEditor:has(.internal[contenteditable='true'])::after) {
     content: "";
     position: absolute;
-    top: -6px;
-    left: -6px;
+    top: -14px;
+    left: -14px;
     z-index: 2;
     box-sizing: border-box;
     width: 14px;
     height: 14px;
-    /* Show only the exterior corner, leaving editable text unobstructed. */
-    clip-path: inset(0 50% 50% 0);
     border: 1px solid #2387d8;
     border-radius: 3px;
-    background: radial-gradient(circle, #2387d8 1px, transparent 1.5px) 0 0 / 4px 4px;
+    background:
+      radial-gradient(circle, #2387d8 1px, transparent 1.5px) 0 0 / 4px 4px,
+      #fff;
+    box-shadow: 0 1px 2px rgb(15 23 42 / 0.28);
     pointer-events: none;
+  }
+
+  @media (forced-colors: active) {
+    :global(.annotationEditorLayer .freeTextEditor.selectedEditor:has(.internal[contenteditable='true'])::after) {
+      border: 2px solid ButtonText;
+      background: Canvas;
+      box-shadow: none;
+    }
   }
 
   :global(.annotationEditorLayer :is(.freeTextEditor, .inkEditor, .stampEditor, .signatureEditor).selectedEditor::before) {

@@ -184,7 +184,9 @@ export async function createInkStroke(page: Page, placement: "default" | "top-ed
     await new Promise((resolve) => setTimeout(resolve, 150));
     window.__pdfSpike!.recolorSelectedInk("red");
     window.__pdfSpike!.setInkThickness(3);
-    const layer = document.querySelector(".page[data-page-number=\"1\"] .annotationEditorLayer");
+    const layer = [...document.querySelectorAll<HTMLElement>(".page[data-page-number=\"1\"] .annotationEditorLayer")].find(
+      (candidate) => getComputedStyle(candidate.closest(".pdf-container") ?? candidate).display !== "none",
+    );
     if (!(layer instanceof HTMLElement)) {
       throw new Error("No annotation editor layer for ink test");
     }

@@ -1,7 +1,7 @@
 import { browser, expect } from "@wdio/globals";
 import path from "node:path";
 import { Key } from "webdriverio";
-import { FREE_TEXT_MOVE_GRIP_INSET_PX } from "../../src/lib/pdf/free-text-move";
+import { FREE_TEXT_MOVE_GRIP_INSET_PX, FREE_TEXT_MOVE_GRIP_SIZE_PX } from "../../src/lib/pdf/free-text-move";
 
 type WdioBrowser = {
   execute: <T, Arg = unknown>(script: (arg: Arg) => T | Promise<T>, arg?: Arg) => Promise<T>;
@@ -307,27 +307,67 @@ describe("native WKWebView PDF smoke", () => {
       { timeout: 10_000, timeoutMsg: "Native free-text editor did not enter editable mode" },
     );
 
-    const before = await app.execute(({ text, inset }) => {
+    const before = await app.execute(({ text, inset, size }) => {
       const internal = [...document.querySelectorAll<HTMLElement>(".freeTextEditor .internal")].find(
         (element) => element.isContentEditable && element.innerText.replace(/\s+/g, " ").includes(text),
       );
       const root = internal?.closest<HTMLElement>(".freeTextEditor");
-      if (!root?.id || !internal) throw new Error("Editable native free-text editor not found");
+      const pageElement = root?.closest<HTMLElement>(".page");
+      if (!root?.id || !internal || !pageElement) throw new Error("Editable native free-text editor not found");
       const rect = root.getBoundingClientRect();
-      const offset = inset / 2;
+      const pageRect = pageElement.getBoundingClientRect();
+      const internalRect = internal.getBoundingClientRect();
+      const style = getComputedStyle(root, "::after");
+      const offset = inset + size / 2;
       const grip = {
         x: Math.round(rect.left + offset),
         y: Math.round(rect.top + offset),
       };
+      const gripLeft = rect.left + Number.parseFloat(style.left);
+      const gripTop = rect.top + Number.parseFloat(style.top);
+      const gripWidth = Number.parseFloat(style.width);
+      const gripHeight = Number.parseFloat(style.height);
       return {
         editorId: root.id,
+        edgeTarget: { left: pageRect.left + size + 2, top: pageRect.top + size + 2 },
         grip,
         gripTargetsEditor: document.elementFromPoint(grip.x, grip.y)?.closest<HTMLElement>(".freeTextEditor")?.id === root.id,
         rect: { left: rect.left, top: rect.top },
+        style: {
+          backgroundColor: style.backgroundColor,
+          backgroundImage: style.backgroundImage,
+          borderTopColor: style.borderTopColor,
+          borderTopStyle: style.borderTopStyle,
+          borderTopWidth: style.borderTopWidth,
+          clipPath: style.clipPath,
+          height: style.height,
+          left: style.left,
+          pointerEvents: style.pointerEvents,
+          top: style.top,
+          width: style.width,
+        },
+        doesNotCoverEditableText: gripLeft + gripWidth <= internalRect.left && gripTop + gripHeight <= internalRect.top,
       };
-    }, { text: initialText, inset: FREE_TEXT_MOVE_GRIP_INSET_PX });
+    }, { text: initialText, inset: FREE_TEXT_MOVE_GRIP_INSET_PX, size: FREE_TEXT_MOVE_GRIP_SIZE_PX });
     expect(before.gripTargetsEditor).toBe(false);
-    const delta = { x: 40, y: 24 };
+    expect(before.style).toMatchObject({
+      clipPath: "none",
+      height: "14px",
+      left: "-14px",
+      pointerEvents: "none",
+      top: "-14px",
+      width: "14px",
+    });
+    expect(before.style.borderTopStyle).toBe("solid");
+    expect(before.style.borderTopWidth).toBe("1px");
+    expect(before.style.borderTopColor).toBe("rgb(35, 135, 216)");
+    expect(before.style.backgroundImage).toContain("radial-gradient");
+    expect(before.style.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+    expect(before.doesNotCoverEditableText).toBe(true);
+    const delta = {
+      x: Math.round(before.edgeTarget.left - before.rect.left),
+      y: Math.round(before.edgeTarget.top - before.rect.top),
+    };
 
     const editorMoved = () =>
       app.execute(({ editorId, expectedText, prior, expectedDelta }) => {
@@ -382,6 +422,95 @@ describe("native WKWebView PDF smoke", () => {
       timeoutMsg: "Native exterior-grip drag did not move editable free text",
     }));
     expect(moved).toBe(true);
+
+    const atEdge = await app.execute((editorId) => {
+      const root = document.getElementById(editorId);
+      const pageElement = root?.closest<HTMLElement>(".page");
+      if (!(root instanceof HTMLElement) || !pageElement) throw new Error("Native upper-left page edge target not found");
+      const rect = root.getBoundingClientRect();
+      const pageRect = pageElement.getBoundingClientRect();
+      const style = getComputedStyle(root, "::after");
+      const grip = {
+        left: rect.left + Number.parseFloat(style.left),
+        top: rect.top + Number.parseFloat(style.top),
+        width: Number.parseFloat(style.width),
+        height: Number.parseFloat(style.height),
+      };
+      const center = { x: Math.round(grip.left + grip.width / 2), y: Math.round(grip.top + grip.height / 2) };
+      return {
+        grip: center,
+        gripFullyWithinPage:
+          grip.left >= pageRect.left &&
+          grip.top >= pageRect.top &&
+          grip.left + grip.width <= pageRect.right &&
+          grip.top + grip.height <= pageRect.bottom,
+        gripFullyWithinViewport:
+          grip.left >= 0 && grip.top >= 0 && grip.left + grip.width <= innerWidth && grip.top + grip.height <= innerHeight,
+        gripTargetsEditor: document.elementFromPoint(center.x, center.y)?.closest<HTMLElement>(".freeTextEditor")?.id === editorId,
+        rect: { left: rect.left, top: rect.top },
+        rootLeftGap: rect.left - pageRect.left,
+        rootTopGap: rect.top - pageRect.top,
+      };
+    }, before.editorId);
+    expect(atEdge.rootLeftGap).toBeGreaterThanOrEqual(FREE_TEXT_MOVE_GRIP_SIZE_PX);
+    expect(atEdge.rootLeftGap).toBeLessThanOrEqual(FREE_TEXT_MOVE_GRIP_SIZE_PX + 4);
+    expect(atEdge.rootTopGap).toBeGreaterThanOrEqual(FREE_TEXT_MOVE_GRIP_SIZE_PX);
+    expect(atEdge.rootTopGap).toBeLessThanOrEqual(FREE_TEXT_MOVE_GRIP_SIZE_PX + 4);
+    expect(atEdge.gripFullyWithinPage).toBe(true);
+    expect(atEdge.gripFullyWithinViewport).toBe(true);
+    expect(atEdge.gripTargetsEditor).toBe(false);
+
+    const edgeNudge = { x: 8, y: 8 };
+    const edgeEditorMoved = () =>
+      app.execute(({ editorId, expectedText, prior, expectedDelta }) => {
+        const root = document.getElementById(editorId);
+        const internal = root?.querySelector<HTMLElement>(".internal[contenteditable='true'], [contenteditable='true']");
+        if (!(root instanceof HTMLElement) || !internal?.isContentEditable) return false;
+        const rect = root.getBoundingClientRect();
+        return (
+          Math.abs((rect.left - prior.left) - expectedDelta.x) < 2 &&
+          Math.abs((rect.top - prior.top) - expectedDelta.y) < 2 &&
+          internal.contains(document.activeElement) &&
+          internal.innerText.replace(/\s+/g, " ").includes(expectedText)
+        );
+      }, { editorId: before.editorId, expectedText: initialText, prior: atEdge.rect, expectedDelta: edgeNudge });
+
+    await browser
+      .action("pointer", { parameters: { pointerType: "mouse" } })
+      .move({ origin: "viewport", x: atEdge.grip.x, y: atEdge.grip.y })
+      .down({ button: 0 })
+      .move({ origin: "viewport", x: atEdge.grip.x + edgeNudge.x, y: atEdge.grip.y + edgeNudge.y })
+      .up({ button: 0 })
+      .perform();
+    const edgeMovedByRealPointer = await app.waitUntil(edgeEditorMoved, { timeout: 1_000 }).catch(() => false);
+    if (!edgeMovedByRealPointer) await app.execute(({ start, movement }) => {
+      const target = document.elementFromPoint(start.x, start.y);
+      if (!target) throw new Error("Native upper-left page edge grip has no event target");
+      const dispatch = (eventTarget: EventTarget, type: string, clientX: number, clientY: number, buttons: number) => {
+        eventTarget.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            button: 0,
+            buttons,
+            cancelable: true,
+            clientX,
+            clientY,
+            composed: true,
+            isPrimary: true,
+            pointerId: 72,
+            pointerType: "mouse",
+          }),
+        );
+      };
+      dispatch(target, "pointerdown", start.x, start.y, 1);
+      dispatch(window, "pointermove", start.x + movement.x / 2, start.y + movement.y / 2, 1);
+      dispatch(window, "pointermove", start.x + movement.x, start.y + movement.y, 1);
+      dispatch(window, "pointerup", start.x + movement.x, start.y + movement.y, 0);
+    }, { start: atEdge.grip, movement: edgeNudge });
+    expect(edgeMovedByRealPointer || (await app.waitUntil(edgeEditorMoved, {
+      timeout: 10_000,
+      timeoutMsg: "Native upper-left page edge grip did not remain draggable",
+    }))).toBe(true);
 
     const appended = await app.execute(({ editorId, text }) => {
       const internal = document.getElementById(editorId)?.querySelector<HTMLElement>(".internal[contenteditable='true']");
@@ -508,6 +637,102 @@ describe("native WKWebView PDF smoke", () => {
     });
     expect(nativeScrollTop).toBeGreaterThan(0);
     await expectToolbarControlsAdjacent();
+  });
+
+  it("keeps editable free text behind the dirty Document Tab Cmd+W prompt", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+    const text = "Native Cmd+W free text";
+    await app.execute(async (filePath) => window.__pdfSpike!.loadPath(filePath), samplePdfPath);
+    await app.waitUntil(
+      async () => app.execute(() => Number(window.__pdfSpike!.stats().pages ?? 0) > 0),
+      { timeout: 30_000, timeoutMsg: "Native sample PDF did not render before close-prompt setup" },
+    );
+    expect(await app.execute(async (value) => window.__pdfSpike!.createPageFreeText(value), text)).toBe(true);
+    await app.waitUntil(
+      async () =>
+        app.execute((value) =>
+          (window.__pdfSpike!.annotationSidebarSummary() as Array<AnnotationEntry & { source?: string }>).some(
+            (candidate) => candidate.kind === "freetext" && candidate.source === "live" && candidate.detail.includes(value),
+          ),
+        text),
+      { timeout: 10_000, timeoutMsg: "Native live free-text Annotation Sidebar Entry did not appear" },
+    );
+    const editorId = await app.execute(async (value) => {
+      const entry = (window.__pdfSpike!.annotationSidebarSummary() as Array<AnnotationEntry & { source?: string }>).find(
+        (candidate) => candidate.kind === "freetext" && candidate.source === "live" && candidate.detail.includes(value),
+      );
+      if (!entry?.sourceId) throw new Error("Native live free-text Annotation Sidebar Entry was not found");
+      if (!(await window.__pdfSpike!.activateAnnotationBySourceId(entry.sourceId))) {
+        throw new Error("Native live free-text Annotation Sidebar Entry did not activate");
+      }
+      const editor = document.getElementById(entry.sourceId);
+      if (!(editor instanceof HTMLElement)) throw new Error("Native free-text editor root was not found");
+      editor.focus();
+      return entry.sourceId;
+    }, text);
+
+    await app.keys(Key.Enter);
+    await app.waitUntil(
+      async () =>
+        app.execute((id) => {
+          const editor = document.getElementById(id);
+          const internal = editor?.querySelector<HTMLElement>(".internal[contenteditable='true'], [contenteditable='true']");
+          return Boolean(internal?.isContentEditable && editor?.classList.contains("selectedEditor"));
+        }, editorId),
+      { timeout: 10_000, timeoutMsg: "Native free-text Annotation did not enter editable selected state" },
+    );
+    expect(
+      await app.execute((id) => {
+        const editor = document.getElementById(id);
+        if (!(editor instanceof HTMLElement)) throw new Error("Editable native free-text editor was not found");
+        const rect = editor.getBoundingClientRect();
+        return window.__pdfSpike!.moveSelected(
+          window.innerWidth / 2 - (rect.left + rect.width / 2),
+          window.innerHeight / 2 - (rect.top + rect.height / 2),
+        );
+      }, editorId),
+    ).toBe(true);
+
+    await app.keys([Key.Command, "w"]);
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const prompt = document.querySelector("dialog.modal");
+          return prompt instanceof HTMLDialogElement && prompt.open && prompt.matches(":modal");
+        }),
+      { timeout: 10_000, timeoutMsg: "Cmd+W did not show the native dirty Document Tab close prompt" },
+    );
+    const result = await app.execute((id) => {
+      const editor = document.getElementById(id);
+      const prompt = document.querySelector<HTMLElement>("dialog.modal");
+      if (!(editor instanceof HTMLElement) || !(prompt instanceof HTMLDialogElement)) {
+        throw new Error("Expected native editable free-text editor and close prompt");
+      }
+      const editorRect = editor.getBoundingClientRect();
+      const promptRect = prompt.getBoundingClientRect();
+      const left = Math.max(editorRect.left, promptRect.left);
+      const right = Math.min(editorRect.right, promptRect.right);
+      const top = Math.max(editorRect.top, promptRect.top);
+      const bottom = Math.min(editorRect.bottom, promptRect.bottom);
+      const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+      return {
+        hasOverlap: right > left && bottom > top,
+        hitIsInsidePrompt: Boolean(hit && prompt.contains(hit)),
+        hitIsInsidePdfEditorLayer: Boolean(hit?.closest(".annotationEditorLayer")),
+        saveButtonHasFocus: document.activeElement === prompt.querySelector("[data-modal-save]"),
+      };
+    }, editorId);
+    expect(result.hasOverlap).toBe(true);
+    expect(result.hitIsInsidePrompt).toBe(true);
+    expect(result.hitIsInsidePdfEditorLayer).toBe(false);
+    expect(result.saveButtonHasFocus).toBe(true);
+
+    await app.keys(Key.Escape);
+    await app.waitUntil(
+      async () => app.execute(() => !document.querySelector("dialog.modal") && window.__pdfSpike!.tabs.list().length === 1),
+      { timeout: 10_000, timeoutMsg: "Escape did not cancel the native dirty Document Tab close prompt" },
+    );
   });
 
   it("loads a PDF, extracts sidebar text, and creates annotation state", async () => {
@@ -649,6 +874,22 @@ describe("native WKWebView PDF smoke", () => {
           return tabs.length === 1 && tabs[0]?.id === first && tabs[0]?.active === true && !tabs.some((tab) => tab.id === second);
         }, opened),
       { timeout: 10_000, timeoutMsg: "Cmd+W did not close only the Active Document Tab" },
+    );
+
+    await app.waitUntil(
+      async () => app.execute(() => document.querySelector(".topbar .file")?.textContent?.trim() === "sample.pdf"),
+      { timeout: 10_000, timeoutMsg: "Cmd+W did not refresh the toolbar filename for the remaining Document Tab" },
+    );
+
+    await app.keys([Key.Command, "w"]);
+
+    await app.waitUntil(
+      async () => app.execute(() => (window.__pdfSpike!.tabs.list() as DocumentTabSummary[]).length === 0),
+      { timeout: 10_000, timeoutMsg: "Cmd+W did not close the final Document Tab" },
+    );
+    await app.waitUntil(
+      async () => app.execute(() => document.querySelector(".topbar .file")?.textContent?.trim() === "No document"),
+      { timeout: 10_000, timeoutMsg: "Cmd+W left a stale toolbar filename after closing the final Document Tab" },
     );
   });
 

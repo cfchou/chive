@@ -24,7 +24,7 @@ test.describe("Document Tab review regressions", () => {
     await expect.poll(() => page.evaluate(() => window.__pdfSpike!.stats().selectedAnnotationKind)).toBe("freetext");
 
     await page.locator("[data-doc-tab]").nth(1).locator(".doc-tab-close").click();
-    const modal = page.locator('.modal[role="dialog"]');
+    const modal = page.locator("dialog.modal");
     await expect(modal).toBeVisible();
     await page.keyboard.press("Escape");
 

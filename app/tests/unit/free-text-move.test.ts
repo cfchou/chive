@@ -26,9 +26,12 @@ function manager(overrides: Record<string, unknown> = {}) {
 }
 
 describe("free-text move geometry", () => {
-  it("places the visual grip across the upper-left border instead of over editable text", () => {
+  it("places the full move grip entirely outside the selected editor", () => {
     assert.equal(FREE_TEXT_MOVE_GRIP_SIZE_PX, 14);
-    assert.equal(FREE_TEXT_MOVE_GRIP_INSET_PX, -6);
+    assert.equal(FREE_TEXT_MOVE_GRIP_INSET_PX, -14);
+    const editor = { left: 100, top: 200, width: 160, height: 48 };
+    assert.equal(editor.left + FREE_TEXT_MOVE_GRIP_INSET_PX + FREE_TEXT_MOVE_GRIP_SIZE_PX, editor.left);
+    assert.equal(editor.top + FREE_TEXT_MOVE_GRIP_INSET_PX + FREE_TEXT_MOVE_GRIP_SIZE_PX, editor.top);
   });
 
   it("accepts only coordinates inside the upper-left grip boundaries", () => {
