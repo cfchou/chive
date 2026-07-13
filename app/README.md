@@ -28,7 +28,8 @@ areas they still govern.
 
 - `npm install`
 - `npm run dev` — Vite at `http://127.0.0.1:1430/` (the spike uses 1420, so
-  both can run side by side)
+  both can run side by side); parallel worktrees override the port with
+  `CHIVE_E2E_PORT=1440 npm run dev` (see `tests/README.md`)
 - `npm run check` — svelte-check (keep at 0 errors / 0 warnings)
 - `npm run build`
 - `npm run tauri -- dev` / `npm run tauri -- build`
@@ -37,6 +38,8 @@ areas they still govern.
 
 - `npm run test:unit` — node:test over `tests/unit` (pure lib modules)
 - `npm run test:e2e` — Playwright browser regressions (needs `qpdf` on PATH)
+- `npm run coverage` — merged unit + instrumented-browser coverage on its own
+  server (port 1432 by default; override with `CHIVE_COVERAGE_PORT`)
 - `npm run test:native` — WDIO smoke against the native WKWebView build
 - Full gate: `npm run test:unit && npm run check && npm run build && npm run test:e2e && npm run test:native`
 
