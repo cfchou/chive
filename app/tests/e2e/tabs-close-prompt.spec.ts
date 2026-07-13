@@ -58,6 +58,22 @@ test.describe("unsaved-changes close prompt", () => {
     await expect(page.locator("[data-doc-tab]")).toHaveCount(1);
   });
 
+  test("Don't Save on the final dirty Document Tab clears the header state", async ({ page }) => {
+    await openApp(page);
+    await loadFixture(page);
+    await createFreeText(page, "unsaved final edit");
+    await expect(page.locator(".topbar .brand .dirty-dot")).toHaveCount(1);
+
+    await page.getByRole("button", { name: "Close sample.pdf" }).click();
+    await expect(modal(page)).toBeVisible();
+    await page.locator("[data-modal-discard]").click();
+
+    await expect(modal(page)).toHaveCount(0);
+    await expect(page.locator("[data-doc-tab]")).toHaveCount(0);
+    await expect(page.locator(".topbar .file")).toHaveText("No document");
+    await expect(page.locator(".topbar .brand .dirty-dot")).toHaveCount(0);
+  });
+
   test("a failed Save aborts the close and keeps the tab (D9)", async ({ page }) => {
     // In the browser build the Tauri save path is unavailable, so Save fails;
     // the tab must stay open rather than lose its edits.

@@ -60,6 +60,26 @@ test.describe("document tab bar", () => {
     await expect(page.locator("[data-doc-tab]")).toHaveCount(1);
   });
 
+  test("closing path-backed Document Tabs keeps the header name in sync", async ({ page }) => {
+    await openApp(page);
+    const bytes = await sampleBytes(page);
+    await page.evaluate(async (fixtureBytes) => {
+      await window.__pdfSpike!.tabs.openBytes(fixtureBytes, "first.pdf", "/tmp/first.pdf");
+      await window.__pdfSpike!.tabs.openBytes(fixtureBytes, "second.pdf", "/tmp/second.pdf");
+    }, bytes);
+    await waitForPageReady(page);
+
+    await expect(page.locator(".topbar .file")).toHaveText("second.pdf");
+    await page.getByRole("button", { name: "Close second.pdf" }).click();
+    await expect(page.locator("[data-doc-tab]")).toHaveCount(1);
+    await expect(page.getByRole("tab", { name: "first.pdf" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator(".topbar .file")).toHaveText("first.pdf");
+
+    await page.getByRole("button", { name: "Close first.pdf" }).click();
+    await expect(page.locator("[data-doc-tab]")).toHaveCount(0);
+    await expect(page.locator(".topbar .file")).toHaveText("No document");
+  });
+
   test("a tab shows a dirty indicator once it has unsaved edits", async ({ page }) => {
     await openApp(page);
     await loadFixture(page);
