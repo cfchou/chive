@@ -424,6 +424,102 @@ describe("native WKWebView PDF smoke", () => {
     expect(reopened[0]?.rect).toEqual(savedGeometry);
   });
 
+  it("keeps editable free text behind the dirty Document Tab Cmd+W prompt", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+    const text = "Native Cmd+W free text";
+    await app.execute(async (filePath) => window.__pdfSpike!.loadPath(filePath), samplePdfPath);
+    await app.waitUntil(
+      async () => app.execute(() => Number(window.__pdfSpike!.stats().pages ?? 0) > 0),
+      { timeout: 30_000, timeoutMsg: "Native sample PDF did not render before close-prompt setup" },
+    );
+    expect(await app.execute(async (value) => window.__pdfSpike!.createPageFreeText(value), text)).toBe(true);
+    await app.waitUntil(
+      async () =>
+        app.execute((value) =>
+          (window.__pdfSpike!.annotationSidebarSummary() as Array<AnnotationEntry & { source?: string }>).some(
+            (candidate) => candidate.kind === "freetext" && candidate.source === "live" && candidate.detail.includes(value),
+          ),
+        text),
+      { timeout: 10_000, timeoutMsg: "Native live free-text Annotation Sidebar Entry did not appear" },
+    );
+    const editorId = await app.execute(async (value) => {
+      const entry = (window.__pdfSpike!.annotationSidebarSummary() as Array<AnnotationEntry & { source?: string }>).find(
+        (candidate) => candidate.kind === "freetext" && candidate.source === "live" && candidate.detail.includes(value),
+      );
+      if (!entry?.sourceId) throw new Error("Native live free-text Annotation Sidebar Entry was not found");
+      if (!(await window.__pdfSpike!.activateAnnotationBySourceId(entry.sourceId))) {
+        throw new Error("Native live free-text Annotation Sidebar Entry did not activate");
+      }
+      const editor = document.getElementById(entry.sourceId);
+      if (!(editor instanceof HTMLElement)) throw new Error("Native free-text editor root was not found");
+      editor.focus();
+      return entry.sourceId;
+    }, text);
+
+    await app.keys(Key.Enter);
+    await app.waitUntil(
+      async () =>
+        app.execute((id) => {
+          const editor = document.getElementById(id);
+          const internal = editor?.querySelector<HTMLElement>(".internal[contenteditable='true'], [contenteditable='true']");
+          return Boolean(internal?.isContentEditable && editor?.classList.contains("selectedEditor"));
+        }, editorId),
+      { timeout: 10_000, timeoutMsg: "Native free-text Annotation did not enter editable selected state" },
+    );
+    expect(
+      await app.execute((id) => {
+        const editor = document.getElementById(id);
+        if (!(editor instanceof HTMLElement)) throw new Error("Editable native free-text editor was not found");
+        const rect = editor.getBoundingClientRect();
+        return window.__pdfSpike!.moveSelected(
+          window.innerWidth / 2 - (rect.left + rect.width / 2),
+          window.innerHeight / 2 - (rect.top + rect.height / 2),
+        );
+      }, editorId),
+    ).toBe(true);
+
+    await app.keys([Key.Command, "w"]);
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const prompt = document.querySelector("dialog.modal");
+          return prompt instanceof HTMLDialogElement && prompt.open && prompt.matches(":modal");
+        }),
+      { timeout: 10_000, timeoutMsg: "Cmd+W did not show the native dirty Document Tab close prompt" },
+    );
+    const result = await app.execute((id) => {
+      const editor = document.getElementById(id);
+      const prompt = document.querySelector<HTMLElement>("dialog.modal");
+      if (!(editor instanceof HTMLElement) || !(prompt instanceof HTMLDialogElement)) {
+        throw new Error("Expected native editable free-text editor and close prompt");
+      }
+      const editorRect = editor.getBoundingClientRect();
+      const promptRect = prompt.getBoundingClientRect();
+      const left = Math.max(editorRect.left, promptRect.left);
+      const right = Math.min(editorRect.right, promptRect.right);
+      const top = Math.max(editorRect.top, promptRect.top);
+      const bottom = Math.min(editorRect.bottom, promptRect.bottom);
+      const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+      return {
+        hasOverlap: right > left && bottom > top,
+        hitIsInsidePrompt: Boolean(hit && prompt.contains(hit)),
+        hitIsInsidePdfEditorLayer: Boolean(hit?.closest(".annotationEditorLayer")),
+        saveButtonHasFocus: document.activeElement === prompt.querySelector("[data-modal-save]"),
+      };
+    }, editorId);
+    expect(result.hasOverlap).toBe(true);
+    expect(result.hitIsInsidePrompt).toBe(true);
+    expect(result.hitIsInsidePdfEditorLayer).toBe(false);
+    expect(result.saveButtonHasFocus).toBe(true);
+
+    await app.keys(Key.Escape);
+    await app.waitUntil(
+      async () => app.execute(() => !document.querySelector("dialog.modal") && window.__pdfSpike!.tabs.list().length === 1),
+      { timeout: 10_000, timeoutMsg: "Escape did not cancel the native dirty Document Tab close prompt" },
+    );
+  });
+
   it("loads a PDF, extracts sidebar text, and creates annotation state", async () => {
     await waitForPdfSpike();
     await app.setWindowSize(1280, 900);
