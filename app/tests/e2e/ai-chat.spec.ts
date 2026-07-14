@@ -26,9 +26,10 @@ test("AI Chat opens on the right with the completed static fixture", async ({ pa
   await expect(panel).toBeVisible();
   await expect(panel.getByText("What is the main argument?", { exact: true })).toBeVisible();
   await expect(panel.getByText("The document argues", { exact: false })).toBeVisible();
-  const pageCitation = panel.getByRole("button", { name: "Page 3" });
+  const pageCitation = panel.getByText("Page 3", { exact: true });
   await expect(pageCitation).toBeVisible();
   await expect(pageCitation).toHaveCSS("border-radius", "8px");
+  await expect(panel.getByRole("button", { name: "Page 3" })).toHaveCount(0);
   const currentPage = panel.getByRole("button", {
     name: "Remove Current page context; use whole document",
   });
@@ -46,6 +47,8 @@ test("AI Chat fixtures expose empty, generating, and error examples", async ({ p
   await page.goto("/?aiChatFixture=empty");
   let panel = page.getByRole("tabpanel", { name: "AI Chat" });
   await expect(panel.getByText("Ask about this PDF", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Write a message to begin.", { exact: true })).toBeVisible();
+  await expect(panel.getByText("Use a suggested prompt", { exact: false })).toHaveCount(0);
 
   await page.goto("/?aiChatFixture=generating");
   panel = page.getByRole("tabpanel", { name: "AI Chat" });

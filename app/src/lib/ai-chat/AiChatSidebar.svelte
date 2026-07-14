@@ -3,9 +3,8 @@
   import ChatMessage from "./ChatMessage.svelte";
   import type { AiChatFixture } from "./types";
 
-  type Props = { fixture: AiChatFixture };
-  let { fixture }: Props = $props();
-  let composerValue = $state("");
+  type Props = { fixture: AiChatFixture; value?: string };
+  let { fixture, value = $bindable("") }: Props = $props();
 </script>
 
 <div class="ai-chat-sidebar" aria-label="AI Chat">
@@ -17,7 +16,7 @@
     {#if fixture.state === "empty"}
       <div class="empty-state">
         <strong>Ask about this PDF</strong>
-        <p>Use a suggested prompt or write a message to begin.</p>
+        <p>Write a message to begin.</p>
       </div>
     {:else}
       {#each fixture.messages as message (message.id)}
@@ -30,7 +29,7 @@
       <p class="error-note" role="alert">{fixture.errorMessage}</p>
     {/if}
   </div>
-  <ChatComposer contexts={fixture.contexts} state={fixture.state} bind:value={composerValue} />
+  <ChatComposer contexts={fixture.contexts} state={fixture.state} bind:value />
 </div>
 
 <style>

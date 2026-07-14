@@ -12,6 +12,7 @@
     activateTab,
     createDefaultDockState,
     hideSide,
+    isSidebarTabId,
     isSideOpen,
     moveTabToSide,
     shouldShowEdgeReopen,
@@ -4592,6 +4593,7 @@
   const aiChatFixture = selectAiChatFixture(
     browser ? new URLSearchParams(window.location.search).get("aiChatFixture") : null,
   );
+  let aiChatComposerValue = $state("");
 
   let dock = $state(createDefaultDockState());
   let draggingTab = $state<SidebarTabId | null>(null);
@@ -4698,9 +4700,7 @@
       return x < rect.left + rect.width / 2;
     });
     const tab = hit?.dataset.tab;
-    return tab === "outline" || tab === "bookmarks" || tab === "annotations" || tab === "ai-chat"
-      ? tab
-      : null;
+    return isSidebarTabId(tab) ? tab : null;
   }
 
   function handleTabPointerDown(tab: SidebarTabId, event: PointerEvent) {
@@ -4975,7 +4975,7 @@
                   {locateAnnotationEntry}
                 />
               {:else}
-                <AiChatSidebar fixture={aiChatFixture} />
+                <AiChatSidebar fixture={aiChatFixture} bind:value={aiChatComposerValue} />
               {/if}
             </div>
           {/each}

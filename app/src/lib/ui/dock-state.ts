@@ -14,6 +14,10 @@ export type DockState = {
 
 export const sidebarTabIds: SidebarTabId[] = ["outline", "bookmarks", "annotations", "ai-chat"];
 
+export function isSidebarTabId(value: string | null | undefined): value is SidebarTabId {
+  return sidebarTabIds.some((tabId) => tabId === value);
+}
+
 export function createDefaultDockState(): DockState {
   return {
     order: { left: ["outline", "bookmarks", "annotations"], right: ["ai-chat"] },

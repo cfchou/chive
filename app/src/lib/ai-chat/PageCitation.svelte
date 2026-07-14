@@ -3,10 +3,12 @@
   let { page }: Props = $props();
 </script>
 
-<button class="page-citation" type="button" aria-label={`Page ${page}`}>Page {page}</button>
+<span class="page-citation">Page {page}</span>
 
 <style>
   .page-citation {
+    display: inline-flex;
+    align-items: center;
     min-height: 28px;
     padding: 4px 10px;
     border: 1px solid var(--border);
@@ -14,13 +16,5 @@
     background: var(--bg);
     color: var(--fg-2);
     font-size: var(--text-xs);
-  }
-  .page-citation:hover,
-  .page-citation:focus-visible {
-    border-color: var(--fg);
-    outline: none;
-  }
-  .page-citation:focus-visible {
-    box-shadow: var(--focus-ring);
   }
 </style>

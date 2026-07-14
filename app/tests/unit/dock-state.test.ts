@@ -4,6 +4,7 @@ import {
   activateTab,
   createDefaultDockState,
   hideSide,
+  isSidebarTabId,
   isSideOpen,
   moveTabToSide,
   shouldShowEdgeReopen,
@@ -13,6 +14,13 @@ import {
 } from "../../src/lib/ui/dock-state";
 
 describe("dock-state", () => {
+  it("recognizes only canonical sidebar tab ids", () => {
+    assert.equal(isSidebarTabId("outline"), true);
+    assert.equal(isSidebarTabId("ai-chat"), true);
+    assert.equal(isSidebarTabId("unknown"), false);
+    assert.equal(isSidebarTabId(undefined), false);
+  });
+
   it("starts with document navigation on the left and AI Chat active on the right", () => {
     const state = createDefaultDockState();
     assert.deepEqual(state.order.left, ["outline", "bookmarks", "annotations"]);
@@ -76,6 +84,10 @@ describe("dock-state", () => {
   });
 
   it("hideSide only hides sides that have tabs and showSide restores them", () => {
+    const emptyRight = moveTabToSide(createDefaultDockState(), "ai-chat", "left");
+    assert.deepEqual(emptyRight.order.right, []);
+    assert.equal(hideSide(emptyRight, "right").hidden.right, false);
+
     let state = createDefaultDockState();
     assert.equal(hideSide(state, "right").hidden.right, true);
     state = hideSide(state, "left");

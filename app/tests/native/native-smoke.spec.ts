@@ -67,7 +67,9 @@ async function hideRightSidebarForPdfGeometry() {
   await app.waitUntil(
     async () =>
       app.execute(() =>
-        document.querySelector<HTMLElement>('.sidebar[data-side="right"]')?.classList.contains("is-hidden"),
+        Boolean(
+          document.querySelector<HTMLElement>('.sidebar[data-side="right"]')?.classList.contains("is-hidden"),
+        ),
       ),
     { timeout: 10_000, timeoutMsg: "Native right sidebar did not collapse for PDF geometry test" },
   );

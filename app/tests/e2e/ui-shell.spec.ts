@@ -129,6 +129,19 @@ test("dragging a tab docks it to the right sidebar", async ({ page }) => {
   );
 });
 
+test("docking AI Chat preserves its unsent composer draft", async ({ page }) => {
+  const composer = page.getByRole("textbox", { name: "Message AI Chat" });
+  await composer.fill("Keep this draft while docking");
+
+  await dragTabTo(page, "AI Chat", 10, 90);
+
+  await expect(page.locator('[data-tab-strip="left"] [data-tab="ai-chat"]')).toBeVisible();
+  await expect(page.locator('.sidebar[data-side="left"] #panel-ai-chat')).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message AI Chat" })).toHaveValue(
+    "Keep this draft while docking",
+  );
+});
+
 test("right-docked tabs anchor to the outer edge like the left strip does", async ({ page }) => {
   const viewport = page.viewportSize();
   if (!viewport) throw new Error("viewport unavailable");
