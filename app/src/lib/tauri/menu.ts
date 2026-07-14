@@ -8,12 +8,14 @@
 // remove it.
 
 import { Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tauri-apps/api/menu";
+import { SETTINGS_MENU_ITEM } from "./menu-items";
 
 export type AppMenuControls = {
   setSaveEnabled: (enabled: boolean) => Promise<void>;
 };
 
 export type AppMenuHandlers = {
+  openSettings: () => void | Promise<void>;
   openPdf: () => void | Promise<void>;
   savePdf: () => void | Promise<void>;
   savePdfAs: () => void | Promise<void>;
@@ -33,6 +35,10 @@ export async function installAppMenu(handlers: AppMenuHandlers): Promise<AppMenu
     text: "Chive",
     items: [
       await PredefinedMenuItem.new({ item: { About: null } }),
+      await MenuItem.new({
+        ...SETTINGS_MENU_ITEM,
+        action: () => void handlers.openSettings(),
+      }),
       await PredefinedMenuItem.new({ item: "Separator" }),
       await PredefinedMenuItem.new({ item: "Services" }),
       await PredefinedMenuItem.new({ item: "Separator" }),

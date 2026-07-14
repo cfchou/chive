@@ -835,6 +835,53 @@ describe("native WKWebView PDF smoke", () => {
     );
   });
 
+  it("opens Application Settings with Cmd+, and closes it before the Active Document Tab", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+    const before = await app.execute(async (filePath) => {
+      await window.__pdfSpike!.tabs.open(filePath);
+      return window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+    }, samplePdfPath);
+
+    // The isolated menu-only probe does not fire in this WDIO harness. This
+    // chord therefore verifies the WKWebView DOM fallback's visible behavior;
+    // the pure menu descriptor unit test pins the native accelerator itself.
+    await app.keys([Key.Command, ","]);
+
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const dialog = document.querySelector<HTMLDialogElement>("dialog.application-settings-modal");
+          const close = dialog?.querySelector<HTMLButtonElement>('button[aria-label="Close Settings"]');
+          const save = dialog?.querySelector<HTMLButtonElement>("button.primary");
+          const titleId = dialog?.getAttribute("aria-labelledby");
+          return Boolean(
+            dialog?.open &&
+              dialog.matches(":modal") &&
+              titleId === "application-settings-title" &&
+              document.getElementById(titleId)?.textContent?.trim() === "Settings" &&
+              dialog.textContent?.includes("No settings available") &&
+              save?.disabled &&
+              document.activeElement === close,
+          );
+        }),
+      { timeout: 10_000, timeoutMsg: "Cmd+, did not open focused native Application Settings" },
+    );
+
+    await app.keys([Key.Command, "w"]);
+
+    await app.waitUntil(
+      async () =>
+        app.execute(
+          () =>
+            !document.querySelector("dialog.application-settings-modal") &&
+            !document.querySelector("dialog.modal"),
+        ),
+      { timeout: 10_000, timeoutMsg: "Cmd+W did not close native Application Settings" },
+    );
+    expect(await app.execute(() => window.__pdfSpike!.tabs.list())).toEqual(before);
+  });
+
   it("hides the Document Tab Bar in fullscreen while keyboard tab switching still works", async () => {
     await waitForPdfSpike();
     await app.setWindowSize(1280, 900);

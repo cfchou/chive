@@ -48,6 +48,9 @@ export type SpikeDebugApi = {
   redo: () => void;
   /** Test-only native drop-path driver; production uses the Tauri drop event. */
   openDroppedFilesForTest: (paths: string[]) => Promise<void>;
+  settings: {
+    open: (options?: { fixture?: boolean }) => void;
+  };
   tabs: TabsDebugApi;
 };
 
@@ -68,7 +71,7 @@ export type TabsDebugApi = {
   /** Open raw bytes in a new tab; pass a path to enable dedupe/focus. */
   openBytes: (bytes: number[] | Uint8Array, label: string, path?: string | null) => Promise<string>;
   activate: (id: string) => Promise<void>;
-  /** Close a tab. Phase B force-closes; the unsaved-changes prompt lands later. */
+  /** Force-close by default; pass force: false to exercise the unsaved-changes UI flow. */
   close: (id: string, options?: { force?: boolean }) => Promise<"closed" | "prompted">;
   reorder: (from: number, to: number) => void;
 };

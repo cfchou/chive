@@ -5,6 +5,7 @@
   import TabStrip from "../lib/ui/TabStrip.svelte";
   import DocumentTabBar from "../lib/ui/DocumentTabBar.svelte";
   import UnsavedChangesModal from "../lib/ui/UnsavedChangesModal.svelte";
+  import ApplicationSettingsModal from "$lib/settings/ApplicationSettingsModal.svelte";
   import Toolbar from "../lib/ui/Toolbar.svelte";
   import ColorPlate from "../lib/ui/ColorPlate.svelte";
   import ToolPopover from "../lib/ui/ToolPopover.svelte";
@@ -363,6 +364,35 @@
   const { isHighlightEditor, isFreeTextEditor, isInkEditor, annotationKindForEditor } =
     createEditorTypeGuards(editorModes);
 
+  let settingsOpen = $state(false);
+  let settingsFixtureEnabled = $state(false);
+  let settingsCommittedValue = $state("Initial value");
+  let settingsDraftValue = $state("Initial value");
+  let settingsModal = $state<{ focusInitialControl: () => void } | null>(null);
+
+  function openSettings(options?: { fixture?: boolean }) {
+    if (unsavedPrompt) return;
+    if (settingsOpen) {
+      settingsModal?.focusInitialControl();
+      return;
+    }
+    settingsFixtureEnabled = options?.fixture === true;
+    settingsDraftValue = settingsCommittedValue;
+    settingsOpen = true;
+  }
+
+  function cancelSettings() {
+    if (!settingsOpen) return;
+    settingsDraftValue = settingsCommittedValue;
+    settingsOpen = false;
+  }
+
+  function saveSettings() {
+    if (!settingsOpen) return;
+    if (settingsFixtureEnabled) settingsCommittedValue = settingsDraftValue;
+    settingsOpen = false;
+  }
+
   onMount(() => {
     document.documentElement.style.setProperty(
       "--pdf-spike-ink-cursor",
@@ -449,6 +479,7 @@
       undo: () => (annotationEditorUIManager as { undo?: () => void } | null)?.undo?.(),
       redo: () => (annotationEditorUIManager as { redo?: () => void } | null)?.redo?.(),
       openDroppedFilesForTest: openDroppedPdfPaths,
+      settings: { open: openSettings },
       tabs: {
         list: () =>
           documentSessions.map((session) => ({
@@ -467,7 +498,16 @@
         activate: async (id: string) => {
           await switchToTab(id);
         },
-        close: async (id: string) => closeTab(id),
+        close: async (id: string, options?: { force?: boolean }) => {
+          if (options?.force !== false) return closeTab(id);
+          const session = documentSessions.find((entry) => entry.id === id);
+          if (session && tabDirtyState(session)) {
+            void requestCloseTab(id);
+            return "prompted";
+          }
+          await requestCloseTab(id);
+          return "closed";
+        },
         reorder: (from: number, to: number) => reorderTabs(from, to),
       },
     });
@@ -481,10 +521,11 @@
     });
     if (pdfStageEl) containerResizeObserver.observe(pdfStageEl);
     void installAppMenu({
+      openSettings,
       openPdf,
       savePdf: () => void savePdf(),
       savePdfAs: () => void savePdfAs(),
-      closeActiveTab: requestCloseActiveTab,
+      closeActiveTab: requestCloseActiveSurface,
       showNextTab: () => void showAdjacentTab(1),
       showPreviousTab: () => void showAdjacentTab(-1),
     }).then((controls) => {
@@ -589,6 +630,12 @@
       event.preventDefault();
       event.stopImmediatePropagation();
       resolveUnsavedPrompt("cancel");
+      return;
+    }
+    if (settingsOpen && event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      cancelSettings();
       return;
     }
     if (event.repeat || event.key !== "Escape" || isEditableKeyboardTarget(event.target)) {
@@ -1006,6 +1053,7 @@
   let unsavedPrompt = $state<{ label: string; resolve: (choice: UnsavedChoice) => void } | null>(null);
 
   function promptUnsavedChanges(label: string): Promise<UnsavedChoice> {
+    cancelSettings();
     return new Promise((resolve) => {
       unsavedPrompt = { label, resolve };
     });
@@ -1054,6 +1102,14 @@
     await requestCloseTab(activeSessionId);
   }
 
+  async function requestCloseActiveSurface() {
+    if (settingsOpen) {
+      cancelSettings();
+      return;
+    }
+    await requestCloseActiveTab();
+  }
+
   async function showAdjacentTab(direction: 1 | -1) {
     const order = documentSessions.map((entry) => entry.id);
     const target =
@@ -1069,11 +1125,22 @@
       (event.metaKey || event.ctrlKey) &&
       !event.shiftKey &&
       !event.altKey &&
-      event.key.toLowerCase() === "w" &&
-      (activeSessionId !== null || isTauriRuntime())
+      event.key === ","
     ) {
       event.preventDefault();
-      void requestCloseActiveTab();
+      openSettings();
+      return;
+    }
+    if (
+      !event.repeat &&
+      (event.metaKey || event.ctrlKey) &&
+      !event.shiftKey &&
+      !event.altKey &&
+      event.key.toLowerCase() === "w" &&
+      (settingsOpen || activeSessionId !== null || isTauriRuntime())
+    ) {
+      event.preventDefault();
+      void requestCloseActiveSurface();
       return;
     }
     if (event.ctrlKey && !event.metaKey && !event.altKey && event.key === "Tab") {
@@ -4939,6 +5006,13 @@
   }
 </script>
 
+{#snippet settingsFixtureContent()}
+  <label class="settings-fixture-field">
+    <span>Example setting</span>
+    <input type="text" bind:value={settingsDraftValue} />
+  </label>
+{/snippet}
+
 <div
   class="app"
   class:has-tabbar={showDocumentTabBar}
@@ -5217,6 +5291,18 @@
 />
 
 <div class="app-status" role="status" aria-live="polite">{status}</div>
+
+{#if settingsOpen}
+  <ApplicationSettingsModal
+    bind:this={settingsModal}
+    sections={settingsFixtureEnabled
+      ? [{ id: "test-fixture", label: "Test fixture", content: settingsFixtureContent }]
+      : []}
+    dirty={settingsFixtureEnabled && settingsDraftValue !== settingsCommittedValue}
+    onSave={saveSettings}
+    onCancel={cancelSettings}
+  />
+{/if}
 
 {#if unsavedPrompt}
   <UnsavedChangesModal
