@@ -4673,7 +4673,10 @@
     aiChatComposerValue = "";
     refreshAiChatFromActiveSession(); // the user turn is visible immediately
     void completion.then(() => {
-      if (session.id === activeSessionId) refreshAiChatFromActiveSession();
+      if (session.id !== activeSessionId) return;
+      // Preserve a follow-up typed while this completion was pending.
+      session.aiChatSession.draft = aiChatComposerValue;
+      refreshAiChatFromActiveSession();
     });
   }
 

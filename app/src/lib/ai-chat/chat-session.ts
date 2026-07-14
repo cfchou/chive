@@ -24,7 +24,7 @@
 //     service shares message references but can never observe a change).
 
 import type { AiChatMessage } from "./types";
-import type { AiChatService } from "./chat-service";
+import type { AiChatRequest, AiChatService } from "./chat-service";
 
 export class AiChatSession {
   /** Conversation so far, oldest first. Append-only; replaced only by dispose(). */
@@ -73,7 +73,7 @@ export class AiChatSession {
 
   private async completeSend(
     service: AiChatService,
-    request: { messages: readonly AiChatMessage[] },
+    request: AiChatRequest,
     turn: number,
   ): Promise<void> {
     try {
