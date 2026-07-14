@@ -13,14 +13,14 @@ import {
 } from "../../src/lib/ui/dock-state";
 
 describe("dock-state", () => {
-  it("starts with all tabs on the left and outline active", () => {
+  it("starts with document navigation on the left and AI Chat active on the right", () => {
     const state = createDefaultDockState();
     assert.deepEqual(state.order.left, ["outline", "bookmarks", "annotations"]);
-    assert.deepEqual(state.order.right, []);
+    assert.deepEqual(state.order.right, ["ai-chat"]);
     assert.equal(state.active.left, "outline");
-    assert.equal(state.active.right, null);
+    assert.equal(state.active.right, "ai-chat");
     assert.equal(isSideOpen(state, "left"), true);
-    assert.equal(isSideOpen(state, "right"), false);
+    assert.equal(isSideOpen(state, "right"), true);
   });
 
   it("activateTab selects the tab on its own side and unhides that side", () => {
@@ -33,9 +33,9 @@ describe("dock-state", () => {
   it("moveTabToSide moves an inactive tab and keeps both actives valid", () => {
     const state = moveTabToSide(createDefaultDockState(), "annotations", "right");
     assert.deepEqual(state.order.left, ["outline", "bookmarks"]);
-    assert.deepEqual(state.order.right, ["annotations"]);
+    assert.deepEqual(state.order.right, ["ai-chat", "annotations"]);
     assert.equal(state.active.left, "outline");
-    assert.equal(state.active.right, "annotations");
+    assert.equal(state.active.right, "ai-chat");
   });
 
   it("moving the active tab keeps it active on the target side and falls back on the source side", () => {
@@ -47,7 +47,7 @@ describe("dock-state", () => {
   it("moveTabToSide inserts before the given tab", () => {
     let state = moveTabToSide(createDefaultDockState(), "annotations", "right");
     state = moveTabToSide(state, "outline", "right", "annotations");
-    assert.deepEqual(state.order.right, ["outline", "annotations"]);
+    assert.deepEqual(state.order.right, ["ai-chat", "outline", "annotations"]);
   });
 
   it("moving a tab within its own side reorders it", () => {
@@ -77,7 +77,7 @@ describe("dock-state", () => {
 
   it("hideSide only hides sides that have tabs and showSide restores them", () => {
     let state = createDefaultDockState();
-    assert.equal(hideSide(state, "right").hidden.right, false);
+    assert.equal(hideSide(state, "right").hidden.right, true);
     state = hideSide(state, "left");
     assert.equal(state.hidden.left, true);
     assert.equal(isSideOpen(state, "left"), false);

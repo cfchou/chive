@@ -200,6 +200,7 @@ test("bookmark title click dims the row without opening the editor", async ({ pa
 });
 
 test("bookmark rows are sorted by page anchor when created", async ({ page }) => {
+  await page.getByRole("button", { name: "Hide right sidebar" }).click();
   await loadFixture(page);
 
   await page.getByRole("tab", { name: "Bookmarks" }).click();

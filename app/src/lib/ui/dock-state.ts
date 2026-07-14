@@ -1,9 +1,9 @@
-// Pure model for the dockable sidebar tabs (Outline / Bookmarks / Annotations).
+// Pure model for the dockable sidebar tabs.
 // Tabs live in one of two strips (left/right); each side tracks its own active
 // tab and hidden flag. All transitions return a new state object so the page
 // can hold the whole thing in one `$state` and reassign.
 
-export type SidebarTabId = "outline" | "bookmarks" | "annotations";
+export type SidebarTabId = "outline" | "bookmarks" | "annotations" | "ai-chat";
 export type SidebarSide = "left" | "right";
 
 export type DockState = {
@@ -12,12 +12,12 @@ export type DockState = {
   hidden: Record<SidebarSide, boolean>;
 };
 
-export const sidebarTabIds: SidebarTabId[] = ["outline", "bookmarks", "annotations"];
+export const sidebarTabIds: SidebarTabId[] = ["outline", "bookmarks", "annotations", "ai-chat"];
 
 export function createDefaultDockState(): DockState {
   return {
-    order: { left: ["outline", "bookmarks", "annotations"], right: [] },
-    active: { left: "outline", right: null },
+    order: { left: ["outline", "bookmarks", "annotations"], right: ["ai-chat"] },
+    active: { left: "outline", right: "ai-chat" },
     hidden: { left: false, right: false },
   };
 }
