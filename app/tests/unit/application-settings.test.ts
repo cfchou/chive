@@ -129,6 +129,37 @@ describe("Application Settings Repository", () => {
     );
   });
 
+  it("persists an executable override without an explicit runtime override", async () => {
+    const storage = memoryStorage();
+    const repository = createApplicationSettingsRepository(
+      createLocalStoragePersistence(storage),
+    );
+
+    assert.equal(
+      await repository.save({
+        runtimeOverride: null,
+        executableOverride: {
+          runtime: "codex",
+          path: "/usr/local/bin/codex",
+        },
+      }),
+      true,
+    );
+    assert.deepEqual(
+      JSON.parse(storage.getItem("chive.applicationSettings") ?? "null"),
+      {
+        version: 1,
+        settings: {
+          runtimeOverride: null,
+          executableOverride: {
+            runtime: "codex",
+            path: "/usr/local/bin/codex",
+          },
+        },
+      },
+    );
+  });
+
   it("rejects an executable override for a different selected runtime", async () => {
     const storage = memoryStorage();
     const repository = createApplicationSettingsRepository(
