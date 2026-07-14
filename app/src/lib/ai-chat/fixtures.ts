@@ -1,3 +1,14 @@
+// Static AI Chat fixtures — A1's representative states, kept ONLY as the
+// test-only "backstage door" behind the `?aiChatFixture=` URL param. Real
+// (session-driven) mode never renders these. A2's deterministic mock cannot
+// produce the generating/error states (A3 scope), so the existing browser
+// coverage for those looks keeps using this door until A3 makes them real and
+// removes this module (tracked on issue #25).
+//
+// Mode discrimination is by URL-param PRESENCE and lives in the shell —
+// which is why selectAiChatFixture takes a plain string: by the time it is
+// called, the caller has already decided this is fixture mode.
+
 import type { AiChatFixture, AiChatState } from "./types";
 
 const completedMessages: AiChatFixture["messages"] = [
@@ -42,7 +53,9 @@ export const aiChatFixtures: Record<AiChatState, AiChatFixture> = {
   },
 };
 
-export function selectAiChatFixture(name: string | null | undefined): AiChatFixture {
+/** Present-but-unknown (or empty) param values fall back to `completed`, so
+ * historical test URLs keep their meaning. */
+export function selectAiChatFixture(name: string): AiChatFixture {
   return name === "empty" || name === "generating" || name === "error"
     ? aiChatFixtures[name]
     : aiChatFixtures.completed;

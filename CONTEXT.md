@@ -69,8 +69,16 @@ The per-tab runtime unit backing a Document Tab: its live pdf.js viewer/document
 _Avoid_: viewer instance, document state, tab model
 
 **AI Chat Sidebar**:
-The dockable sidebar surface for a conversation about the PDF shown by the Active Document Tab. The static prototype renders deterministic examples without creating an AI Chat Session.
+The dockable sidebar surface for a conversation about the PDF shown by the Active Document Tab. It renders the active document's AI Chat Session; the A1 static examples remain reachable only through the test-only `?aiChatFixture=` URL param until A3 removes them.
 _Avoid_: chatbot panel, assistant drawer
+
+**AI Chat Session**:
+The per-Document-Session conversation state: messages, the unsent AI Chat Composer draft, and the chat panel's scroll position. Created with its Document Session and disposed with it; one document → one session → multiple turns, with no persistence across app launches.
+_Avoid_: chat history, thread
+
+**AI Chat Service**:
+The UI-facing interface that resolves assistant replies for an AI Chat Session. In M1 its only implementation is a deterministic mock; AI Chat Sidebar components never import an implementation, so a real provider can replace the mock without touching them.
+_Avoid_: backend, API client
 
 **AI Chat Message**:
 One user or AI-authored message rendered in the AI Chat Sidebar.
