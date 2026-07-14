@@ -90,6 +90,8 @@ async function enterNewFreeTextEditing(page: Page, text: string) {
 }
 
 async function setZoomTo100Percent(page: Page) {
+  await hideRightSidebar(page);
+  await loadFixture(page);
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const label = await page.locator(".zoom-value").innerText();
     if (label === "100%") return;
@@ -108,7 +110,19 @@ async function setZoomToIssue13Scale(page: Page) {
   }
   const zoomPercent = Number.parseInt(await page.locator(".zoom-value").innerText(), 10);
   expect(zoomPercent).toBeGreaterThanOrEqual(180);
-  expect(zoomPercent).toBeLessThanOrEqual(190);
+  // The first 1.1x step above 180% is always below 198%; the right-default
+  // sidebar changes Fit Width enough that the actual rounded step is 194%.
+  expect(zoomPercent).toBeLessThan(200);
+}
+
+async function hideRightSidebar(page: Page) {
+  const hide = page.getByRole("button", { name: "Hide right sidebar" });
+  if (await hide.isVisible()) {
+    await hide.click();
+    await expect
+      .poll(() => page.locator(".reader").evaluate((element) => element.getBoundingClientRect().width))
+      .toBeGreaterThan(850);
+  }
 }
 
 async function expectDeleteGlyphPaintedAndHitTested(page: Page, selector: string) {
@@ -265,6 +279,7 @@ test("paints and hit-tests the persisted Highlight Annotation delete glyph insid
   await setZoomToIssue13Scale(page);
 
   const highlight = page.locator(".page[data-page-number='1'] .highlightAnnotation").last();
+  await expect(highlight).toBeVisible();
   const highlightRect = await highlight.boundingBox();
   if (!highlightRect) throw new Error("Persisted Highlight Annotation was not rendered");
   await page.mouse.dblclick(highlightRect.x + highlightRect.width / 2, highlightRect.y + highlightRect.height / 2);
@@ -1896,6 +1911,8 @@ test("selection mode double-click edits persisted ink annotation without togglin
 });
 
 test("editing one ink annotation does not arm single-click editing for another ink", async ({ page }) => {
+  await hideRightSidebar(page);
+  await loadFixture(page);
   await createInkStroke(page);
 
   const firstInk = await page.evaluate(() => {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { browser } from "$app/environment";
   // ---- Official-app shell imports (dock, tokens, native menu) ----
   import "../lib/ui/tokens.css";
   import TabStrip from "../lib/ui/TabStrip.svelte";
@@ -11,6 +12,7 @@
     activateTab,
     createDefaultDockState,
     hideSide,
+    isSidebarTabId,
     isSideOpen,
     moveTabToSide,
     shouldShowEdgeReopen,
@@ -41,6 +43,8 @@
   import AnnotationsSidebar from "$lib/pdf/AnnotationsSidebar.svelte";
   import BookmarksSidebar from "$lib/pdf/BookmarksSidebar.svelte";
   import OutlineSidebar from "$lib/pdf/OutlineSidebar.svelte";
+  import AiChatSidebar from "$lib/ai-chat/AiChatSidebar.svelte";
+  import { selectAiChatFixture } from "$lib/ai-chat/fixtures";
   import * as pdfjsLib from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
   import inkCursorUrl from "pdfjs-dist/web/images/cursor-editorInk.svg?url";
@@ -4586,6 +4590,10 @@
 
   const EDGE_DOCK_PX = 38;
   const dockSides: SidebarSide[] = ["left", "right"];
+  const aiChatFixture = selectAiChatFixture(
+    browser ? new URLSearchParams(window.location.search).get("aiChatFixture") : null,
+  );
+  let aiChatComposerValue = $state("");
 
   let dock = $state(createDefaultDockState());
   let draggingTab = $state<SidebarTabId | null>(null);
@@ -4692,7 +4700,7 @@
       return x < rect.left + rect.width / 2;
     });
     const tab = hit?.dataset.tab;
-    return tab === "outline" || tab === "bookmarks" || tab === "annotations" ? tab : null;
+    return isSidebarTabId(tab) ? tab : null;
   }
 
   function handleTabPointerDown(tab: SidebarTabId, event: PointerEvent) {
@@ -4959,13 +4967,15 @@
                   {updateBookmarkColor}
                   {deleteBookmark}
                 />
-              {:else}
+              {:else if tab === "annotations"}
                 <AnnotationsSidebar
                   {annotationEntries}
                   {annotationStatus}
                   {selectedAnnotationEntryId}
                   {locateAnnotationEntry}
                 />
+              {:else}
+                <AiChatSidebar fixture={aiChatFixture} bind:value={aiChatComposerValue} />
               {/if}
             </div>
           {/each}

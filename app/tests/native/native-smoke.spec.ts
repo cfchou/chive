@@ -56,6 +56,25 @@ async function waitForPdfSpike() {
   );
 }
 
+async function hideRightSidebarForPdfGeometry() {
+  await app.execute(() => {
+    const sidebar = document.querySelector<HTMLElement>('.sidebar[data-side="right"]');
+    if (sidebar?.classList.contains("is-hidden")) return;
+    const hideButton = document.querySelector<HTMLButtonElement>('button[aria-label="Hide right sidebar"]');
+    if (!hideButton) throw new Error("Native Hide right sidebar button not found");
+    hideButton.click();
+  });
+  await app.waitUntil(
+    async () =>
+      app.execute(() =>
+        Boolean(
+          document.querySelector<HTMLElement>('.sidebar[data-side="right"]')?.classList.contains("is-hidden"),
+        ),
+      ),
+    { timeout: 10_000, timeoutMsg: "Native right sidebar did not collapse for PDF geometry test" },
+  );
+}
+
 async function expectNativeSelectedDeleteGlyph(editorClass: "highlightEditor" | "freeTextEditor" | "inkEditor") {
   const readGeometry = () =>
     app.execute((targetEditorClass) => {
@@ -685,6 +704,7 @@ describe("native WKWebView PDF smoke", () => {
   it("paints and hit-tests the persisted Highlight Annotation delete glyph inside its native toolbar", async () => {
     await waitForPdfSpike();
     await app.setWindowSize(1643, 654);
+    await hideRightSidebarForPdfGeometry();
     await app.execute(async (filePath) => window.__pdfSpike!.loadPath(filePath), samplePdfPath);
     await app.waitUntil(
       async () =>
@@ -1223,6 +1243,7 @@ describe("native WKWebView PDF smoke", () => {
     // width equals window width, so a single 1.1x zoom-in always overflows
     // it) rather than against an assumed click count.
     await app.setWindowSize(900, 900);
+    await hideRightSidebarForPdfGeometry();
 
     await app.execute(async (filePath) => {
       await window.__pdfSpike!.loadPath(filePath);

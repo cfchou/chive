@@ -67,3 +67,23 @@ _Avoid_: tab strip (that is the sidebar TabStrip), titlebar tabs, tab row
 **Document Session**:
 The per-tab runtime unit backing a Document Tab: its live pdf.js viewer/document/editor-manager, viewer DOM, annotation caches, and — while inactive — a snapshot of its scalar UI state. Inactive sessions stay alive so their editor undo history survives a tab switch.
 _Avoid_: viewer instance, document state, tab model
+
+**AI Chat Sidebar**:
+The dockable sidebar surface for a conversation about the PDF shown by the Active Document Tab. The static prototype renders deterministic examples without creating an AI Chat Session.
+_Avoid_: chatbot panel, assistant drawer
+
+**AI Chat Message**:
+One user or AI-authored message rendered in the AI Chat Sidebar.
+_Avoid_: bubble, response card
+
+**AI Chat Context Chip**:
+A compact label in the AI Chat Composer that identifies PDF context intended to accompany a message, such as the current page.
+_Avoid_: tag, filter chip
+
+**AI Chat Page Citation**:
+A page reference attached to an AI Chat Message.
+_Avoid_: source link, footnote
+
+**AI Chat Composer**:
+The text-entry surface at the bottom of the AI Chat Sidebar, including its context and AI configuration controls, file attachment action, and trailing Send or Stop action.
+_Avoid_: chat box, prompt field

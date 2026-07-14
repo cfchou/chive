@@ -114,16 +114,31 @@ test("sidebar tabs activate their panels", async ({ page }) => {
 test("dragging a tab docks it to the right sidebar", async ({ page }) => {
   const viewport = page.viewportSize();
   if (!viewport) throw new Error("viewport unavailable");
-  await expect(page.locator("#content")).not.toHaveClass(/has-right/);
+  await expect(page.locator('[data-tab-strip="right"] [data-tab="ai-chat"]')).toBeVisible();
+  await page.getByRole("tab", { name: "Annotations" }).click();
 
   await dragTabTo(page, "Annotations", viewport.width - 10, 90);
 
   await expect(page.locator('[data-tab-strip="right"] [data-tab="annotations"]')).toBeVisible();
+  await expect(page.locator('[data-tab-strip="right"] [data-tab="ai-chat"]')).toBeVisible();
   await expect(page.locator("#content")).toHaveClass(/has-right/);
   await expect(page.locator('.sidebar[data-side="right"] #panel-annotations')).toBeVisible();
   await expect(page.getByRole("tab", { name: "Outline" })).toHaveAttribute(
     "aria-selected",
     "true",
+  );
+});
+
+test("docking AI Chat preserves its unsent composer draft", async ({ page }) => {
+  const composer = page.getByRole("textbox", { name: "Message AI Chat" });
+  await composer.fill("Keep this draft while docking");
+
+  await dragTabTo(page, "AI Chat", 10, 90);
+
+  await expect(page.locator('[data-tab-strip="left"] [data-tab="ai-chat"]')).toBeVisible();
+  await expect(page.locator('.sidebar[data-side="left"] #panel-ai-chat')).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message AI Chat" })).toHaveValue(
+    "Keep this draft while docking",
   );
 });
 
@@ -137,7 +152,11 @@ test("right-docked tabs anchor to the outer edge like the left strip does", asyn
   const insets = await page.evaluate(() => {
     const measure = (side: string) => {
       const sidebar = document.querySelector(`.sidebar[data-side="${side}"]`);
-      const tab = document.querySelector(`[data-tab-strip="${side}"] [role="tab"]`);
+      const tab = document.querySelector(
+        side === "left"
+          ? `[data-tab-strip="${side}"] [role="tab"]`
+          : `[data-tab-strip="${side}"] [role="tab"]:last-child`,
+      );
       if (!sidebar || !tab) throw new Error(`Missing sidebar or tab on ${side}`);
       const sidebarRect = sidebar.getBoundingClientRect();
       const tabRect = tab.getBoundingClientRect();
@@ -177,9 +196,10 @@ test("dragging a tab shows a hand ghost that follows the pointer and clears on d
   await expect(ghost).toBeHidden();
 });
 
-test("dragging into an empty side's edge zone shows the dock cue until the pointer leaves", async ({ page }) => {
+test("dragging into a hidden side's edge zone shows the dock cue until the pointer leaves", async ({ page }) => {
   const viewport = page.viewportSize();
   if (!viewport) throw new Error("viewport unavailable");
+  await page.getByRole("button", { name: "Hide right sidebar" }).click();
   const box = await stableBoundingBox(page, "Annotations");
   if (!box) throw new Error("Annotations tab is not visible");
   const startX = box.x + box.width / 2;
@@ -218,7 +238,8 @@ test("dragging a docked tab back before Outline reorders the left strip", async 
   await expect(leftTabs).toHaveCount(3);
   await expect(leftTabs.nth(0)).toHaveAttribute("data-tab", "annotations");
   await expect(leftTabs.nth(1)).toHaveAttribute("data-tab", "outline");
-  await expect(page.locator("#content")).not.toHaveClass(/has-right/);
+  await expect(page.locator("#content")).toHaveClass(/has-right/);
+  await expect(page.locator('[data-tab-strip="right"] [data-tab="ai-chat"]')).toBeVisible();
 });
 
 test("collapsing a sidebar shows its edge reopen button", async ({ page }) => {
@@ -231,6 +252,13 @@ test("collapsing a sidebar shows its edge reopen button", async ({ page }) => {
   await reopen.click();
   await expect(page.locator("#content")).not.toHaveClass(/no-left/);
   await expect(page.getByRole("tab", { name: "Outline" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Hide right sidebar" }).click();
+  await expect(page.locator("#content")).not.toHaveClass(/has-right/);
+  await expect(page.getByRole("tab", { name: "AI Chat" })).toBeHidden();
+  await page.getByRole("button", { name: "Show right sidebar" }).click();
+  await expect(page.locator("#content")).toHaveClass(/has-right/);
+  await expect(page.getByRole("tab", { name: "AI Chat" })).toBeVisible();
 });
 
 test("moving the active tab keeps a valid active tab on the source side", async ({ page }) => {
