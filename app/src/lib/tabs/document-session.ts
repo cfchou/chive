@@ -13,6 +13,7 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { EventBus, PDFLinkService, PDFViewer } from "pdfjs-dist/web/pdf_viewer.mjs";
 import type { AnnotationEditorUIManager } from "../pdf/pdfjs-quirks";
+import { AiChatSession } from "../ai-chat/chat-session";
 
 /**
  * Opaque bag of the shell's scalar/derived per-document `$state` (outline,
@@ -54,6 +55,15 @@ export class DocumentSession {
   /** Scalar/derived UI state, held only while this tab is inactive. */
   snapshot: DocumentSnapshot | null = null;
 
+  /**
+   * The one AI Chat Session backing this Document Tab's conversation (issue
+   * #24: one document → one session → multiple turns). Owned here — not by
+   * the shell — so that a reply resolving after a tab switch still lands in
+   * the right conversation, and so close() below disposes chat state together
+   * with the rest of the session.
+   */
+  readonly aiChatSession = new AiChatSession();
+
   constructor(id: string, path: string | null, label: string) {
     this.id = id;
     this.path = path;
@@ -75,5 +85,8 @@ export class DocumentSession {
     this.persistedAnnotationKeyByEditorId.clear();
     this.persistedPositionByKey.clear();
     this.snapshot = null;
+    // Dispose the AI Chat Session with its Document Session: drops the
+    // conversation and makes the session discard any reply still in flight.
+    this.aiChatSession.dispose();
   }
 }

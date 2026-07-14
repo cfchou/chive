@@ -45,6 +45,8 @@
   import OutlineSidebar from "$lib/pdf/OutlineSidebar.svelte";
   import AiChatSidebar from "$lib/ai-chat/AiChatSidebar.svelte";
   import { selectAiChatFixture } from "$lib/ai-chat/fixtures";
+  import { mockAiChatService } from "$lib/ai-chat/chat-service";
+  import type { AiChatMessage } from "$lib/ai-chat/types";
   import * as pdfjsLib from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
   import inkCursorUrl from "pdfjs-dist/web/images/cursor-editorInk.svg?url";
@@ -874,6 +876,10 @@
     if (!session) return;
     session.savedScrollTop = containerEl?.scrollTop ?? session.savedScrollTop;
     session.snapshot = snapshotActiveState();
+    // Chat state rides along: the outgoing tab's conversation scroll and
+    // unsent composer draft are per-document (issue #24), not snapshot-bag
+    // fields, so they are captured straight into its AiChatSession.
+    captureAiChatIntoSession(session);
   }
 
   function pointActiveRefsTo(session: DocumentSession) {
@@ -914,12 +920,14 @@
     activeSessionId = id;
     pointActiveRefsTo(next);
     if (next.snapshot) applyActiveSnapshot(next.snapshot as ActiveSnapshot);
+    refreshAiChatFromActiveSession();
     await tick(); // let the incoming container become visible before measuring
     if (pdfViewer && containerEl) {
       containerEl.scrollTop = next.savedScrollTop;
       pdfViewer.update();
       pdfViewer.forceRendering(undefined);
     }
+    restoreAiChatScroll();
     syncWindowTitle();
     void menuControls?.setSaveEnabled(Boolean(pdfDocument));
   }
@@ -962,14 +970,20 @@
       if (next) {
         pointActiveRefsTo(next);
         if (next.snapshot) applyActiveSnapshot(next.snapshot as ActiveSnapshot);
+        refreshAiChatFromActiveSession();
         await tick();
         if (pdfViewer && containerEl) {
           containerEl.scrollTop = next.savedScrollTop;
           pdfViewer.update();
           pdfViewer.forceRendering(undefined);
         }
+        restoreAiChatScroll();
       } else {
         resetActiveDocumentState();
+        // Final-tab close: no session left, so the chat mirror must clear too
+        // (resetActiveDocumentState only handles PDF state; the closed tab's
+        // AiChatSession was disposed by teardownSessionViewer above).
+        refreshAiChatFromActiveSession();
       }
       syncWindowTitle();
       void menuControls?.setSaveEnabled(Boolean(pdfDocument));
@@ -1137,6 +1151,10 @@
       documentSessions = [session];
     }
     activeSessionId = session.id;
+    // The brand-new session starts with an empty AiChatSession, so this both
+    // resets the mirror for replace-in-place reloads and guarantees a draft
+    // typed with no document open never seeds the first opened document.
+    refreshAiChatFromActiveSession();
     await tick(); // bind session.containerEl / session.viewerEl from the {#each}
 
     containerEl = session.containerEl!;
@@ -4590,10 +4608,77 @@
 
   const EDGE_DOCK_PX = 38;
   const dockSides: SidebarSide[] = ["left", "right"];
-  const aiChatFixture = selectAiChatFixture(
-    browser ? new URLSearchParams(window.location.search).get("aiChatFixture") : null,
-  );
+  // ---- AI Chat (A2): per-document sessions + test-only fixture door ----
+  //
+  // Mode is discriminated on URL-param PRESENCE: `?aiChatFixture=...` present
+  // (even empty/unknown → completed fallback) renders A1's static fixtures —
+  // a test-only backstage door until A3 makes generating/error real (issue
+  // #25 removes it). Param absent → real mode, driven by the Active Document
+  // Tab's AI Chat Session through the deterministic mock service.
+  const aiChatFixtureParam = browser ? new URLSearchParams(window.location.search).get("aiChatFixture") : null;
+  const aiChatFixture = aiChatFixtureParam !== null ? selectAiChatFixture(aiChatFixtureParam) : null;
+
+  // Shell mirrors of the ACTIVE session's AI Chat Session. Same architecture
+  // as the PDF snapshot state: the rune-free AiChatSession owned by each
+  // DocumentSession is the source of truth; these `$state` values only exist
+  // because inactive sessions are not reactive. `aiChatComposerValue` doubles
+  // as the shell-local draft when no document is open (that draft is
+  // deliberately NOT carried into the first opened document).
+  let aiChatMessages = $state<AiChatMessage[]>([]);
   let aiChatComposerValue = $state("");
+  /** The sidebar's scrollable conversation element (bound), for per-document scroll capture/restore. */
+  let aiChatConversationEl = $state<HTMLDivElement | null>(null);
+
+  /**
+   * Re-copy the active session's chat state into the shell mirrors.
+   * Contract (PR #27 rev 2/3): active session → copy messages + draft; no
+   * active session → clear both. Called after every transition that changes
+   * which AI Chat Session is visible: first open, replace-in-place reload,
+   * new-tab creation, tab switch, active-tab close, final-tab close, and
+   * send/reply mutations.
+   */
+  function refreshAiChatFromActiveSession() {
+    const chat = activeSession?.aiChatSession ?? null;
+    aiChatMessages = chat ? [...chat.messages] : [];
+    aiChatComposerValue = chat ? chat.draft : "";
+  }
+
+  /** Capture the on-screen conversation scroll into the given session (called while that session's conversation is still the one rendered). */
+  function captureAiChatIntoSession(session: DocumentSession) {
+    if (aiChatConversationEl) session.aiChatSession.savedScrollTop = aiChatConversationEl.scrollTop;
+    session.aiChatSession.draft = aiChatComposerValue;
+  }
+
+  /** Restore the active session's saved conversation scroll (0 when none). Call after tick() so the (possibly recreated) panel exists. */
+  function restoreAiChatScroll() {
+    if (!aiChatConversationEl) return;
+    aiChatConversationEl.scrollTop = activeSession?.aiChatSession.savedScrollTop ?? 0;
+  }
+
+  /**
+   * Send one composer message to the active document's AI Chat Session.
+   * The draft is cleared ONLY when the session accepts the send (returns a
+   * promise) — an ignored send (null: disposed or already pending) must never
+   * erase typed text. The late-resolve guard re-checks the *owning* session:
+   * a reply landing after a tab switch is already safely inside that session
+   * and will be mirrored on return, so refreshing here would be wrong unless
+   * it is still the active one.
+   */
+  function sendAiChatMessage(text: string) {
+    const session = activeSession;
+    if (!session) return; // no Document Tab → the composer is inert
+    const completion = session.aiChatSession.send(mockAiChatService, text);
+    if (completion === null) return;
+    session.aiChatSession.draft = "";
+    aiChatComposerValue = "";
+    refreshAiChatFromActiveSession(); // the user turn is visible immediately
+    void completion.then(() => {
+      if (session.id !== activeSessionId) return;
+      // Preserve a follow-up typed while this completion was pending.
+      session.aiChatSession.draft = aiChatComposerValue;
+      refreshAiChatFromActiveSession();
+    });
+  }
 
   let dock = $state(createDefaultDockState());
   let draggingTab = $state<SidebarTabId | null>(null);
@@ -4730,12 +4815,23 @@
     if (!session?.started) return;
     suppressNextTabClick = true;
     if (targetSide) {
+      // Moving AI Chat across sides destroys and recreates its panel DOM
+      // (panels render inside a keyed {#each} per side), which would silently
+      // reset the conversation's scroll. Capture into the active session
+      // before the dock reassignment, restore once the new panel exists.
+      // Same-side moves are harmless and other tabs' panels are untouched, so
+      // only the AI Chat tab needs this.
+      const movingAiChat = session.tab === "ai-chat";
+      if (movingAiChat && activeSession && aiChatConversationEl) {
+        activeSession.aiChatSession.savedScrollTop = aiChatConversationEl.scrollTop;
+      }
       dock = moveTabToSide(
         dock,
         session.tab,
         targetSide,
         dropBeforeTab(session.tab, targetSide, event.clientX),
       );
+      if (movingAiChat) void tick().then(() => restoreAiChatScroll());
     }
   }
 
@@ -4974,8 +5070,30 @@
                   {selectedAnnotationEntryId}
                   {locateAnnotationEntry}
                 />
+              {:else if aiChatFixture}
+                <!-- Test-only backstage door (?aiChatFixture=): A1's static
+                     representative states, inert composer. A3 removes this. -->
+                <AiChatSidebar
+                  messages={aiChatFixture.messages}
+                  state={aiChatFixture.state}
+                  contexts={aiChatFixture.contexts}
+                  errorMessage={aiChatFixture.errorMessage}
+                  subtitle="Static example"
+                  bind:value={aiChatComposerValue}
+                  bind:conversationEl={aiChatConversationEl}
+                />
               {:else}
-                <AiChatSidebar fixture={aiChatFixture} bind:value={aiChatComposerValue} />
+                <!-- Real mode: the Active Document Tab's AI Chat Session.
+                     Real context chips arrive post-M1, so none are passed;
+                     generating/error states are A3's. -->
+                <AiChatSidebar
+                  messages={aiChatMessages}
+                  state={aiChatMessages.length ? "completed" : "empty"}
+                  contexts={[]}
+                  bind:value={aiChatComposerValue}
+                  bind:conversationEl={aiChatConversationEl}
+                  onSend={sendAiChatMessage}
+                />
               {/if}
             </div>
           {/each}

@@ -6,9 +6,11 @@
     contexts: AiChatContext[];
     state: AiChatState;
     value?: string;
+    /** Called with the trimmed text on Send; absent = the Send action is inert. */
+    onSend?: (text: string) => void;
   };
 
-  let { contexts, state: generationState, value = $bindable("") }: Props = $props();
+  let { contexts, state: generationState, value = $bindable(""), onSend }: Props = $props();
   let textarea: HTMLTextAreaElement;
   let dismissedContextIds = $state<string[]>([]);
   let visibleContexts = $derived(contexts.filter((context) => !dismissedContextIds.includes(context.id)));
@@ -18,8 +20,26 @@
     textarea.style.height = `${textarea.scrollHeight}px`;
   }
 
+  // `oninput` only fires for user typing; the height must also follow
+  // programmatic value changes (the shell clears the draft after an accepted
+  // send and swaps drafts on Document Tab switches).
+  $effect(() => {
+    void value;
+    if (textarea) resizeTextarea();
+  });
+
   function removeContext(id: string) {
     dismissedContextIds = [...dismissedContextIds, id];
+  }
+
+  // Enter is NOT send (explicit newlines grow the composer, per issue #22);
+  // sending is this button only. While "generating" the same button means
+  // Stop, which stays inert until A3 owns the generation lifecycle.
+  function submitMessage() {
+    if (generationState === "generating") return;
+    const text = value.trim();
+    if (!text) return;
+    onSend?.(text);
   }
 </script>
 
@@ -65,6 +85,7 @@
         type="button"
         aria-label={generationState === "generating" ? "Stop generating" : "Send message"}
         title={generationState === "generating" ? "Stop generating" : "Send message"}
+        onclick={submitMessage}
       >
         {#if generationState === "generating"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10"></rect></svg>

@@ -1,6 +1,7 @@
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import { DocumentSession } from "../../src/lib/tabs/document-session";
+import { MockAiChatService } from "../../src/lib/ai-chat/chat-service";
 
 describe("DocumentSession", () => {
   it("carries identity, path, and label", () => {
@@ -48,6 +49,33 @@ describe("DocumentSession", () => {
     const snap = { isDirty: true, status: "Rendered", zoomPercent: 172 };
     session.snapshot = snap;
     assert.deepEqual(session.snapshot, snap);
+  });
+
+  it("owns one AI Chat Session per Document Session (no shared chat state)", () => {
+    const a = new DocumentSession("a", null, "A");
+    const b = new DocumentSession("b", null, "B");
+    a.aiChatSession.draft = "typed in a";
+    a.aiChatSession.messages.push({ id: "user-turn-1", role: "user", content: "hello" });
+
+    assert.equal(b.aiChatSession.messages.length, 0);
+    assert.equal(b.aiChatSession.draft, "");
+    assert.equal(a.aiChatSession.messages.length, 1);
+  });
+
+  it("disposes its AI Chat Session on close()", () => {
+    const session = new DocumentSession("id-6", null, "Chat");
+    session.aiChatSession.messages.push({ id: "user-turn-1", role: "user", content: "hello" });
+    session.aiChatSession.draft = "unsent";
+    session.aiChatSession.savedScrollTop = 250;
+
+    session.close();
+    // Disposed with its Document Session (issue #24 acceptance criterion) —
+    // and a disposed session ignores later sends, so a reply resolving after
+    // this close can never repopulate it.
+    assert.equal(session.aiChatSession.messages.length, 0);
+    assert.equal(session.aiChatSession.draft, "");
+    assert.equal(session.aiChatSession.savedScrollTop, 0);
+    assert.equal(session.aiChatSession.send(new MockAiChatService(), "late"), null);
   });
 
   it("resets its live refs and caches on close()", () => {

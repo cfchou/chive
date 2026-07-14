@@ -15,8 +15,11 @@ async function resizeRightSidebarTo(page: import("@playwright/test").Page, targe
   await page.mouse.up();
 }
 
+// Since A2, `/` without the param renders the real (session-driven) AI Chat —
+// covered by ai-chat-sessions.spec.ts. The completed fixture now needs the
+// test-only `?aiChatFixture=` backstage door, like the other A1 fixtures.
 test("AI Chat opens on the right with the completed static fixture", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?aiChatFixture=completed");
 
   const tab = page.getByRole("tab", { name: "AI Chat" });
   await expect(tab).toBeVisible();
@@ -61,8 +64,10 @@ test("AI Chat fixtures expose empty, generating, and error examples", async ({ p
   await expect(panel.getByRole("button", { name: "Send message" })).toBeVisible();
 });
 
+// Context chips are fixture-only until real PDF context arrives post-M1, so
+// this A1 behavior is pinned through the backstage door.
 test("AI Chat input context can be removed to use the whole document", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?aiChatFixture=completed");
   const panel = page.getByRole("tabpanel", { name: "AI Chat" });
   const removeContext = panel.getByRole("button", {
     name: "Remove Current page context; use whole document",

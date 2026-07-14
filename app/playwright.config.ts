@@ -1,6 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
 import { resolvePorts } from "./scripts/dev-ports.mjs";
 
+type RetryEnvironment = { CI?: string; VITE_COVERAGE?: string };
+
+export function resolvePlaywrightRetries(env: RetryEnvironment = process.env): number {
+  return env.CI === "true" && env.VITE_COVERAGE === "true" ? 1 : 0;
+}
+
 const coverageEnabled = process.env.VITE_COVERAGE === "true";
 const { e2ePort, coveragePort } = resolvePorts();
 const port = coverageEnabled ? coveragePort : e2ePort;
@@ -10,6 +16,9 @@ export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: false,
   workers: 1,
+  // Instrumentation makes PDF.js geometry timing occasionally miss once on
+  // hosted runners; retry only that gate and capture its existing retry trace.
+  retries: resolvePlaywrightRetries(),
   timeout: 120_000,
   expect: {
     timeout: 10_000,
