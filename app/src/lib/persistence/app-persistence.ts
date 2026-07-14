@@ -5,7 +5,7 @@
 
 export type AppPersistence = {
   getJson<T>(key: string): Promise<T | null>;
-  setJson<T>(key: string, value: T): Promise<void>;
+  setJson<T>(key: string, value: T): Promise<boolean>;
   remove(key: string): Promise<void>;
 };
 
@@ -28,12 +28,13 @@ export function createLocalStoragePersistence(
         return null;
       }
     },
-    async setJson<T>(key: string, value: T): Promise<void> {
-      if (!storage) return;
+    async setJson<T>(key: string, value: T): Promise<boolean> {
+      if (!storage) return false;
       try {
         storage.setItem(key, JSON.stringify(value));
+        return true;
       } catch {
-        // Best-effort: persistence is non-critical to the current session.
+        return false;
       }
     },
     async remove(key: string): Promise<void> {
