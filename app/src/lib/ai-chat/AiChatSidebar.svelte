@@ -5,12 +5,11 @@
   // deterministic mock be replaced by a real provider without touching this
   // component (issue #24 acceptance criterion).
   //
-  // The shell drives it in two modes:
-  //   - real mode: the active Document Session's AI Chat Session state, with
-  //     `onSend` wired and no `subtitle`;
-  //   - fixture mode (test-only `?aiChatFixture=` backstage door, removed in
-  //     A3): a static AiChatFixture spread into the same props, with
-  //     subtitle="Static example" and no `onSend`.
+  // A3 (issue #25): while generating, the reply text streams in as
+  // `inFlightContent`; this component shows it as a live assistant bubble until
+  // the shell commits it as a real message. Errors offer a Retry. The message
+  // viewport stays pinned to the bottom while the user is at the bottom, but
+  // leaves them alone when they have scrolled up to read earlier turns.
   import ChatComposer from "./ChatComposer.svelte";
   import ChatMessage from "./ChatMessage.svelte";
   import type { AiChatContext, AiChatMessage, AiChatState } from "./types";
@@ -19,27 +18,96 @@
     messages: AiChatMessage[];
     state: AiChatState;
     contexts: AiChatContext[];
-    /** Error text for the "error" state (fixture-only until A3 makes errors real). */
+    /** Error text shown in the "error" state. */
     errorMessage?: string;
-    /** Optional heading note. Deliberately generic — not a fixture flag — so the component stays fixture-unaware. */
+    /** The reply text streamed so far; shown as a live bubble while generating. */
+    inFlightContent?: string;
+    /** Identifies the active Document Session; a change means a Document Tab
+     * switch, so anchoring steps aside and lets the shell restore the scroll. */
+    sessionKey?: string;
+    /** Optional heading note. Deliberately generic — not a fixture flag. */
     subtitle?: string;
     /** Unsent composer draft; the shell owns where it is stored (per-document). */
     value?: string;
     /** The scrollable conversation element, exposed so the shell can capture/restore per-document scroll. */
     conversationEl?: HTMLDivElement | null;
-    /** Called with the trimmed composer text on Send; absent = sending disabled (fixture mode, or no document). */
+    /** Called with the trimmed composer text on Send; absent = sending disabled (no document). */
     onSend?: (text: string) => void;
+    /** Called on Stop while generating. */
+    onStop?: () => void;
+    /** Called on Retry from the error state. */
+    onRetry?: () => void;
+    /** Called when a page citation is activated, with its page number. */
+    onNavigateToPage?: (page: number) => void;
   };
   let {
     messages,
     state: chatState,
     contexts,
     errorMessage,
+    inFlightContent = "",
+    sessionKey,
     subtitle,
     value = $bindable(""),
     conversationEl = $bindable(null),
     onSend,
+    onStop,
+    onRetry,
+    onNavigateToPage,
   }: Props = $props();
+
+  // The live streaming bubble reuses ChatMessage with a synthetic assistant
+  // message. Its id is fixed and never collides with a committed turn.
+  let inFlightMessage = $derived<AiChatMessage>({
+    id: "assistant-in-flight",
+    role: "assistant",
+    content: inFlightContent,
+  });
+
+  // ---- Viewport anchoring (D9) ----
+  // "Pinned" means the user is parked at (or very near) the bottom, so new
+  // content should keep them there. Scrolling up un-pins; scrolling back down
+  // re-pins. These are plain lets: they drive imperative scrolling, not markup.
+  const NEAR_BOTTOM_PX = 32;
+  let pinned = true;
+  // Undefined until the first effect run records the current key; a change from
+  // the recorded value means a Document Tab switch.
+  let lastSessionKey: string | undefined;
+  let sessionKeySeen = false;
+  let lastUserTurnCount = 0;
+
+  function nearBottom(element: HTMLDivElement): boolean {
+    return element.scrollHeight - element.scrollTop - element.clientHeight <= NEAR_BOTTOM_PX;
+  }
+
+  function onConversationScroll() {
+    if (conversationEl) pinned = nearBottom(conversationEl);
+  }
+
+  // After any content change, keep the viewport pinned to the bottom if the
+  // user is there. A brand-new user turn always re-pins (sending a message
+  // reveals it). A Document Tab switch (sessionKey change) is left to the
+  // shell's scroll restore.
+  $effect(() => {
+    // Track the values that grow the conversation so this runs on each change.
+    void inFlightContent;
+    void chatState;
+    const userTurnCount = messages.filter((message) => message.role === "user").length;
+
+    if (!conversationEl) {
+      lastUserTurnCount = userTurnCount;
+      return;
+    }
+    if (!sessionKeySeen || sessionKey !== lastSessionKey) {
+      sessionKeySeen = true;
+      lastSessionKey = sessionKey;
+      lastUserTurnCount = userTurnCount;
+      return;
+    }
+    if (userTurnCount > lastUserTurnCount) pinned = true;
+    lastUserTurnCount = userTurnCount;
+    if (pinned) conversationEl.scrollTop = conversationEl.scrollHeight;
+  });
 </script>
 
 <div class="ai-chat-sidebar" aria-label="AI Chat">
@@ -49,7 +117,7 @@
       <span class="heading-note">{subtitle}</span>
     {/if}
   </div>
-  <div class="conversation" aria-live="polite" bind:this={conversationEl}>
+  <div class="conversation" aria-live="polite" bind:this={conversationEl} onscroll={onConversationScroll}>
     {#if chatState === "empty"}
       <div class="empty-state">
         <strong>Ask about this PDF</strong>
@@ -57,16 +125,37 @@
       </div>
     {:else}
       {#each messages as message (message.id)}
-        <ChatMessage {message} />
+        <ChatMessage {message} {onNavigateToPage} />
       {/each}
+      {#if chatState === "generating" && inFlightContent}
+        <!-- The reply streams in a fragment at a time, and the conversation
+             around it is a polite live region — so without this, a screen
+             reader would read the half-finished answer aloud again on every
+             fragment. Politeness is decided by the nearest element that sets
+             it, so switching this subtree off mutes the partial text while
+             leaving the rest of the conversation live: the finished reply is
+             still announced when it is committed just below, and "Generating
+             response…" still announces once. (Muting the whole conversation
+             while generating would instead risk swallowing that finished
+             reply, since it lands in the same update that would turn the
+             region back on.) -->
+        <div aria-live="off">
+          <ChatMessage message={inFlightMessage} />
+        </div>
+      {/if}
     {/if}
     {#if chatState === "generating"}
-      <p class="state-note" role="status">Generating example response…</p>
+      <p class="state-note" role="status">Generating response…</p>
     {:else if chatState === "error"}
-      <p class="error-note" role="alert">{errorMessage}</p>
+      <div class="error-note" role="alert">
+        <span>{errorMessage}</span>
+        {#if onRetry}
+          <button class="retry" type="button" onclick={() => onRetry?.()}>Retry</button>
+        {/if}
+      </div>
     {/if}
   </div>
-  <ChatComposer {contexts} state={chatState} bind:value {onSend} />
+  <ChatComposer {contexts} state={chatState} bind:value {onSend} {onStop} />
 </div>
 
 <style>
@@ -128,7 +217,26 @@
     font-size: var(--text-xs);
   }
   .error-note {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
     border: 1px solid color-mix(in oklab, var(--danger), transparent 65%);
     color: var(--danger);
+  }
+  .retry {
+    flex: 0 0 auto;
+    padding: 4px 10px;
+    border: 1px solid currentColor;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: var(--text-xs);
+    cursor: pointer;
+  }
+  .retry:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 </style>

@@ -45,9 +45,9 @@
   import BookmarksSidebar from "$lib/pdf/BookmarksSidebar.svelte";
   import OutlineSidebar from "$lib/pdf/OutlineSidebar.svelte";
   import AiChatSidebar from "$lib/ai-chat/AiChatSidebar.svelte";
-  import { selectAiChatFixture } from "$lib/ai-chat/fixtures";
   import { mockAiChatService } from "$lib/ai-chat/chat-service";
-  import type { AiChatMessage } from "$lib/ai-chat/types";
+  import type { AiChatMessage, AiChatState } from "$lib/ai-chat/types";
+  import type { AiChatStatus } from "$lib/ai-chat/chat-session";
   import * as pdfjsLib from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
   import inkCursorUrl from "pdfjs-dist/web/images/cursor-editorInk.svg?url";
@@ -1204,6 +1204,7 @@
     rememberedSelectionRanges = [];
 
     const session = new DocumentSession(crypto.randomUUID(), path, label);
+    wireAiChatSession(session); // push this session's chat changes to the mirror while active
     annotationDetailCache = session.annotationDetailCache;
     pendingDeletedPersistedAnnotationKeys = session.pendingDeletedPersistedAnnotationKeys;
     persistedAnnotationKeyByEditorId = session.persistedAnnotationKeyByEditorId;
@@ -4678,16 +4679,13 @@
 
   const EDGE_DOCK_PX = 38;
   const dockSides: SidebarSide[] = ["left", "right"];
-  // ---- AI Chat (A2): per-document sessions + test-only fixture door ----
+  // ---- AI Chat (A3): per-document sessions driven by the streaming mock ----
   //
-  // Mode is discriminated on URL-param PRESENCE: `?aiChatFixture=...` present
-  // (even empty/unknown → completed fallback) renders A1's static fixtures —
-  // a test-only backstage door until A3 makes generating/error real (issue
-  // #25 removes it). Param absent → real mode, driven by the Active Document
-  // Tab's AI Chat Session through the deterministic mock service.
-  const aiChatFixtureParam = browser ? new URLSearchParams(window.location.search).get("aiChatFixture") : null;
-  const aiChatFixture = aiChatFixtureParam !== null ? selectAiChatFixture(aiChatFixtureParam) : null;
-
+  // The AI Chat Sidebar always renders the Active Document Tab's AI Chat
+  // Session through the deterministic mock service. (A2's test-only
+  // `?aiChatFixture=` backstage door was removed in A3 — generating and error
+  // states are now real, so the static fixtures are gone.)
+  //
   // Shell mirrors of the ACTIVE session's AI Chat Session. Same architecture
   // as the PDF snapshot state: the rune-free AiChatSession owned by each
   // DocumentSession is the source of truth; these `$state` values only exist
@@ -4696,21 +4694,61 @@
   // deliberately NOT carried into the first opened document).
   let aiChatMessages = $state<AiChatMessage[]>([]);
   let aiChatComposerValue = $state("");
+  let aiChatStatus = $state<AiChatStatus>("idle");
+  let aiChatErrorMessage = $state<string | null>(null);
+  let aiChatInFlightContent = $state("");
   /** The sidebar's scrollable conversation element (bound), for per-document scroll capture/restore. */
   let aiChatConversationEl = $state<HTMLDivElement | null>(null);
 
+  // Presentation state the sidebar expects (empty | generating | completed |
+  // error), derived from the session's own status plus whether there's any
+  // content. Kept separate from AiChatStatus on purpose: one is the model's
+  // lifecycle, this is what the component renders.
+  const aiChatState = $derived<AiChatState>(
+    aiChatStatus === "generating"
+      ? "generating"
+      : aiChatStatus === "error"
+        ? "error"
+        : aiChatMessages.length || aiChatInFlightContent
+          ? "completed"
+          : "empty",
+  );
+
   /**
    * Re-copy the active session's chat state into the shell mirrors.
-   * Contract (PR #27 rev 2/3): active session → copy messages + draft; no
-   * active session → clear both. Called after every transition that changes
-   * which AI Chat Session is visible: first open, replace-in-place reload,
-   * new-tab creation, tab switch, active-tab close, final-tab close, and
-   * send/reply mutations.
+   * Contract: active session → copy messages, draft, status, error, in-flight
+   * text; no active session → clear all. Called after every transition that
+   * changes which AI Chat Session is visible (first open, replace-in-place
+   * reload, new-tab creation, tab switch, active-tab close, final-tab close)
+   * and, via the session's onChange, on every streaming/state mutation.
    */
   function refreshAiChatFromActiveSession() {
     const chat = activeSession?.aiChatSession ?? null;
     aiChatMessages = chat ? [...chat.messages] : [];
     aiChatComposerValue = chat ? chat.draft : "";
+    aiChatStatus = chat ? chat.status : "idle";
+    aiChatErrorMessage = chat ? chat.errorMessage : null;
+    aiChatInFlightContent = chat ? chat.inFlightContent : "";
+  }
+
+  /**
+   * Wire a freshly created session's AI Chat Session to push its changes into
+   * the shell mirrors — but only while it is the Active Document Tab. An
+   * inactive session mutates silently (e.g. a reply finishing after a tab
+   * switch) and is mirrored when it next becomes active.
+   *
+   * The draft write-back is load-bearing: while a session is active the live
+   * composer mirror (aiChatComposerValue) is the authoritative draft (the
+   * two-way binding only updates the mirror as the user types). Copying it
+   * back into the session before re-mirroring is what stops a chunk arriving
+   * mid-typing from erasing a half-typed follow-up.
+   */
+  function wireAiChatSession(session: DocumentSession) {
+    session.aiChatSession.onChange = () => {
+      if (session.id !== activeSessionId) return;
+      session.aiChatSession.draft = aiChatComposerValue;
+      refreshAiChatFromActiveSession();
+    };
   }
 
   /** Capture the on-screen conversation scroll into the given session (called while that session's conversation is still the one rendered). */
@@ -4728,26 +4766,37 @@
   /**
    * Send one composer message to the active document's AI Chat Session.
    * The draft is cleared ONLY when the session accepts the send (returns a
-   * promise) — an ignored send (null: disposed or already pending) must never
-   * erase typed text. The late-resolve guard re-checks the *owning* session:
-   * a reply landing after a tab switch is already safely inside that session
-   * and will be mirrored on return, so refreshing here would be wrong unless
-   * it is still the active one.
+   * promise) — an ignored send (null: disposed or already generating) must
+   * never erase typed text. Everything after acceptance (the user turn, each
+   * streamed chunk, completion/error) reaches the mirror through the session's
+   * onChange (wireAiChatSession), so there is no completion callback here.
    */
   function sendAiChatMessage(text: string) {
     const session = activeSession;
     if (!session) return; // no Document Tab → the composer is inert
     const completion = session.aiChatSession.send(mockAiChatService, text);
     if (completion === null) return;
+    // Accepted, so the prompt has left the composer. The user turn and the
+    // generating state are already mirrored (send() notified onChange); this
+    // only has to empty the draft on both sides.
     session.aiChatSession.draft = "";
     aiChatComposerValue = "";
-    refreshAiChatFromActiveSession(); // the user turn is visible immediately
-    void completion.then(() => {
-      if (session.id !== activeSessionId) return;
-      // Preserve a follow-up typed while this completion was pending.
-      session.aiChatSession.draft = aiChatComposerValue;
-      refreshAiChatFromActiveSession();
-    });
+  }
+
+  /** Stop the active document's in-flight generation (keeps partial content). */
+  function stopAiChatGeneration() {
+    activeSession?.aiChatSession.stop();
+  }
+
+  /** Retry the active document's failed generation. */
+  function retryAiChatGeneration() {
+    activeSession?.aiChatSession.retry(mockAiChatService);
+  }
+
+  /** Navigate the PDF to a cited page (no-op when no document is loaded). */
+  function navigateToCitationPage(page: number) {
+    if (!activeSession) return;
+    void scrollToPage(page);
   }
 
   let dock = $state(createDefaultDockState());
@@ -5147,29 +5196,24 @@
                   {selectedAnnotationEntryId}
                   {locateAnnotationEntry}
                 />
-              {:else if aiChatFixture}
-                <!-- Test-only backstage door (?aiChatFixture=): A1's static
-                     representative states, inert composer. A3 removes this. -->
-                <AiChatSidebar
-                  messages={aiChatFixture.messages}
-                  state={aiChatFixture.state}
-                  contexts={aiChatFixture.contexts}
-                  errorMessage={aiChatFixture.errorMessage}
-                  subtitle="Static example"
-                  bind:value={aiChatComposerValue}
-                  bind:conversationEl={aiChatConversationEl}
-                />
               {:else}
-                <!-- Real mode: the Active Document Tab's AI Chat Session.
-                     Real context chips arrive post-M1, so none are passed;
-                     generating/error states are A3's. -->
+                <!-- The Active Document Tab's AI Chat Session. Real context
+                     chips arrive post-M1, so none are passed. onSend is given
+                     only when a document is open, so the composer's Send button
+                     is disabled at `/` even with typed text. -->
                 <AiChatSidebar
                   messages={aiChatMessages}
-                  state={aiChatMessages.length ? "completed" : "empty"}
+                  state={aiChatState}
                   contexts={[]}
+                  errorMessage={aiChatErrorMessage ?? undefined}
+                  inFlightContent={aiChatInFlightContent}
+                  sessionKey={activeSessionId ?? undefined}
                   bind:value={aiChatComposerValue}
                   bind:conversationEl={aiChatConversationEl}
-                  onSend={sendAiChatMessage}
+                  onSend={activeSession ? sendAiChatMessage : undefined}
+                  onStop={stopAiChatGeneration}
+                  onRetry={retryAiChatGeneration}
+                  onNavigateToPage={navigateToCitationPage}
                 />
               {/if}
             </div>

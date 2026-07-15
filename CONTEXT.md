@@ -73,15 +73,15 @@ The app-wide modal surface inside the same Tauri window. It is independent of ev
 _Avoid_: preferences window, settings window, PDF settings
 
 **AI Chat Sidebar**:
-The dockable sidebar surface for a conversation about the PDF shown by the Active Document Tab. It renders the active document's AI Chat Session; the A1 static examples remain reachable only through the test-only `?aiChatFixture=` URL param until A3 removes them.
+The dockable sidebar surface for a conversation about the PDF shown by the Active Document Tab. It renders the active document's AI Chat Session.
 _Avoid_: chatbot panel, assistant drawer
 
 **AI Chat Session**:
-The per-Document-Session conversation state: messages, the unsent AI Chat Composer draft, and the chat panel's scroll position. Created with its Document Session and disposed with it; one document → one session → multiple turns, with no persistence across app launches.
+The per-Document-Session conversation state: the messages, the generation status (idle, generating, or error) with the reply currently streaming in, the unsent AI Chat Composer draft, and the chat panel's scroll position. Created with its Document Session and disposed with it; one document → one session → multiple turns, with no persistence across app launches.
 _Avoid_: chat history, thread
 
 **AI Chat Service**:
-The UI-facing interface that resolves assistant replies for an AI Chat Session. In M1 its only implementation is a deterministic mock; AI Chat Sidebar components never import an implementation, so a real provider can replace the mock without touching them.
+The UI-facing interface that streams assistant replies for an AI Chat Session, and can be cancelled mid-reply. In M1 its only implementation is a deterministic mock; AI Chat Sidebar components never import an implementation, so a real provider can replace the mock without touching them.
 _Avoid_: backend, API client
 
 **AI Chat Message**:
@@ -93,7 +93,7 @@ A compact label in the AI Chat Composer that identifies PDF context intended to 
 _Avoid_: tag, filter chip
 
 **AI Chat Page Citation**:
-A page reference attached to an AI Chat Message.
+A keyboard-accessible control attached to an AI Chat Message that navigates the PDF to the page it cites.
 _Avoid_: source link, footnote
 
 **AI Chat Composer**:

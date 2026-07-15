@@ -16,10 +16,3 @@ export type AiChatMessage = {
   content: string;
   citations?: AiChatCitation[];
 };
-
-export type AiChatFixture = {
-  state: AiChatState;
-  messages: AiChatMessage[];
-  contexts: AiChatContext[];
-  errorMessage?: string;
-};
