@@ -68,6 +68,10 @@ _Avoid_: tab strip (that is the sidebar TabStrip), titlebar tabs, tab row
 The per-tab runtime unit backing a Document Tab: its live pdf.js viewer/document/editor-manager, viewer DOM, annotation caches, and — while inactive — a snapshot of its scalar UI state. Inactive sessions stay alive so their editor undo history survives a tab switch.
 _Avoid_: viewer instance, document state, tab model
 
+**Application Settings**:
+The app-wide modal surface inside the same Tauri window. It is independent of every Document Session and the Active Document Tab, and changes remain drafts until the user explicitly chooses Save.
+_Avoid_: preferences window, settings window, PDF settings
+
 **AI Chat Sidebar**:
 The dockable sidebar surface for a conversation about the PDF shown by the Active Document Tab. It renders the active document's AI Chat Session; the A1 static examples remain reachable only through the test-only `?aiChatFixture=` URL param until A3 removes them.
 _Avoid_: chatbot panel, assistant drawer
