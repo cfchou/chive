@@ -1,85 +1,111 @@
-// Unit coverage for the AI Chat Session model (issue #24 / A2).
+// Unit coverage for the AI Chat Session model (issue #25 / A3).
 //
-// The AI Chat Session owns one document's conversation state. These tests pin
-// its lifecycle contract (PR #27 rev 3):
-//   - send() appends the user turn and the assistant reply to THIS session,
-//     never to whichever tab happens to be visible when the reply resolves;
-//   - acceptance is synchronously observable: send() returns the completion
-//     promise when accepted, null when not (disposed, or a send is pending);
-//   - disposed sessions discard late replies;
-//   - the request handed to the service is an independent array snapshot.
+// A3 turns the session into a small generation state machine on top of A2's
+// ownership rules. These tests pin, at the model seam:
+//   - the A2 contract still holds: the user turn appears synchronously, the
+//     reply lands in THIS session even if it arrives after a tab switch,
+//     disposed sessions discard late work, and the request is an independent
+//     snapshot;
+//   - the A3 machine: idle → generating → (idle | error), streamed text
+//     accumulates in inFlightContent, the assistant turn is committed once on
+//     completion, Stop preserves partial content, errors are state (not
+//     thrown), retry re-runs the last turn, and onChange fires on every
+//     observable change.
 //
-// The deferred fake service below makes the asynchronous invariants testable:
-// it hands out replies only when the test explicitly resolves them, so the
-// test can interleave dispose()/send() calls inside the pending window —
-// something the immediate mock service can never exercise.
+// Two fake services drive this. `instant()` is the real mock with its waits
+// removed, for tests that just need a finished reply fast. `StreamingFake`
+// hands the test manual control — emit a chunk, finish, or fail on demand, and
+// observe the abort signal — so the interesting mid-stream moments (stop,
+// dispose, late reply) are reachable without real timers.
 
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
 import { AiChatSession } from "../../src/lib/ai-chat/chat-session";
 import { MockAiChatService } from "../../src/lib/ai-chat/chat-service";
-import type { AiChatReply, AiChatRequest, AiChatService } from "../../src/lib/ai-chat/chat-service";
+import type { AiChatChunkSink, AiChatReply, AiChatRequest, AiChatService } from "../../src/lib/ai-chat/chat-service";
 
-/** Fake service whose replies resolve only when the test says so. */
-class DeferredAiChatService implements AiChatService {
+/** The real mock with its delays collapsed to nothing — a fast finished reply. */
+function instant(): MockAiChatService {
+  return new MockAiChatService({ delay: () => Promise.resolve() });
+}
+
+/** A generation the test steps by hand: emit chunks, then finish or fail. */
+class StreamingFake implements AiChatService {
   readonly requests: AiChatRequest[] = [];
-  private readonly resolvers: Array<(reply: AiChatReply) => void> = [];
+  readonly signals: AbortSignal[] = [];
+  private sink: AiChatChunkSink | null = null;
+  private settle: { resolve: (reply: AiChatReply) => void; reject: (reason: unknown) => void } | null = null;
 
-  complete(request: AiChatRequest): Promise<AiChatReply> {
+  generate(request: AiChatRequest, onChunk: AiChatChunkSink, signal: AbortSignal): Promise<AiChatReply> {
     this.requests.push(request);
-    return new Promise((resolve) => {
-      this.resolvers.push(resolve);
+    this.signals.push(signal);
+    this.sink = onChunk;
+    return new Promise<AiChatReply>((resolve, reject) => {
+      this.settle = { resolve, reject };
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
     });
   }
 
-  /** Resolve the oldest outstanding request with the given reply text. */
-  resolveNext(content: string): void {
-    const resolve = this.resolvers.shift();
-    if (!resolve) throw new Error("No pending AI Chat request to resolve");
-    resolve({ content });
+  emit(text: string): void {
+    this.sink?.(text);
+  }
+
+  /**
+   * Flush one last chunk synchronously while the caller is aborting us — the
+   * worst-case shape a real provider can have, since abort listeners run
+   * synchronously inside abort(). A stopped session must not accept it.
+   */
+  emitOnAbort(text: string): void {
+    this.signals[this.signals.length - 1]?.addEventListener("abort", () => this.sink?.(text), { once: true });
+  }
+
+  finish(reply: AiChatReply): void {
+    this.settle?.resolve(reply);
+  }
+
+  fail(message: string): void {
+    this.settle?.reject(new Error(message));
   }
 }
 
-describe("AiChatSession", () => {
-  it("send() appends the user turn, then the assistant reply, in order", async () => {
+describe("AiChatSession — A2 ownership contract (still holds under streaming)", () => {
+  it("send() shows the user turn synchronously, then commits the assistant reply", async () => {
     const session = new AiChatSession();
-    const completion = session.send(new MockAiChatService(), "Summarize this PDF");
+    const completion = session.send(instant(), "Summarize this PDF");
     assert.notEqual(completion, null);
 
-    // The user turn is visible synchronously — the composer's message must
-    // appear before any reply arrives.
+    // The user's message is visible before any reply arrives.
     assert.equal(session.messages.length, 1);
     assert.equal(session.messages[0].role, "user");
     assert.equal(session.messages[0].content, "Summarize this PDF");
+    assert.equal(session.status, "generating");
 
     await completion;
     assert.equal(session.messages.length, 2);
     assert.equal(session.messages[1].role, "assistant");
     assert.ok(session.messages[1].content.length > 0);
+    assert.equal(session.status, "idle");
+    assert.equal(session.inFlightContent, "");
   });
 
   it("assigns deterministic, session-owned ids and roles across turns", async () => {
     const a = new AiChatSession();
     const b = new AiChatSession();
-    const service = new MockAiChatService();
-    await a.send(service, "first");
-    await a.send(service, "second");
-    await b.send(service, "first");
+    await a.send(instant(), "first");
+    await a.send(instant(), "second");
+    await b.send(instant(), "first");
 
-    // Ids come from the session's own turn counter, so two sessions with the
-    // same history produce the same ids — deterministic, not globally unique.
     assert.deepEqual(
       a.messages.map((message) => message.id),
       [b.messages[0].id, b.messages[1].id, a.messages[2].id, a.messages[3].id],
     );
-    // Within one session every id is distinct (they key Svelte's {#each}).
     assert.equal(new Set(a.messages.map((message) => message.id)).size, a.messages.length);
   });
 
   it("two sessions share no state", async () => {
     const a = new AiChatSession();
     const b = new AiChatSession();
-    await a.send(new MockAiChatService(), "only in a");
+    await a.send(instant(), "only in a");
     a.draft = "draft a";
     a.savedScrollTop = 120;
 
@@ -90,92 +116,64 @@ describe("AiChatSession", () => {
   });
 
   it("a late reply lands in the originating session, not elsewhere", async () => {
-    const deferred = new DeferredAiChatService();
+    const fake = new StreamingFake();
     const origin = new AiChatSession();
     const other = new AiChatSession();
 
-    const completion = origin.send(deferred, "slow question");
+    const completion = origin.send(fake, "slow question");
     assert.notEqual(completion, null);
 
-    // Meanwhile the user "switches tabs" and converses elsewhere — activity is
-    // a shell concept; the model must be safe regardless of it.
-    await other.send(new MockAiChatService(), "fast question");
+    // Meanwhile the user "switches tabs" and converses elsewhere.
+    await other.send(instant(), "fast question");
 
-    deferred.resolveNext("late answer");
+    fake.emit("late answer");
+    fake.finish({ content: "late answer" });
     await completion;
 
     assert.equal(origin.messages.length, 2);
     assert.equal(origin.messages[1].content, "late answer");
-    // The other session saw exactly its own two turns and nothing more.
     assert.equal(other.messages.length, 2);
     assert.notEqual(other.messages[1].content, "late answer");
   });
 
-  it("dispose() before resolution discards the late reply", async () => {
-    const deferred = new DeferredAiChatService();
+  it("dispose() before completion discards the late reply", async () => {
+    const fake = new StreamingFake();
     const session = new AiChatSession();
-    const completion = session.send(deferred, "doomed question");
+    const completion = session.send(fake, "doomed question");
     assert.notEqual(completion, null);
 
     session.dispose();
-    deferred.resolveNext("too late");
+    fake.finish({ content: "too late" });
     await completion;
 
-    // The Document Tab is closed; nothing may repopulate the session.
     assert.equal(session.messages.length, 0);
   });
 
   it("send() after dispose() returns null and appends nothing", () => {
     const session = new AiChatSession();
     session.dispose();
-    assert.equal(session.send(new MockAiChatService(), "hello?"), null);
+    assert.equal(session.send(instant(), "hello?"), null);
     assert.equal(session.messages.length, 0);
   });
 
-  it("a second send() while one is pending returns null; the first completes normally", async () => {
-    const deferred = new DeferredAiChatService();
-    const session = new AiChatSession();
-    const first = session.send(deferred, "first");
-    assert.notEqual(first, null);
-
-    // The ignored send must change nothing: no user turn, no extra request.
-    assert.equal(session.send(deferred, "second"), null);
-    assert.equal(session.messages.length, 1);
-    assert.equal(deferred.requests.length, 1);
-
-    deferred.resolveNext("answer to first");
-    await first;
-    assert.equal(session.messages.length, 2);
-    assert.equal(session.messages[1].content, "answer to first");
-
-    // Once the pending send completed, the session accepts sends again.
-    const next = session.send(deferred, "third");
-    assert.notEqual(next, null);
-    deferred.resolveNext("answer to third");
-    await next;
-    assert.equal(session.messages.length, 4);
-  });
-
   it("hands the service an independent array snapshot", async () => {
-    const deferred = new DeferredAiChatService();
+    const fake = new StreamingFake();
     const session = new AiChatSession();
-    const completion = session.send(deferred, "snapshot me");
+    const completion = session.send(fake, "snapshot me");
 
-    const seen = deferred.requests[0].messages;
+    const seen = fake.requests[0].messages;
     assert.equal(seen.length, 1);
 
-    deferred.resolveNext("reply");
+    fake.finish({ content: "reply" });
     await completion;
 
-    // The session has grown since the request was built; the snapshot the
-    // service received must not have.
     assert.equal(session.messages.length, 2);
     assert.equal(seen.length, 1);
   });
 
-  it("dispose() clears messages, draft, and scroll", async () => {
+  it("dispose() clears messages, draft, scroll, and generation state", async () => {
     const session = new AiChatSession();
-    await session.send(new MockAiChatService(), "hello");
+    await session.send(instant(), "hello");
     session.draft = "unsent";
     session.savedScrollTop = 300;
 
@@ -183,5 +181,233 @@ describe("AiChatSession", () => {
     assert.equal(session.messages.length, 0);
     assert.equal(session.draft, "");
     assert.equal(session.savedScrollTop, 0);
+    assert.equal(session.status, "idle");
+    assert.equal(session.inFlightContent, "");
+  });
+});
+
+describe("AiChatSession — A3 generation state machine", () => {
+  it("accumulates streamed chunks in inFlightContent, then commits once on completion", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const completion = session.send(fake, "stream me");
+
+    fake.emit("Hello");
+    assert.equal(session.status, "generating");
+    assert.equal(session.inFlightContent, "Hello");
+    // Still no committed assistant turn — only the user turn.
+    assert.equal(session.messages.length, 1);
+
+    fake.emit(", world");
+    assert.equal(session.inFlightContent, "Hello, world");
+
+    fake.finish({ content: "Hello, world", citations: [{ id: "c1", page: 4 }] });
+    await completion;
+
+    assert.equal(session.messages.length, 2);
+    assert.equal(session.messages[1].content, "Hello, world");
+    assert.deepEqual(session.messages[1].citations, [{ id: "c1", page: 4 }]);
+    assert.equal(session.status, "idle");
+    assert.equal(session.inFlightContent, "");
+  });
+
+  it("fires onChange for the user turn, each chunk, and completion", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    let changes = 0;
+    session.onChange = () => {
+      changes += 1;
+    };
+
+    const completion = session.send(fake, "count me");
+    const afterSend = changes;
+    assert.ok(afterSend >= 1); // user turn + generating became observable
+
+    fake.emit("a");
+    assert.equal(changes, afterSend + 1);
+    fake.emit("b");
+    assert.equal(changes, afterSend + 2);
+
+    fake.finish({ content: "ab" });
+    await completion;
+    assert.equal(changes, afterSend + 3);
+  });
+
+  it("stop() after a chunk commits the partial content with no citation, then goes idle", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const completion = session.send(fake, "Pause after the first chunk");
+
+    fake.emit("Partial so far");
+    session.stop();
+
+    assert.equal(session.status, "idle");
+    assert.equal(session.inFlightContent, "");
+    assert.equal(session.messages.length, 2);
+    assert.equal(session.messages[1].role, "assistant");
+    assert.equal(session.messages[1].content, "Partial so far");
+    assert.equal(session.messages[1].citations, undefined);
+
+    // The underlying generation was actually cancelled.
+    assert.equal(fake.signals[0].aborted, true);
+    await completion;
+  });
+
+  it("stop() before any chunk commits nothing and goes idle", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const completion = session.send(fake, "Respond slowly");
+
+    session.stop();
+    assert.equal(session.status, "idle");
+    assert.equal(session.messages.length, 1); // only the user turn
+    await completion;
+  });
+
+  it("stop() when idle is a no-op", () => {
+    const session = new AiChatSession();
+    session.stop();
+    assert.equal(session.status, "idle");
+    assert.equal(session.messages.length, 0);
+  });
+
+  it("discards late chunks from a stopped generation, and accepts a fresh send", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const first = session.send(fake, "Pause after the first chunk");
+    fake.emit("kept");
+    session.stop();
+    // A stray chunk from the cancelled generation must be ignored.
+    fake.emit("should be dropped");
+    assert.equal(session.messages[1].content, "kept");
+    assert.equal(session.inFlightContent, "");
+    await first;
+
+    // A brand-new send works right after the stop.
+    const second = session.send(instant(), "again");
+    assert.notEqual(second, null);
+    await second;
+    assert.equal(session.messages.at(-1)?.role, "assistant");
+  });
+
+  it("ignores a chunk a service flushes synchronously while being stopped", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const completion = session.send(fake, "Pause after the first chunk");
+    fake.emit("kept");
+    // The service will try to squeeze one more chunk out during abort().
+    fake.emitOnAbort(" sneaked in");
+
+    // Watch every state the session announces. The committed text alone cannot
+    // tell us whether the late chunk was rejected (stop() snapshots the kept
+    // text before aborting, so it reads "kept" either way) — but an accepted
+    // chunk would still announce itself on the way past.
+    const announced: string[] = [];
+    session.onChange = () => announced.push(session.inFlightContent);
+
+    session.stop();
+
+    assert.ok(
+      !announced.some((text) => text.includes("sneaked")),
+      `a stopped generation announced a late chunk: ${JSON.stringify(announced)}`,
+    );
+    assert.equal(session.messages.length, 2);
+    assert.equal(session.messages[1].content, "kept");
+    assert.equal(session.inFlightContent, "");
+    assert.equal(session.status, "idle");
+    await completion;
+    assert.equal(session.messages[1].content, "kept");
+  });
+
+  it("a failed generation becomes error state with nothing committed", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const completion = session.send(fake, "Fail to respond");
+
+    fake.fail("scripted failure");
+    await completion;
+
+    assert.equal(session.status, "error");
+    assert.ok(session.errorMessage && session.errorMessage.length > 0);
+    assert.equal(session.messages.length, 1); // user turn only; no assistant turn
+    assert.equal(session.inFlightContent, "");
+  });
+
+  it("retry() re-runs the last turn without adding a user turn", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const first = session.send(fake, "Fail to respond");
+    fake.fail("first failure");
+    await first;
+    assert.equal(session.status, "error");
+
+    const retried = session.retry(fake);
+    assert.notEqual(retried, null);
+    assert.equal(session.status, "generating");
+    assert.equal(session.errorMessage, null);
+    // No new user turn; the request still ends with the original user turn.
+    assert.equal(session.messages.length, 1);
+    assert.equal(fake.requests.length, 2);
+    assert.equal(fake.requests[1].messages.at(-1)?.content, "Fail to respond");
+
+    fake.emit("recovered");
+    fake.finish({ content: "recovered" });
+    await retried;
+    assert.equal(session.messages.length, 2);
+    assert.equal(session.messages[1].id, session.messages[0].id.replace("user", "assistant"));
+  });
+
+  it("retry() when not in error returns null and does nothing", () => {
+    const session = new AiChatSession();
+    assert.equal(session.retry(instant()), null);
+    assert.equal(session.messages.length, 0);
+  });
+
+  it("send() from the error state clears the error and starts a new turn", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const first = session.send(fake, "Fail to respond");
+    fake.fail("boom");
+    await first;
+    assert.equal(session.status, "error");
+
+    const next = session.send(instant(), "a different question");
+    assert.notEqual(next, null);
+    assert.equal(session.errorMessage, null);
+    await next;
+    // Two user turns now (the failed one and the new one), plus one reply.
+    assert.equal(session.messages.filter((message) => message.role === "user").length, 2);
+    assert.equal(session.status, "idle");
+  });
+
+  it("a second send() while generating returns null; the first still completes", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const first = session.send(fake, "first");
+    assert.notEqual(first, null);
+
+    assert.equal(session.send(fake, "second"), null);
+    assert.equal(session.messages.length, 1);
+    assert.equal(fake.requests.length, 1);
+
+    fake.finish({ content: "answer to first" });
+    await first;
+    assert.equal(session.messages.length, 2);
+    assert.equal(session.status, "idle");
+  });
+
+  it("dispose() mid-generation aborts the underlying work", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const completion = session.send(fake, "in flight");
+    fake.emit("partial");
+
+    session.dispose();
+    assert.equal(fake.signals[0].aborted, true);
+    // Late completion is ignored — the session stays cleared.
+    fake.finish({ content: "ignored" });
+    await completion;
+    assert.equal(session.messages.length, 0);
+    assert.equal(session.status, "idle");
   });
 });

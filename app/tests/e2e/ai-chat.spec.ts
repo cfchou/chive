@@ -1,5 +1,20 @@
 import { expect, test } from "./coverage";
 
+// AI Chat Composer layout and sizing, asserted in real (session-driven) mode.
+//
+// A3 (issue #25) removed the `?aiChatFixture=` backstage door, so the A1
+// fixture tests that used to live here are gone:
+//   - the completed/empty/generating/error fixture looks are now real states,
+//     covered by ai-chat-generation.spec.ts;
+//   - AI Chat Context Chip behavior (chips add to the composer's initial
+//     height; removing one returns to whole-document mode) moved to
+//     composer-harness.spec.ts, because real mode passes no contexts until
+//     real PDF context arrives post-M1.
+//
+// What remains here is the composer geometry that has always been asserted at
+// `/`: the configuration row, the two-line starting height, growth, the
+// one-third cap, and internal scrolling.
+
 async function resizeRightSidebarTo(page: import("@playwright/test").Page, targetWidth: number) {
   const resizer = page.locator('.sidebar[data-side="right"] .sidebar-resizer');
   const box = await resizer.boundingBox();
@@ -14,74 +29,6 @@ async function resizeRightSidebarTo(page: import("@playwright/test").Page, targe
   await page.mouse.move(startX - (targetWidth - currentWidth), startY, { steps: 8 });
   await page.mouse.up();
 }
-
-// Since A2, `/` without the param renders the real (session-driven) AI Chat —
-// covered by ai-chat-sessions.spec.ts. The completed fixture now needs the
-// test-only `?aiChatFixture=` backstage door, like the other A1 fixtures.
-test("AI Chat opens on the right with the completed static fixture", async ({ page }) => {
-  await page.goto("/?aiChatFixture=completed");
-
-  const tab = page.getByRole("tab", { name: "AI Chat" });
-  await expect(tab).toBeVisible();
-  await expect(tab).toHaveAttribute("aria-selected", "true");
-
-  const panel = page.getByRole("tabpanel", { name: "AI Chat" });
-  await expect(panel).toBeVisible();
-  await expect(panel.getByText("What is the main argument?", { exact: true })).toBeVisible();
-  await expect(panel.getByText("The document argues", { exact: false })).toBeVisible();
-  const pageCitation = panel.getByText("Page 3", { exact: true });
-  await expect(pageCitation).toBeVisible();
-  await expect(pageCitation).toHaveCSS("border-radius", "8px");
-  await expect(panel.getByRole("button", { name: "Page 3" })).toHaveCount(0);
-  const currentPage = panel.getByRole("button", {
-    name: "Remove Current page context; use whole document",
-  });
-  await expect(currentPage).toBeVisible();
-  await expect(currentPage).toHaveCSS("border-radius", "8px");
-
-  await expect(panel.getByRole("button", { name: "Summarize this PDF" })).toHaveCount(0);
-  await expect(panel.getByRole("button", { name: "Explain the current page" })).toHaveCount(0);
-
-  await expect(panel.getByRole("textbox", { name: "Message AI Chat" })).toBeVisible();
-  await expect(panel.getByRole("button", { name: "Send message" })).toBeVisible();
-});
-
-test("AI Chat fixtures expose empty, generating, and error examples", async ({ page }) => {
-  await page.goto("/?aiChatFixture=empty");
-  let panel = page.getByRole("tabpanel", { name: "AI Chat" });
-  await expect(panel.getByText("Ask about this PDF", { exact: true })).toBeVisible();
-  await expect(panel.getByText("Write a message to begin.", { exact: true })).toBeVisible();
-  await expect(panel.getByText("Use a suggested prompt", { exact: false })).toHaveCount(0);
-
-  await page.goto("/?aiChatFixture=generating");
-  panel = page.getByRole("tabpanel", { name: "AI Chat" });
-  await expect(panel.getByRole("status")).toHaveText("Generating example response…");
-  await expect(panel.getByRole("button", { name: "Stop generating" })).toBeVisible();
-
-  await page.goto("/?aiChatFixture=error");
-  panel = page.getByRole("tabpanel", { name: "AI Chat" });
-  await expect(panel.getByRole("alert")).toHaveText("The example response could not be generated.");
-  await expect(panel.getByRole("button", { name: "Send message" })).toBeVisible();
-});
-
-// Context chips are fixture-only until real PDF context arrives post-M1, so
-// this A1 behavior is pinned through the backstage door.
-test("AI Chat input context can be removed to use the whole document", async ({ page }) => {
-  await page.goto("/?aiChatFixture=completed");
-  const panel = page.getByRole("tabpanel", { name: "AI Chat" });
-  const removeContext = panel.getByRole("button", {
-    name: "Remove Current page context; use whole document",
-  });
-
-  await expect(removeContext).toBeVisible();
-  await removeContext.click();
-
-  await expect(panel.getByText("Current page", { exact: true })).toHaveCount(0);
-  await expect(panel.getByRole("textbox", { name: "Message AI Chat" })).toHaveAttribute(
-    "placeholder",
-    "Ask about this PDF",
-  );
-});
 
 test("AI Chat composer exposes configuration and file actions below the message input", async ({ page }) => {
   await page.goto("/");

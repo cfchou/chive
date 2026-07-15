@@ -2,8 +2,10 @@
   import PageCitation from "./PageCitation.svelte";
   import type { AiChatMessage } from "./types";
 
-  type Props = { message: AiChatMessage };
-  let { message }: Props = $props();
+  // `onNavigateToPage` threads up to the shell's scrollToPage; a citation
+  // button calls it with its page number. Absent = citations are inert.
+  type Props = { message: AiChatMessage; onNavigateToPage?: (page: number) => void };
+  let { message, onNavigateToPage }: Props = $props();
 </script>
 
 <article class="message" class:user={message.role === "user"} aria-label={message.role === "user" ? "You" : "AI"}>
@@ -12,7 +14,7 @@
   {#if message.citations?.length}
     <div class="citations" aria-label="Page citations">
       {#each message.citations as citation (citation.id)}
-        <PageCitation page={citation.page} />
+        <PageCitation page={citation.page} onNavigate={() => onNavigateToPage?.(citation.page)} />
       {/each}
     </div>
   {/if}

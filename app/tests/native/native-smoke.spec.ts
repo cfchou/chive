@@ -1550,4 +1550,91 @@ describe("native WKWebView PDF smoke", () => {
       }),
     ).toBe(true);
   });
+
+  // AI Chat Page Citation navigation in the real WKWebView (issue #25 / A3).
+  // The browser suite pins the click and keyboard paths; this is the native
+  // regression that the citation really moves the PDF here too. The scripted
+  // "Explain the current page" reply always cites page 2.
+  it("navigates the PDF from an AI Chat Page Citation", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+    await app.execute(async (filePath) => window.__pdfSpike!.loadPath(filePath), samplePdfPath);
+    await app.waitUntil(
+      async () => app.execute(() => Number(window.__pdfSpike!.stats().pages ?? 0) > 0),
+      { timeout: 30_000, timeoutMsg: "Native sample PDF did not render before the AI Chat citation test" },
+    );
+
+    // Make sure the AI Chat panel is the visible sidebar tab, then send the
+    // scripted prompt through the composer the way a user would.
+    await app.execute(() => {
+      [...document.querySelectorAll<HTMLButtonElement>(".sidebar-tab")]
+        .find((button) => button.getAttribute("aria-label") === "AI Chat")
+        ?.click();
+    });
+    await app.waitUntil(
+      async () =>
+        app.execute(() =>
+          Boolean(document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message AI Chat"]')),
+        ),
+      { timeout: 10_000, timeoutMsg: "Native AI Chat composer did not appear" },
+    );
+
+    await app.execute(() => {
+      const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message AI Chat"]');
+      if (!textarea) throw new Error("Native AI Chat composer textarea not found");
+      textarea.value = "Explain the current page";
+      // Svelte's two-way binding listens for `input`, so the draft only
+      // registers if we announce the change.
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await app.execute(() => {
+      const send = document.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
+      if (!send) throw new Error("Native AI Chat Send button not found");
+      if (send.disabled) throw new Error("Native AI Chat Send button did not enable for a typed draft");
+      send.click();
+    });
+
+    // The reply streams in; its citation button arrives with the finished turn.
+    await app.waitUntil(
+      async () =>
+        app.execute(() => Boolean(document.querySelector<HTMLButtonElement>('button[aria-label="Go to page 2"]'))),
+      { timeout: 30_000, timeoutMsg: "Native AI Chat Page Citation did not appear" },
+    );
+
+    const pageTwoInView = () =>
+      app.execute(() => {
+        const container = document.querySelector<HTMLElement>(".pdf-container");
+        const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='2']");
+        if (!container || !pageElement) return false;
+        const containerRect = container.getBoundingClientRect();
+        const pageRect = pageElement.getBoundingClientRect();
+        return pageRect.bottom > containerRect.top && pageRect.top < containerRect.bottom;
+      });
+
+    // Start from the top so arriving at page 2 proves the citation moved us.
+    await app.execute(() => {
+      const container = document.querySelector<HTMLElement>(".pdf-container");
+      if (container) container.scrollTop = 0;
+    });
+    expect(await pageTwoInView()).toBe(false);
+
+    // Prefer the keyboard path (the citation is a real button, so Enter must
+    // work); fall back to a click if native focus proves unreliable — the
+    // keyboard path itself is already pinned in the browser suite.
+    await app.execute(() => {
+      document.querySelector<HTMLButtonElement>('button[aria-label="Go to page 2"]')?.focus();
+    });
+    await app.keys(Key.Enter);
+    const navigatedByKeyboard = await app.waitUntil(pageTwoInView, { timeout: 3_000 }).catch(() => false);
+    if (!navigatedByKeyboard) {
+      await app.execute(() => {
+        document.querySelector<HTMLButtonElement>('button[aria-label="Go to page 2"]')?.click();
+      });
+    }
+
+    await app.waitUntil(pageTwoInView, {
+      timeout: 10_000,
+      timeoutMsg: "Native AI Chat Page Citation did not navigate the PDF to page 2",
+    });
+  });
 });

@@ -5,13 +5,20 @@
 // components, because those components never import a service implementation —
 // the shell owns the wiring. That seam *location* is the stable guarantee.
 //
-// A2-ONLY SHAPE: `complete()` is one atomic completion per request. A3
-// (issue #25: streaming, errors, cancellation) is expected to reshape this
-// operation; do not treat the signature as stable.
+// A3 SHAPE (issue #25): a reply is STREAMED. generate() calls onChunk with
+// text fragments in order, then settles with the whole reply; it rejects with
+// the abort signal's reason when cancelled, or with an ordinary Error when a
+// scripted prompt is meant to fail. This replaces A2's one-shot complete().
 //
-// Data-ownership rule (review amendment, 2026-07-14): a reply carries only
-// content and citations. UI message identity (id) and authorship (role) belong
-// to the AI Chat Session — a provider must never construct Chive's UI model.
+// Determinism rule: the *content* of a reply — its chunk sequence and its
+// citations — is a pure function of the request, identical across instances.
+// Only *timing* varies, and only through the injected `delay`, so tests can
+// swap in a hand-pumped fake and never touch a real clock. The default delay
+// is a plain, abortable setTimeout.
+//
+// Data-ownership rule (unchanged from A2): a reply carries only content and
+// citations. UI message identity (id) and authorship (role) belong to the AI
+// Chat Session — a provider must never construct Chive's UI model.
 
 import type { AiChatCitation, AiChatMessage } from "./types";
 
@@ -31,22 +38,102 @@ export type AiChatRequest = {
   messages: readonly AiChatMessage[];
 };
 
+/** Called once per streamed fragment, in order, before generate() settles. */
+export type AiChatChunkSink = (text: string) => void;
+
 export interface AiChatService {
-  /** Resolve exactly one assistant reply for the conversation so far. */
-  complete(request: AiChatRequest): Promise<AiChatReply>;
+  /**
+   * Stream one assistant reply for the conversation so far. Calls `onChunk`
+   * zero or more times with content fragments (in order), then resolves with
+   * the full reply. Rejects with `signal.reason` if aborted, or with an Error
+   * if the (scripted) reply is meant to fail. After it settles, `onChunk` is
+   * never called again.
+   */
+  generate(request: AiChatRequest, onChunk: AiChatChunkSink, signal: AbortSignal): Promise<AiChatReply>;
 }
+
+// How long to wait before the first fragment, and between later fragments.
+// Small enough to feel instant in the app, exported so tests can reason about
+// them instead of hard-coding magic numbers.
+export const FIRST_CHUNK_DELAY_MS = 400;
+export const CHUNK_GAP_DELAY_MS = 40;
+// The "Respond slowly" script never reaches its first chunk inside a test:
+// its long first delay is the stable place to observe the generating state and
+// to Stop before any content arrives.
+export const SLOW_FIRST_CHUNK_DELAY_MS = 10_000;
+// The "Pause after the first chunk" script emits one chunk fast, then waits
+// this long before each remaining chunk — a deterministic window in which a
+// test can Stop after partial content, type a follow-up, or scroll.
+export const PAUSE_CHUNK_GAP_DELAY_MS = 3_000;
+
+// How much WORD TEXT a fragment may hold, in characters.
+//
+// Read that literally, because a fragment can be slightly longer than this.
+// Fragments must re-join to exactly the original text, and words are never
+// split, so a fragment that continues a sentence has to carry the single space
+// that separates it from the previous fragment — and that space is not part of
+// the budget. A 24-character word therefore yields a 25-character fragment.
+// (Charging the space to the budget would honour a hard cap, but only by
+// shrinking every fragment to make room for a separator most of them then
+// don't need.) A word longer than the budget is its own fragment and simply
+// overshoots: splitting it is not an option.
+//
+// None of this is load-bearing — it is streaming granularity, a cosmetic
+// choice. The contract that matters is `chunks.join("") === content`.
+const MAX_CHUNK_CHARS = 24;
+
+/**
+ * Split reply text into streamed fragments. Pure: same input → same output.
+ * Fragments re-join (with `chunks.join("")`) to exactly the input, so the
+ * running text a user sees while streaming always equals the final content.
+ * Words are kept whole. See MAX_CHUNK_CHARS for what the budget does and does
+ * not cover.
+ */
+export function chunkReply(content: string, maxChunkChars: number = MAX_CHUNK_CHARS): string[] {
+  if (content === "") return [];
+  // Split on single spaces but keep them: every word after the first carries a
+  // leading space, so concatenating the fragments restores the original text.
+  const words = content.split(" ");
+  const chunks: string[] = [];
+  let current = "";
+  for (let index = 0; index < words.length; index += 1) {
+    const piece = index === 0 ? words[index] : ` ${words[index]}`;
+    if (current === "") {
+      current = piece;
+    } else if (current.length + piece.length <= maxChunkChars) {
+      current += piece;
+    } else {
+      chunks.push(current);
+      current = piece;
+    }
+  }
+  if (current !== "") chunks.push(current);
+  return chunks;
+}
+
+// One scripted behaviour: the reply content plus its timing, or a failure.
+type ScriptedBehavior = {
+  content: string;
+  citations?: readonly AiChatCitation[];
+  firstDelayMs: number;
+  gapDelayMs: number;
+  /** When true, reject after the first delay instead of streaming. */
+  fails?: boolean;
+};
 
 // Scripted replies, keyed by the exact text of the final user turn. Fixed
 // known-good literals: browser and native regression tests key off these
 // strings, so change them only together with that coverage. The page numbers
 // are arbitrary but stable — they cite the bundled sample PDF.
-const scriptedReplies: ReadonlyMap<string, AiChatReply> = new Map<string, AiChatReply>([
+const scriptedReplies: ReadonlyMap<string, ScriptedBehavior> = new Map<string, ScriptedBehavior>([
   [
     "Summarize this PDF",
     {
       content:
         "Mock summary: the document introduces its subject, develops one main argument, and closes with supporting evidence.",
       citations: [{ id: "mock-summary-page-1", page: 1 }],
+      firstDelayMs: FIRST_CHUNK_DELAY_MS,
+      gapDelayMs: CHUNK_GAP_DELAY_MS,
     },
   ],
   [
@@ -54,28 +141,123 @@ const scriptedReplies: ReadonlyMap<string, AiChatReply> = new Map<string, AiChat
     {
       content: "Mock explanation: the current page elaborates the main argument with a worked example.",
       citations: [{ id: "mock-explain-page-2", page: 2 }],
+      firstDelayMs: FIRST_CHUNK_DELAY_MS,
+      gapDelayMs: CHUNK_GAP_DELAY_MS,
+    },
+  ],
+  [
+    // Always fails, on every attempt — the mock holds no attempt state, so a
+    // retry deterministically fails again (which is exactly what the retry
+    // coverage asserts).
+    "Fail to respond",
+    {
+      content: "",
+      firstDelayMs: FIRST_CHUNK_DELAY_MS,
+      gapDelayMs: CHUNK_GAP_DELAY_MS,
+      fails: true,
+    },
+  ],
+  [
+    // First chunk only after a very long delay — in practice a test Stops it
+    // while it is still waiting, so it never actually streams.
+    "Respond slowly",
+    {
+      content: "Mock slow reply: this text only begins after a long pause.",
+      firstDelayMs: SLOW_FIRST_CHUNK_DELAY_MS,
+      gapDelayMs: CHUNK_GAP_DELAY_MS,
+    },
+  ],
+  [
+    // One quick chunk, then long pauses — long enough content for several
+    // chunks so a test can act during a pause.
+    "Pause after the first chunk",
+    {
+      content:
+        "Mock paused reply: the first fragment arrives quickly, then the remaining fragments trickle in one at a time.",
+      firstDelayMs: FIRST_CHUNK_DELAY_MS,
+      gapDelayMs: PAUSE_CHUNK_GAP_DELAY_MS,
     },
   ],
 ]);
 
+// The default delay: a setTimeout that also settles early (as a rejection) if
+// the caller aborts while it is waiting.
+function timerDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      reject(signal.reason);
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+// Product-facing failure text for a scripted failure. The Error message stays
+// generic on purpose: the AI Chat Session turns rejections into its own
+// user-facing string, so this is only ever seen in test assertions.
+const FAILURE_MESSAGE = "The mock service could not generate a reply.";
+
+type MockAiChatServiceOptions = {
+  /** Override the wait between fragments. Defaults to an abortable setTimeout. */
+  delay?: (ms: number, signal: AbortSignal) => Promise<void>;
+};
+
 /**
- * Deterministic mock AI Chat Service: no network, no randomness, no timers,
- * no wall-clock reads. Same request → same reply, always — including across
- * instances (the class holds no mutable state at all).
+ * Deterministic mock AI Chat Service. Reply content is a pure function of the
+ * request — no network, no randomness. Only timing comes from the outside, via
+ * the injected `delay`; with the default delay it uses real (abortable)
+ * timers. The class holds no mutable state, so one shared instance is safe.
  */
 export class MockAiChatService implements AiChatService {
-  complete(request: AiChatRequest): Promise<AiChatReply> {
+  private readonly delay: (ms: number, signal: AbortSignal) => Promise<void>;
+
+  constructor(options: MockAiChatServiceOptions = {}) {
+    this.delay = options.delay ?? timerDelay;
+  }
+
+  async generate(request: AiChatRequest, onChunk: AiChatChunkSink, signal: AbortSignal): Promise<AiChatReply> {
+    const behavior = this.resolveBehavior(request);
+
+    // Wait before anything appears. If the caller aborts during this wait, the
+    // delay rejects and generation ends before a single fragment is emitted.
+    await this.delay(behavior.firstDelayMs, signal);
+
+    if (behavior.fails) throw new Error(FAILURE_MESSAGE);
+
+    const chunks = chunkReply(behavior.content);
+    for (let index = 0; index < chunks.length; index += 1) {
+      // Every fragment after the first waits its turn. Because a delay always
+      // precedes it, an abort between fragments rejects here — no fragment is
+      // emitted after cancellation.
+      if (index > 0) await this.delay(behavior.gapDelayMs, signal);
+      onChunk(chunks[index]);
+    }
+
+    return { content: behavior.content, citations: behavior.citations };
+  }
+
+  private resolveBehavior(request: AiChatRequest): ScriptedBehavior {
     const lastMessage = request.messages[request.messages.length - 1];
     const prompt = lastMessage?.content ?? "";
     const scripted = scriptedReplies.get(prompt);
-    if (scripted) return Promise.resolve(scripted);
+    if (scripted) return scripted;
     // Fallback for unscripted prompts. Folding in the user-turn count keeps
     // distinct turns distinguishable in assertions even when the prompt text
     // repeats (e.g. two tabs both sending "hello").
     const userTurnCount = request.messages.filter((message) => message.role === "user").length;
-    return Promise.resolve({
+    return {
       content: `Mock reply #${userTurnCount}: you asked "${prompt}"`,
-    });
+      firstDelayMs: FIRST_CHUNK_DELAY_MS,
+      gapDelayMs: CHUNK_GAP_DELAY_MS,
+    };
   }
 }
 

@@ -6,11 +6,14 @@
     contexts: AiChatContext[];
     state: AiChatState;
     value?: string;
-    /** Called with the trimmed text on Send; absent = the Send action is inert. */
+    /** Called with the trimmed text on Send. Absent = Send cannot submit (no
+     * Active Document Tab), so the button shows as disabled. */
     onSend?: (text: string) => void;
+    /** Called on Stop while generating; absent = Stop is inert. */
+    onStop?: () => void;
   };
 
-  let { contexts, state: generationState, value = $bindable(""), onSend }: Props = $props();
+  let { contexts, state: generationState, value = $bindable(""), onSend, onStop }: Props = $props();
   let textarea: HTMLTextAreaElement;
   let dismissedContextIds = $state<string[]>([]);
   let visibleContexts = $derived(contexts.filter((context) => !dismissedContextIds.includes(context.id)));
@@ -32,14 +35,22 @@
     dismissedContextIds = [...dismissedContextIds, id];
   }
 
+  // Whether the trailing button is showing Stop right now.
+  let isGenerating = $derived(generationState === "generating");
+  // Send can submit only when there's a handler (an Active Document Tab) AND
+  // non-empty trimmed text. This is what disables Send at `/` with no document
+  // even after typing, and on an empty composer.
+  let canSubmit = $derived(Boolean(onSend) && value.trim().length > 0);
+
   // Enter is NOT send (explicit newlines grow the composer, per issue #22);
-  // sending is this button only. While "generating" the same button means
-  // Stop, which stays inert until A3 owns the generation lifecycle.
-  function submitMessage() {
-    if (generationState === "generating") return;
-    const text = value.trim();
-    if (!text) return;
-    onSend?.(text);
+  // sending is this button only. While generating the same button means Stop.
+  function primaryAction() {
+    if (isGenerating) {
+      onStop?.();
+      return;
+    }
+    if (!canSubmit) return;
+    onSend?.(value.trim());
   }
 </script>
 
@@ -83,11 +94,12 @@
       <button
         class="primary-action"
         type="button"
-        aria-label={generationState === "generating" ? "Stop generating" : "Send message"}
-        title={generationState === "generating" ? "Stop generating" : "Send message"}
-        onclick={submitMessage}
+        aria-label={isGenerating ? "Stop generating" : "Send message"}
+        title={isGenerating ? "Stop generating" : "Send message"}
+        disabled={!isGenerating && !canSubmit}
+        onclick={primaryAction}
       >
-        {#if generationState === "generating"}
+        {#if isGenerating}
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10"></rect></svg>
         {:else}
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"></path></svg>
@@ -236,6 +248,11 @@
   }
   .primary-action:active {
     background: var(--accent-active);
+  }
+  .primary-action:disabled {
+    background: var(--accent);
+    opacity: 0.4;
+    cursor: default;
   }
   .secondary-action svg,
   .primary-action svg {
