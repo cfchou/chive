@@ -16,7 +16,7 @@ describe("createLocalStoragePersistence", () => {
   it("round-trips JSON values", async () => {
     const store = mockStorage();
     const p = createLocalStoragePersistence(store);
-    await p.setJson("widths", { left: 320, right: 0 });
+    assert.equal(await p.setJson("widths", { left: 320, right: 0 }), true);
     assert.deepEqual(await p.getJson<{ left: number; right: number }>("widths"), { left: 320, right: 0 });
   });
 
@@ -42,7 +42,7 @@ describe("createLocalStoragePersistence", () => {
 
   it("is a no-op (never throws) when no storage is available", async () => {
     const p = createLocalStoragePersistence(null);
-    await p.setJson("k", 1);
+    assert.equal(await p.setJson("k", 1), false);
     assert.equal(await p.getJson("k"), null);
     await p.remove("k");
   });

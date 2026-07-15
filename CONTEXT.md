@@ -95,3 +95,19 @@ _Avoid_: source link, footnote
 **AI Chat Composer**:
 The text-entry surface at the bottom of the AI Chat Sidebar, including its context and AI configuration controls, file attachment action, and trailing Send or Stop action.
 _Avoid_: chat box, prompt field
+
+**Application Settings**:
+Typed, non-secret, app-wide configuration that persists across launches independently of PDF document state. The current schema stores only local agent runtime choices and never stores credentials or runtime authentication artifacts.
+_Avoid_: preferences blob, config dump, credential store
+
+**Runtime Override**:
+An explicit user choice of a supported local agent runtime. When absent, Chive derives the selected runtime from its built-in priority rather than persisting that derived selection.
+_Avoid_: auto-select setting, provider, authentication choice
+
+**Executable Override**:
+An optional executable path explicitly associated with one supported local agent runtime. When a Runtime Override is also present, both overrides must identify the same runtime.
+_Avoid_: PATH setting, command, runtime credentials
+
+**Application Settings Repository**:
+The application-level interface that loads and saves validated Application Settings while hiding schema versioning, migrations, and raw storage from Settings UI and runtime discovery callers.
+_Avoid_: localStorage wrapper, settings database, config service
