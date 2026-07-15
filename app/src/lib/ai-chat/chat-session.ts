@@ -224,9 +224,13 @@ export class AiChatSession {
       id: `assistant-turn-${turn}`,
       role: "assistant",
       content,
-      // Copy the (possibly frozen/readonly) provider array into the UI model's
-      // own mutable array type.
-      citations: citations ? [...citations] : undefined,
+      // Copy the citation OBJECTS, not just the array. A committed message is
+      // an append-only value object — that promise is what makes handing the
+      // service a shallow request snapshot safe. Keeping a provider's own
+      // objects would put that promise in the provider's hands: anything it
+      // did to them afterwards would reach inside a message we already
+      // committed. The session cannot vet arbitrary providers, so it copies.
+      citations: citations?.map((citation) => ({ ...citation })),
     });
   }
 

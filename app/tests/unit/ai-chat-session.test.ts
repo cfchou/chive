@@ -211,6 +211,23 @@ describe("AiChatSession — A3 generation state machine", () => {
     assert.equal(session.inFlightContent, "");
   });
 
+  it("keeps a committed citation safe from the provider that supplied it", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    // A provider that hands over citations it still holds on to.
+    const providerOwned = [{ id: "c1", page: 4 }];
+    const completion = session.send(fake, "cite something");
+    fake.finish({ content: "done", citations: providerOwned });
+    await completion;
+
+    // ...and later scribbles on them.
+    providerOwned[0].page = 999;
+
+    // A committed message is an append-only value object; nothing outside the
+    // session may reach in and change one after the fact.
+    assert.deepEqual(session.messages[1].citations, [{ id: "c1", page: 4 }]);
+  });
+
   it("fires onChange for the user turn, each chunk, and completion", async () => {
     const fake = new StreamingFake();
     const session = new AiChatSession();

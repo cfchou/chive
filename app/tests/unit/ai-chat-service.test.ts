@@ -220,6 +220,56 @@ describe("MockAiChatService.generate", () => {
     assert.notEqual(replyOne.content, replyTwo.content);
   });
 
+  it("survives a caller mutating a citation it was handed", async () => {
+    const request = [userTurn("user-turn-1", "Summarize this PDF")];
+
+    const first = runGenerate(service, request);
+    while (delays.pending > 0) await delays.releaseNext();
+    const firstReply = await first.settled;
+    assert.equal(firstReply.citations?.[0].page, 1);
+
+    // A careless consumer scribbles on the citation it received. The scripted
+    // replies live in a module-level map, so handing out the real objects would
+    // let this rewrite the script for every later reply — in every instance,
+    // for the rest of the process. Determinism is the entire point of the mock.
+    firstReply.citations![0].page = 999;
+
+    const second = runGenerate(service, request);
+    while (delays.pending > 0) await delays.releaseNext();
+    assert.equal((await second.settled).citations?.[0].page, 1);
+
+    const otherDelays = new ManualDelays();
+    const otherService = new MockAiChatService({ delay: otherDelays.delay });
+    const other = runGenerate(otherService, request);
+    while (otherDelays.pending > 0) await otherDelays.releaseNext();
+    assert.equal((await other.settled).citations?.[0].page, 1);
+  });
+
+  it("reports cancellation when the caller aborts from inside the FINAL fragment", async () => {
+    const controller = new AbortController();
+    const chunks: string[] = [];
+    // Aborting on the last fragment is the case with no safety net: every
+    // earlier fragment is followed by a delay that would notice the abort and
+    // reject, but after the last one the loop simply ends — so without an
+    // explicit check the run would report success for a cancelled generation.
+    // "evidence." is the known-good tail of the scripted summary.
+    const settled = service.generate(
+      { messages: [userTurn("user-turn-1", "Summarize this PDF")] },
+      (text) => {
+        chunks.push(text);
+        if (text.includes("evidence.")) controller.abort();
+      },
+      controller.signal,
+    );
+
+    while (delays.pending > 0) await delays.releaseNext();
+
+    await assert.rejects(settled, (error: Error) => error.name === "AbortError");
+    // Everything up to and including the final fragment was delivered; the
+    // cancellation only changes how the run *settles*.
+    assert.ok(chunks.join("").endsWith("evidence."));
+  });
+
   it("replies carry only content and citations — no UI message identity", async () => {
     const { settled } = runGenerate(service, [userTurn("user-turn-1", "Summarize this PDF")]);
     while (delays.pending > 0) await delays.releaseNext();

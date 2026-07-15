@@ -229,6 +229,8 @@ export class MockAiChatService implements AiChatService {
     // Wait before anything appears. If the caller aborts during this wait, the
     // delay rejects and generation ends before a single fragment is emitted.
     await this.delay(behavior.firstDelayMs, signal);
+    // A cancelled generation reports the cancellation, not a scripted failure.
+    if (signal.aborted) throw signal.reason;
 
     if (behavior.fails) throw new Error(FAILURE_MESSAGE);
 
@@ -238,10 +240,27 @@ export class MockAiChatService implements AiChatService {
       // precedes it, an abort between fragments rejects here — no fragment is
       // emitted after cancellation.
       if (index > 0) await this.delay(behavior.gapDelayMs, signal);
+      // Re-check before handing over a fragment. The delay above normally
+      // rejects on abort, but an injected delay is not obliged to honour the
+      // signal, and the caller may have aborted from inside the previous
+      // onChunk. Either way, a cancelled generation must not keep emitting.
+      if (signal.aborted) throw signal.reason;
       onChunk(chunks[index]);
     }
 
-    return { content: behavior.content, citations: behavior.citations };
+    // The caller may have aborted from inside the final onChunk, in which case
+    // there is no next loop turn to notice it — resolving here would report
+    // success for a generation that was cancelled.
+    if (signal.aborted) throw signal.reason;
+
+    // Hand out copies, never the scripted objects themselves. The scripted map
+    // is module-level: if a consumer mutated a citation it received, it would
+    // silently rewrite the script for every future reply, in every instance —
+    // destroying the determinism this whole mock exists to provide.
+    return {
+      content: behavior.content,
+      citations: behavior.citations?.map((citation) => ({ ...citation })),
+    };
   }
 
   private resolveBehavior(request: AiChatRequest): ScriptedBehavior {

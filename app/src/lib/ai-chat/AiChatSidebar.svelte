@@ -128,7 +128,20 @@
         <ChatMessage {message} {onNavigateToPage} />
       {/each}
       {#if chatState === "generating" && inFlightContent}
-        <ChatMessage message={inFlightMessage} />
+        <!-- The reply streams in a fragment at a time, and the conversation
+             around it is a polite live region — so without this, a screen
+             reader would read the half-finished answer aloud again on every
+             fragment. Politeness is decided by the nearest element that sets
+             it, so switching this subtree off mutes the partial text while
+             leaving the rest of the conversation live: the finished reply is
+             still announced when it is committed just below, and "Generating
+             response…" still announces once. (Muting the whole conversation
+             while generating would instead risk swallowing that finished
+             reply, since it lands in the same update that would turn the
+             region back on.) -->
+        <div aria-live="off">
+          <ChatMessage message={inFlightMessage} />
+        </div>
       {/if}
     {/if}
     {#if chatState === "generating"}
