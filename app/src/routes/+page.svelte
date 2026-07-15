@@ -681,6 +681,9 @@
   }
 
   function handleAnnotationDeleteKey(event: KeyboardEvent) {
+    if (settingsOpen) {
+      return;
+    }
     if (event.repeat || (event.key !== "Delete" && event.key !== "Backspace")) {
       return;
     }

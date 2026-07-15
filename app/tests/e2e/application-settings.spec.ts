@@ -185,6 +185,33 @@ test.describe("Application Settings", () => {
     await expect(settingsDialog(page)).toHaveCount(0);
   });
 
+  test("Delete and Backspace do not delete an Annotation behind production Settings", async ({ page }) => {
+    await openApp(page);
+    await loadFixture(page);
+    await createFreeText(page, "protected annotation");
+    const before = await page.evaluate(() => ({
+      entries: window.__pdfSpike!.annotationSidebarSummary(),
+      selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+    }));
+    expect(before.selectedAnnotationKind).toBe("freetext");
+
+    await page.evaluate(() => window.__pdfSpike!.settings.open());
+    await expect(settingsDialog(page).getByRole("button", { name: "Close Settings" })).toBeFocused();
+
+    for (const key of ["Delete", "Backspace"] as const) {
+      await page.keyboard.press(key);
+      await expect(settingsDialog(page)).toBeVisible();
+      await expect
+        .poll(() =>
+          page.evaluate(() => ({
+            entries: window.__pdfSpike!.annotationSidebarSummary(),
+            selectedAnnotationKind: window.__pdfSpike!.stats().selectedAnnotationKind,
+          })),
+        )
+        .toEqual(before);
+    }
+  });
+
   test("Settings hit-tests above the PDF editor layer", async ({ page }) => {
     await openApp(page);
     await loadFixture(page);
