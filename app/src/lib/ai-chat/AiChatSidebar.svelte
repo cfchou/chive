@@ -12,6 +12,7 @@
   // leaves them alone when they have scrolled up to read earlier turns.
   import ChatComposer from "./ChatComposer.svelte";
   import ChatMessage from "./ChatMessage.svelte";
+  import { AI_CHAT_CONTEXT_HELP } from "./copy";
   import type { AiChatContext, AiChatMessage, AiChatState } from "./types";
 
   type Props = {
@@ -39,6 +40,8 @@
     onRetry?: () => void;
     /** Called when a page citation is activated, with its page number. */
     onNavigateToPage?: (page: number) => void;
+    /** Called when the user removes one context chip. */
+    onRemoveContext?: (id: string) => void;
   };
   let {
     messages,
@@ -54,6 +57,7 @@
     onStop,
     onRetry,
     onNavigateToPage,
+    onRemoveContext,
   }: Props = $props();
 
   // The live streaming bubble reuses ChatMessage with a synthetic assistant
@@ -122,6 +126,7 @@
       <div class="empty-state">
         <strong>Ask about this PDF</strong>
         <p>Write a message to begin.</p>
+        <p class="context-help">{AI_CHAT_CONTEXT_HELP}</p>
       </div>
     {:else}
       {#each messages as message (message.id)}
@@ -155,7 +160,7 @@
       </div>
     {/if}
   </div>
-  <ChatComposer {contexts} state={chatState} bind:value {onSend} {onStop} />
+  <ChatComposer {contexts} state={chatState} bind:value {onSend} {onStop} {onRemoveContext} />
 </div>
 
 <style>
@@ -207,6 +212,9 @@
   }
   .empty-state strong {
     color: var(--fg);
+  }
+  .context-help {
+    font-size: var(--text-xs);
   }
   .state-note,
   .error-note {

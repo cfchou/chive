@@ -1,5 +1,6 @@
 <script lang="ts">
   import ContextChip from "./ContextChip.svelte";
+  import { AI_CHAT_CONTEXT_HELP } from "./copy";
   import type { AiChatContext, AiChatState } from "./types";
 
   type Props = {
@@ -11,12 +12,12 @@
     onSend?: (text: string) => void;
     /** Called on Stop while generating; absent = Stop is inert. */
     onStop?: () => void;
+    /** The shell owns dismissals because they belong to an AI Chat Session. */
+    onRemoveContext?: (id: string) => void;
   };
 
-  let { contexts, state: generationState, value = $bindable(""), onSend, onStop }: Props = $props();
+  let { contexts, state: generationState, value = $bindable(""), onSend, onStop, onRemoveContext }: Props = $props();
   let textarea: HTMLTextAreaElement;
-  let dismissedContextIds = $state<string[]>([]);
-  let visibleContexts = $derived(contexts.filter((context) => !dismissedContextIds.includes(context.id)));
 
   function resizeTextarea() {
     textarea.style.height = "auto";
@@ -30,10 +31,6 @@
     void value;
     if (textarea) resizeTextarea();
   });
-
-  function removeContext(id: string) {
-    dismissedContextIds = [...dismissedContextIds, id];
-  }
 
   // Whether the trailing button is showing Stop right now.
   let isGenerating = $derived(generationState === "generating");
@@ -55,10 +52,10 @@
 </script>
 
 <div class="composer" aria-label="AI Chat composer">
-  {#if visibleContexts.length}
-    <div class="contexts" aria-label="Message context">
-      {#each visibleContexts as context (context.id)}
-        <ContextChip label={context.label} onRemove={() => removeContext(context.id)} />
+  {#if contexts.length}
+    <div class="contexts" aria-label="Message context" title={AI_CHAT_CONTEXT_HELP}>
+      {#each contexts as context (context.id)}
+        <ContextChip label={context.label} onRemove={() => onRemoveContext?.(context.id)} />
       {/each}
     </div>
   {/if}

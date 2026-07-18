@@ -1,8 +1,8 @@
 <script lang="ts">
   // Dev-only test surface for the AI Chat Composer (issue #25 / A3).
   //
-  // The real shell never renders AI Chat Context Chips yet (real PDF context is
-  // post-M1), and A3 removed the old `?aiChatFixture=` door — so without this
+  // The real shell owns AI Chat Context Chip state. This small page keeps the
+  // component-only layout checks independent of loading a PDF, so without it
   // page there would be no way to regression-test that context chips add to the
   // composer's initial height, that removing a chip returns to whole-document
   // mode, and that the one-third height cap / internal scrolling still hold.
@@ -23,7 +23,7 @@
   import ChatComposer from "$lib/ai-chat/ChatComposer.svelte";
   import type { AiChatContext, AiChatState } from "$lib/ai-chat/types";
 
-  const contexts: AiChatContext[] = [{ id: "current-page", label: "Current page" }];
+  let contexts = $state<AiChatContext[]>([{ id: "current-page", label: "Current page" }]);
   let value = $state("");
   let generating = $state(false);
   let composerState = $derived<AiChatState>(
@@ -38,7 +38,14 @@
     </button>
     <div class="panel" data-testid="harness-panel">
       <div class="filler"></div>
-      <ChatComposer {contexts} state={composerState} bind:value onSend={() => {}} onStop={() => (generating = false)} />
+      <ChatComposer
+        {contexts}
+        state={composerState}
+        bind:value
+        onSend={() => {}}
+        onStop={() => (generating = false)}
+        onRemoveContext={(id) => (contexts = contexts.filter((context) => context.id !== id))}
+      />
     </div>
   </div>
 {/if}

@@ -33,6 +33,16 @@ describe("DocumentSession", () => {
     assert.deepEqual(a.persistedPositionByKey.get("1:2R"), { top: 10, left: 20 });
   });
 
+  it("owns and clears its extracted PDF page cache", () => {
+    const a = new DocumentSession("a", null, "A");
+    const b = new DocumentSession("b", null, "B");
+    a.pdfContextPageCache.set(1, { id: "page-1", page: 1, text: "cached" });
+
+    assert.equal(b.pdfContextPageCache.size, 0);
+    a.close();
+    assert.equal(a.pdfContextPageCache.size, 0);
+  });
+
   it("starts with no live viewer refs and a zero scroll offset", () => {
     const session = new DocumentSession("id-3", null, "New");
     assert.equal(session.pdfViewer, null);

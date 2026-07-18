@@ -1,10 +1,10 @@
 // AI Chat Composer behavior that needs context chips present (issue #25 / A3).
 //
-// Real mode passes no AI Chat Context Chips (real PDF context is post-M1) and
-// A3 removed the `?aiChatFixture=` door, so this coverage runs against the
+// The real shell now owns AI Chat Context Chips. These component-only layout
+// checks still run against the
 // dev-only harness route that mounts ChatComposer directly inside a
-// panel-shaped box. When real context chips arrive post-M1, real-mode e2e
-// supersedes this and the harness can go.
+// panel-shaped box. Real-PDF e2e covers ownership; this keeps layout coverage
+// small and focused.
 
 import { expect, test } from "./coverage";
 import type { Page } from "@playwright/test";

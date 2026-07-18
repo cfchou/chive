@@ -23,10 +23,23 @@ import assert from "node:assert/strict";
 import { AiChatSession } from "../../src/lib/ai-chat/chat-session";
 import { MockAiChatService } from "../../src/lib/ai-chat/chat-service";
 import type { AiChatChunkSink, AiChatReply, AiChatRequest, AiChatService } from "../../src/lib/ai-chat/chat-service";
+import { buildContextSnapshot, type AiChatRequestContext } from "../../src/lib/ai-chat/pdf-context";
 
 /** The real mock with its delays collapsed to nothing — a fast finished reply. */
 function instant(): MockAiChatService {
   return new MockAiChatService({ delay: () => Promise.resolve() });
+}
+
+function sampleContext(): AiChatRequestContext {
+  return {
+    normalizationVersion: 1,
+    documentLabel: "sample.pdf",
+    pageCount: 1,
+    sources: [{ id: "page-1", page: 1, text: "sample" }],
+    selection: null,
+    currentPage: 1,
+    omissions: { omittedPageRanges: [], partialSources: [], selectionTruncated: null },
+  };
 }
 
 /** A generation the test steps by hand: emit chunks, then finish or fail. */
@@ -187,10 +200,119 @@ describe("AiChatSession — A2 ownership contract (still holds under streaming)"
 });
 
 describe("AiChatSession — A3 generation state machine", () => {
-  it("accumulates streamed chunks in inFlightContent, then commits once on completion", async () => {
+  it("accepts synchronously, then waits for the Context Snapshot before calling the service", async () => {
     const fake = new StreamingFake();
     const session = new AiChatSession();
-    const completion = session.send(fake, "stream me");
+    let finishContext!: (context: AiChatRequestContext) => void;
+    const contextFactory = () =>
+      new Promise<AiChatRequestContext>((resolve) => {
+        finishContext = resolve;
+      });
+
+    const completion = session.send(fake, "with context", contextFactory);
+    assert.notEqual(completion, null);
+    assert.equal(session.messages[0].content, "with context");
+    assert.equal(session.status, "generating");
+    assert.equal(fake.requests.length, 0);
+
+    const context = sampleContext();
+    finishContext(context);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(fake.requests.length, 1);
+    assert.equal(fake.requests[0].context, context);
+
+    fake.finish({ content: "done" });
+    await completion;
+  });
+
+  it("shows a context-specific error and Retry runs the same factory again", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    let attempts = 0;
+    const contextFactory = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("extract failed");
+      return sampleContext();
+    };
+
+    await session.send(fake, "retry context", contextFactory);
+    assert.equal(session.status, "error");
+    assert.equal(session.errorMessage, "The document context could not be prepared.");
+    assert.equal(fake.requests.length, 0);
+
+    const retry = session.retry(fake);
+    assert.notEqual(retry, null);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(attempts, 2);
+    assert.equal(fake.requests.length, 1);
+    fake.finish({ content: "recovered" });
+    await retry;
+    assert.equal(session.status, "idle");
+  });
+
+  it("drops every provider source ref when no Context Snapshot was supplied", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const completion = session.send(fake, "no context");
+    fake.finish({ content: "done", sourceRefs: [{ id: "page-1" }] });
+    await completion;
+
+    assert.equal(session.messages[1].citations, undefined);
+  });
+
+  it("clears dismissed context chips on an accepted send and on dispose", async () => {
+    const session = new AiChatSession();
+    session.dismissedContextIds = ["current-page", "selected-text"];
+    await session.send(instant(), "accepted");
+    assert.deepEqual(session.dismissedContextIds, []);
+
+    session.dismissedContextIds = ["current-page"];
+    session.dispose();
+    assert.deepEqual(session.dismissedContextIds, []);
+  });
+
+  it("Stop during a stalled page read leaves no late cache or session write", async () => {
+    let finishRead!: (items: Array<{ str: string; hasEOL: boolean }>) => void;
+    const stalledRead = new Promise<Array<{ str: string; hasEOL: boolean }>>((resolve) => {
+      finishRead = resolve;
+    });
+    const cache = new Map();
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const completion = session.send(fake, "stop extraction", (signal) =>
+      buildContextSnapshot({
+        reader: { pageCount: 1, readPage: () => stalledRead },
+        cache,
+        documentLabel: "stalled.pdf",
+        currentPage: 1,
+        selection: null,
+        signal,
+      }),
+    );
+
+    session.stop();
+    finishRead([{ str: "too late", hasEOL: false }]);
+    await completion;
+
+    assert.equal(fake.requests.length, 0);
+    assert.equal(cache.size, 0);
+    assert.equal(session.status, "idle");
+    assert.deepEqual(session.messages.map((message) => message.role), ["user"]);
+  });
+
+  it("resolves unique valid source refs through the Context Snapshot and drops the rest", async () => {
+    const fake = new StreamingFake();
+    const session = new AiChatSession();
+    const context: AiChatRequestContext = {
+      ...sampleContext(),
+      pageCount: 200,
+      selection: { id: "selection-page-200", page: 200, text: "far away" },
+    };
+    const completion = session.send(fake, "stream me", async () => context);
+    await Promise.resolve();
+    await Promise.resolve();
 
     fake.emit("Hello");
     assert.equal(session.status, "generating");
@@ -201,12 +323,23 @@ describe("AiChatSession — A3 generation state machine", () => {
     fake.emit(", world");
     assert.equal(session.inFlightContent, "Hello, world");
 
-    fake.finish({ content: "Hello, world", citations: [{ id: "c1", page: 4 }] });
+    fake.finish({
+      content: "Hello, world",
+      sourceRefs: [
+        { id: "page-1" },
+        { id: "page-9999" },
+        { id: "page-1" },
+        { id: "selection-page-200" },
+      ],
+    });
     await completion;
 
     assert.equal(session.messages.length, 2);
     assert.equal(session.messages[1].content, "Hello, world");
-    assert.deepEqual(session.messages[1].citations, [{ id: "c1", page: 4 }]);
+    assert.deepEqual(session.messages[1].citations, [
+      { id: "page-1", page: 1 },
+      { id: "selection-page-200", page: 200 },
+    ]);
     assert.equal(session.status, "idle");
     assert.equal(session.inFlightContent, "");
   });
@@ -214,18 +347,25 @@ describe("AiChatSession — A3 generation state machine", () => {
   it("keeps a committed citation safe from the provider that supplied it", async () => {
     const fake = new StreamingFake();
     const session = new AiChatSession();
-    // A provider that hands over citations it still holds on to.
-    const providerOwned = [{ id: "c1", page: 4 }];
-    const completion = session.send(fake, "cite something");
-    fake.finish({ content: "done", citations: providerOwned });
+    // A provider that hands over source refs it still holds on to.
+    const providerOwned = [{ id: "page-4" }];
+    const context: AiChatRequestContext = {
+      ...sampleContext(),
+      pageCount: 4,
+      sources: [{ id: "page-4", page: 4, text: "four" }],
+    };
+    const completion = session.send(fake, "cite something", async () => context);
+    await Promise.resolve();
+    await Promise.resolve();
+    fake.finish({ content: "done", sourceRefs: providerOwned });
     await completion;
 
     // ...and later scribbles on them.
-    providerOwned[0].page = 999;
+    providerOwned[0].id = "page-999";
 
     // A committed message is an append-only value object; nothing outside the
     // session may reach in and change one after the fact.
-    assert.deepEqual(session.messages[1].citations, [{ id: "c1", page: 4 }]);
+    assert.deepEqual(session.messages[1].citations, [{ id: "page-4", page: 4 }]);
   });
 
   it("fires onChange for the user turn, each chunk, and completion", async () => {

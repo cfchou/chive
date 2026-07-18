@@ -85,8 +85,8 @@ test("sending appends the user turn and a deterministic mock reply; follow-ups s
   await loadFixture(page);
 
   await sendMessage(page, "Summarize this PDF", "Mock summary:");
-  // The scripted reply carries its fixed AI Chat Page Citation.
-  await expect(chatPanel(page).getByText("Page 1", { exact: true })).toBeVisible();
+  // The reply carries the AI Chat Page Citation resolved from its Context Snapshot.
+  await expect(chatPanel(page).getByRole("button", { name: "Go to page 1" })).toBeVisible();
 
   // Follow-up turn: appends to the same single session (turn #2).
   await sendMessage(page, "and then?", 'Mock reply #2: you asked "and then?"');

@@ -96,6 +96,10 @@ _Avoid_: chat box, prompt field
 A compact label in the AI Chat Composer that identifies PDF context intended to accompany a message, such as the current page.
 _Avoid_: tag, filter chip
 
+**Context Snapshot**:
+The frozen, per-request capture of document context — page sources, selection, current page, and omissions — built when an AI Chat message is sent, owned by the submitting Document Session, and retained until the generation settles. Source references in replies are validated against it.
+_Avoid_: live context, document cache, RAG index
+
 **AI Chat Page Citation**:
 A keyboard-accessible control attached to an AI Chat Message that navigates the PDF to the page it cites.
 _Avoid_: source link, footnote

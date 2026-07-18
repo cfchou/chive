@@ -1,3 +1,5 @@
+import { getPageTextItems } from "./page-text";
+
 export type AnnotationKind = "highlight" | "freetext" | "ink";
 
 export type RectLike = {
@@ -300,30 +302,6 @@ export async function textForPdfAnnotation(
   } catch {
     return "";
   }
-}
-
-export async function getPageTextItems(page: {
-  getTextContent: () => Promise<{ items: Record<string, unknown>[] }>;
-  streamTextContent?: () => {
-    getReader: () => {
-      read: () => Promise<{ done?: boolean; value?: { items?: Record<string, unknown>[] } }>;
-    };
-  };
-}) {
-  if (typeof page.streamTextContent === "function") {
-    const reader = page.streamTextContent().getReader();
-    const items: Record<string, unknown>[] = [];
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value && Array.isArray(value.items)) {
-        items.push(...value.items);
-      }
-    }
-    return items;
-  }
-  const textContent = await page.getTextContent();
-  return Array.isArray(textContent.items) ? textContent.items : [];
 }
 
 export async function pdfAnnotationSortPosition(
