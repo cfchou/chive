@@ -65,28 +65,29 @@ function normalizePage(page: number, items: Array<{ str: string; hasEOL: boolean
     : { id: `page-${page}`, page, unavailableReason: "no-extractable-text" };
 }
 
-function pageWalk(pageCount: number, anchor: number): number[] {
-  const pages: number[] = [];
-  for (let distance = 0; pages.length < pageCount; distance += 1) {
+function* pageWalk(pageCount: number, anchor: number): Generator<number> {
+  if (!Number.isInteger(anchor) || anchor < 1 || anchor > pageCount) {
+    throw new RangeError(`Context anchor page ${anchor} is outside pages 1-${pageCount}.`);
+  }
+  // Work out only the next page. Large documents still stop as soon as the
+  // budget or source cap is reached instead of building a full page list.
+  for (let distance = 0; distance < pageCount; distance += 1) {
     const lower = anchor - distance;
     const upper = anchor + distance;
-    if (lower >= 1 && lower <= pageCount) pages.push(lower);
-    if (distance > 0 && upper >= 1 && upper <= pageCount) pages.push(upper);
+    if (lower >= 1 && lower <= pageCount) yield lower;
+    if (distance > 0 && upper >= 1 && upper <= pageCount) yield upper;
   }
-  return pages;
 }
 
 function omittedRanges(pageCount: number, includedPages: ReadonlySet<number>): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
-  let start: number | null = null;
-  for (let page = 1; page <= pageCount + 1; page += 1) {
-    if (page <= pageCount && !includedPages.has(page)) {
-      start ??= page;
-    } else if (start !== null) {
-      ranges.push([start, page - 1]);
-      start = null;
-    }
+  let nextOmittedPage = 1;
+  const included = [...includedPages].sort((left, right) => left - right);
+  for (const page of included) {
+    if (page > nextOmittedPage) ranges.push([nextOmittedPage, page - 1]);
+    nextOmittedPage = page + 1;
   }
+  if (nextOmittedPage <= pageCount) ranges.push([nextOmittedPage, pageCount]);
   return ranges;
 }
 
@@ -133,13 +134,11 @@ export async function buildContextSnapshot(input: {
       : null;
   let remaining = charBudget - (selection?.text.length ?? 0);
   const anchor = input.currentPage ?? input.selection?.page ?? 1;
-  const pages = pageWalk(input.reader.pageCount, anchor);
   // The walk reads at most the included pages plus the first one that does
   // not fit. Page sources stop at the hard cap; the one selection source sits
   // outside it and is already bounded to half the character budget.
-  for (let index = 0; index < pages.length; index += 1) {
+  for (const page of pageWalk(input.reader.pageCount, anchor)) {
     if (input.signal.aborted) throw input.signal.reason;
-    const page = pages[index];
     let source = input.cache.get(page);
     if (!source) {
       source = normalizePage(page, await readPageOrAbort(input.reader, page, input.signal));
@@ -152,7 +151,7 @@ export async function buildContextSnapshot(input: {
     if (cost > remaining) {
       // The anchor is the one page the user explicitly pointed at. Keep the
       // part that fits instead of returning no page text at all.
-      if (index === 0 && "text" in source && remaining > 0) {
+      if (page === anchor && "text" in source && remaining > 0) {
         sources.push({ ...source, text: source.text.slice(0, remaining) });
         includedPages.add(page);
         partialSources.push({ id: source.id, includedChars: remaining, totalChars: source.text.length });
@@ -160,7 +159,9 @@ export async function buildContextSnapshot(input: {
       }
       break;
     }
-    sources.push(source);
+    // The cache keeps its own object. A provider may hold or change a source
+    // from this snapshot, so never hand it the cache entry itself.
+    sources.push({ ...source });
     includedPages.add(page);
     remaining -= cost;
     if (sources.length === MAX_CONTEXT_PAGE_SOURCES) break;
@@ -202,9 +203,18 @@ export function serializeContextForPrompt(context: AiChatRequestContext): string
     `<document-context label="${escapeAttribute(context.documentLabel)}" pages="${context.pageCount}" normalization-version="${context.normalizationVersion}">`,
   ];
   if (context.currentPage !== null) lines.push(`<current-page page="${context.currentPage}"/>`);
+  const partialSourceById = new Map(
+    context.omissions.partialSources.map((partial) => [partial.id, partial]),
+  );
   for (const source of context.sources) {
     if ("text" in source) {
-      lines.push(`<source id="${source.id}" page="${source.page}">${escapeDocumentText(source.text)}</source>`);
+      const partial = partialSourceById.get(source.id);
+      const partialAttributes = partial
+        ? ` partial="true" included-chars="${partial.includedChars}" total-chars="${partial.totalChars}"`
+        : "";
+      lines.push(
+        `<source id="${source.id}" page="${source.page}"${partialAttributes}>${escapeDocumentText(source.text)}</source>`,
+      );
     } else {
       lines.push(
         `<source id="${source.id}" page="${source.page}" unavailable="${source.unavailableReason}"/>`,
@@ -212,8 +222,12 @@ export function serializeContextForPrompt(context: AiChatRequestContext): string
     }
   }
   if (context.selection) {
+    const truncation = context.omissions.selectionTruncated;
+    const truncationAttributes = truncation
+      ? ` truncated="true" included-chars="${truncation.includedChars}" total-chars="${truncation.totalChars}"`
+      : "";
     lines.push(
-      `<selection id="${context.selection.id}" page="${context.selection.page}">${escapeDocumentText(context.selection.text)}</selection>`,
+      `<selection id="${context.selection.id}" page="${context.selection.page}"${truncationAttributes}>${escapeDocumentText(context.selection.text)}</selection>`,
     );
   }
   for (const range of context.omissions.omittedPageRanges) {

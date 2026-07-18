@@ -273,9 +273,9 @@ export class MockAiChatService implements AiChatService {
     }
     if (prompt === "Explain the current page") {
       const scripted = scriptedReplies.get(prompt)!;
-      const source =
-        request.context?.sources.find((candidate) => candidate.page === request.context?.currentPage) ??
-        request.context?.sources[0];
+      const source = request.context?.sources.find(
+        (candidate) => candidate.page === request.context?.currentPage,
+      );
       return source ? { ...scripted, sourceRefs: [{ id: source.id }] } : scripted;
     }
     if (prompt === "Explain the selection") {

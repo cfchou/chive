@@ -62,8 +62,9 @@ reading, or not. Everything else follows from that.
 - Context payload: the document text we serialize and send to the AI.
 - Source ID: a stable name for one piece of context (for us: one page),
   e.g. "the source with ID p12". The AI cites IDs; we resolve IDs to pages.
-- Extraction: pulling plain text out of the PDF, per page, via pdf.js
-  `getTextContent()`.
+- Extraction: pulling plain text out of the PDF, per page, by reading
+  `streamTextContent()` when pdf.js provides it and falling back to
+  `getTextContent()` otherwise.
 - Normalization: the fixed rules that turn pdf.js's raw text items into one
   deterministic string per page (how spaces and line breaks are joined).
 - Snapshot: the frozen copy of context taken at send time, owned by the
@@ -253,10 +254,10 @@ implementation may rely on them:
   document and writes bytes to disk; the in-memory document is never
   replaced. So the extractor's handle is stable for the whole life of a
   Document Session — the only destruction event is closing the tab.
-- **Annotation and bookmark edits do not change extracted text.**
-  `getTextContent()` reads the page content streams; annotations live in
-  separate objects and bookmarks in outline data. So extracted page text is
-  effectively immutable per session, and caching it needs no invalidation
+- **Annotation and bookmark edits do not change extracted text.** The shared
+  stream-first text adapter reads the page content streams; annotations live
+  in separate objects and bookmarks in outline data. So extracted page text
+  is effectively immutable per session, and caching it needs no invalidation
   besides session disposal.
 
 One engineering caveat: extraction shares the pdf.js worker with rendering,
@@ -271,7 +272,8 @@ generation must complete with unchanged context, and the save must succeed.
   llm-for-zotero skipped it and had to build live quote search, caching,
   and fuzzy matching to claw the pages back; pdf-mcp deferred sub-page
   coordinates and had to retrofit. We own the pdf.js document, so page
-  boundaries cost us one loop over `getPage(n).getTextContent()`.
+  boundaries cost us one stream-first text read per `getPage(n)`, with
+  `getTextContent()` only as the compatibility fallback.
 - **Chive's constraints make pages the natural unit.** One document per
   conversation, an owned viewer, page-granular citations in the glossary,
   no OCR or reflow tier that would destroy page identity.

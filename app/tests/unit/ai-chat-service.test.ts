@@ -194,6 +194,20 @@ describe("MockAiChatService.generate", () => {
     assert.deepEqual(reply.sourceRefs, [{ id: "page-1" }]);
   });
 
+  it("does not cite another page when Current Page context was dismissed", async () => {
+    const context = sampleContext();
+    context.currentPage = null;
+    const { settled } = runGenerate(
+      service,
+      [userTurn("user-turn-1", "Explain the current page")],
+      context,
+    );
+
+    while (delays.pending > 0) await delays.releaseNext();
+
+    assert.equal((await settled).sourceRefs, undefined);
+  });
+
   it("streams identical chunk sequences and replies for identical requests, across instances", async () => {
     const request = [userTurn("user-turn-1", "Summarize this PDF")];
 

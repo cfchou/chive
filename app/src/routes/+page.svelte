@@ -1022,6 +1022,7 @@
     teardownSessionViewer(session);
     documentSessions = documentSessions.filter((entry) => entry.id !== id);
     if (wasActive) {
+      viewerSelection = null;
       activeSessionId = nextActiveId;
       const next = nextActiveId ? documentSessions.find((entry) => entry.id === nextActiveId) : null;
       if (next) {

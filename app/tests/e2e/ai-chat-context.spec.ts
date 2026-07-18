@@ -2,7 +2,7 @@ import { expect, test } from "./coverage";
 import { loadFixture, openApp } from "./helpers/pdf-spike";
 
 const HELPER_COPY =
-  "The AI sees this document's page text and the chips above — annotations and bookmarks are not included yet.";
+  "The AI sees the included page text and the chips above — annotations and bookmarks are not included yet.";
 
 test("an open PDF exposes its current-page context and explains what is not included", async ({ page }) => {
   await openApp(page);
@@ -37,6 +37,40 @@ test("a dismissed page chip and the composer draft stay with their Document Sess
   await panel.getByRole("textbox", { name: "Message AI Chat" }).fill("Describe the context");
   await panel.getByRole("button", { name: "Send message" }).click();
   await expect(panel.getByText(/Mock context report:.*included=1.*current=none/)).toBeVisible();
+});
+
+test("closing the active Document Tab clears its selected-text context", async ({ page }) => {
+  await openApp(page);
+  await loadFixture(page);
+  const bytes = await page.evaluate(async () =>
+    Array.from(new Uint8Array(await (await fetch("/sample.pdf")).arrayBuffer())),
+  );
+  const secondId = await page.evaluate(
+    (pdfBytes) => window.__pdfSpike!.tabs.openBytes(pdfBytes, "second.pdf"),
+    bytes,
+  );
+  const panel = page.getByRole("tabpanel", { name: "AI Chat" });
+  const visibleTextLayer = page.locator('.pdf-container:visible .page[data-page-number="1"] .textLayer');
+  await expect(visibleTextLayer).toBeVisible();
+  await visibleTextLayer.evaluate((textLayer) => {
+    const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT);
+    const textNode = walker.nextNode();
+    if (!(textNode instanceof Text) || !textNode.data.length) throw new Error("Page 1 has no selectable text");
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, Math.min(12, textNode.data.length));
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await expect(panel.getByRole("button", { name: "Remove Selection context; use whole document" })).toBeVisible();
+
+  await page.evaluate((id) => window.__pdfSpike!.tabs.close(id), secondId);
+
+  await expect(panel.getByRole("button", { name: "Remove Selection context; use whole document" })).toHaveCount(0);
+  await panel.getByRole("textbox", { name: "Message AI Chat" }).fill("Explain the selection");
+  await panel.getByRole("button", { name: "Send message" }).click();
+  await expect(panel.getByText("Mock selection reply: no selection context.", { exact: true })).toBeVisible();
 });
 
 test("selected PDF text becomes citable context and clears when the selection collapses", async ({ page }) => {
