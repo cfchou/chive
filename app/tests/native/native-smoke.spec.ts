@@ -43,6 +43,7 @@ const samplePdfPath = path.resolve(process.cwd(), "static/sample.pdf");
 const noOutlinePdfPath = path.resolve(process.cwd(), "static/no-outline.pdf");
 const brokenOutlinePdfPath = path.resolve(process.cwd(), "static/broken-outline.pdf");
 const coloredOutlinePdfPath = path.resolve(process.cwd(), "static/colored-outline.pdf");
+const mixedTextImagePdfPath = path.resolve(process.cwd(), "static/mixed-text-image.pdf");
 const bookmarkPdfPath = "/tmp/pdfspike-native-bookmark.pdf";
 const freeTextGripPdfPath = "/tmp/pdfspike-native-free-text-grip.pdf";
 
@@ -54,6 +55,20 @@ async function waitForPdfSpike() {
       timeoutMsg: "window.__pdfSpike was not initialized in native WKWebView",
     },
   );
+  await app.execute(() => {
+    type WdioWindow = Window & { __wdioHiddenFrameFallback?: boolean };
+    const target = window as WdioWindow;
+    if (document.visibilityState !== "hidden" || target.__wdioHiddenFrameFallback) return;
+    // The embedded driver can keep a visible macOS window inactive. WKWebView
+    // then tells pdf.js the page is hidden and stops animation frames.
+    target.__wdioHiddenFrameFallback = true;
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    window.requestAnimationFrame = (callback) =>
+      window.setTimeout(() => callback(performance.now()), 16);
+    window.cancelAnimationFrame = (handle) => window.clearTimeout(handle);
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
 }
 
 async function hideRightSidebarForPdfGeometry() {
@@ -72,6 +87,69 @@ async function hideRightSidebarForPdfGeometry() {
         ),
       ),
     { timeout: 10_000, timeoutMsg: "Native right sidebar did not collapse for PDF geometry test" },
+  );
+}
+
+async function hideLeftSidebarForPdfGeometry() {
+  await app.execute(() => {
+    const sidebar = document.querySelector<HTMLElement>('.sidebar[data-side="left"]');
+    if (sidebar?.classList.contains("is-hidden")) return;
+    const hideButton = document.querySelector<HTMLButtonElement>('button[aria-label="Hide left sidebar"]');
+    if (!hideButton) throw new Error("Native Hide left sidebar button not found");
+    hideButton.click();
+  });
+  await app.waitUntil(
+    async () =>
+      app.execute(() =>
+        Boolean(document.querySelector<HTMLElement>('.sidebar[data-side="left"]')?.classList.contains("is-hidden")),
+      ),
+    { timeout: 10_000, timeoutMsg: "Native left sidebar did not collapse for PDF geometry test" },
+  );
+}
+
+async function showLeftSidebar() {
+  await app.execute(() => {
+    const sidebar = document.querySelector<HTMLElement>('.sidebar[data-side="left"]');
+    if (sidebar && !sidebar.classList.contains("is-hidden")) return;
+    const showButton = document.querySelector<HTMLButtonElement>('button[aria-label="Show left sidebar"]');
+    if (!showButton) throw new Error("Native Show left sidebar button not found");
+    showButton.click();
+  });
+  await app.waitUntil(
+    async () =>
+      app.execute(() => {
+        const sidebar = document.querySelector<HTMLElement>('.sidebar[data-side="left"]');
+        return Boolean(sidebar && !sidebar.classList.contains("is-hidden"));
+      }),
+    { timeout: 10_000, timeoutMsg: "Native left sidebar did not reopen" },
+  );
+}
+
+async function zoomUntilPagesOverflowHorizontally(maxAttempts = 12) {
+  const pagesOverflow = () =>
+    app.execute(() => {
+      const viewer = document.querySelector<HTMLElement>(".pdfViewer");
+      return Boolean(viewer && viewer.scrollWidth > viewer.clientWidth);
+    });
+  if (await pagesOverflow()) return;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    await app.execute(() => {
+      const zoomIn = document.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]');
+      if (!zoomIn) throw new Error("Native Zoom in button not found");
+      zoomIn.click();
+    });
+    const overflows = await app.waitUntil(pagesOverflow, { timeout: 2_000 }).catch(() => false);
+    if (overflows) return;
+  }
+
+  const dimensions = await app.execute(() => {
+    const viewer = document.querySelector<HTMLElement>(".pdfViewer");
+    return { clientWidth: viewer?.clientWidth ?? -1, scrollWidth: viewer?.scrollWidth ?? -1 };
+  });
+  throw new Error(
+    `native zoom-in did not produce horizontal page overflow ` +
+      `(pdfViewer clientWidth=${dimensions.clientWidth}, scrollWidth=${dimensions.scrollWidth})`,
   );
 }
 
@@ -704,7 +782,6 @@ describe("native WKWebView PDF smoke", () => {
   it("paints and hit-tests the persisted Highlight Annotation delete glyph inside its native toolbar", async () => {
     await waitForPdfSpike();
     await app.setWindowSize(1643, 654);
-    await hideRightSidebarForPdfGeometry();
     await app.execute(async (filePath) => window.__pdfSpike!.loadPath(filePath), samplePdfPath);
     await app.waitUntil(
       async () =>
@@ -714,16 +791,9 @@ describe("native WKWebView PDF smoke", () => {
         }),
       { timeout: 30_000, timeoutMsg: "Native sample PDF did not expose a persisted Highlight Annotation" },
     );
-    await app.execute(async () => {
-      for (let attempt = 0; attempt < 8; attempt += 1) {
-        const percent = Number.parseInt(document.querySelector(".zoom-value")?.textContent ?? "0", 10);
-        if (percent >= 180) return;
-        const zoomIn = document.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]');
-        if (!zoomIn) throw new Error("Native Zoom in button not found");
-        zoomIn.click();
-        await new Promise((resolve) => setTimeout(resolve, 150));
-      }
-    });
+    await hideRightSidebarForPdfGeometry();
+    await hideLeftSidebarForPdfGeometry();
+    await zoomUntilPagesOverflowHorizontally();
     const activated = await app.execute(async () => {
       window.__pdfSpike!.setTool("none");
       const entry = (window.__pdfSpike!.annotationSidebarSummary() as AnnotationEntry[]).find(
@@ -734,6 +804,7 @@ describe("native WKWebView PDF smoke", () => {
     });
     expect(activated).toBe(true);
     await expectNativeSelectedDeleteGlyph("highlightEditor");
+    await showLeftSidebar();
   });
 
   it("opens dropped Finder PDF paths as Document Tabs", async () => {
@@ -1285,10 +1356,8 @@ describe("native WKWebView PDF smoke", () => {
 
   it("scrolls outline navigation when pages overflow horizontally in native WKWebView", async () => {
     await waitForPdfSpike();
-    // A fixed, deliberately narrow window makes the overflow trigger
-    // deterministic against the app's own contract (at Fit Width, page
-    // width equals window width, so a single 1.1x zoom-in always overflows
-    // it) rather than against an assumed click count.
+    // Use the real page width as the stop condition. The embedded driver can
+    // keep an older window size, so a fixed number of clicks is not reliable.
     await app.setWindowSize(900, 900);
     await hideRightSidebarForPdfGeometry();
 
@@ -1305,41 +1374,10 @@ describe("native WKWebView PDF smoke", () => {
         timeoutMsg: "native sample PDF did not render with outline",
       },
     );
-
     // Zoom in until the laid-out pages are wider than the reader pane — the
     // issue #7 regression trigger, where pdf.js's scrollIntoView used to
     // silently no-op in exactly this engine-real configuration.
-    let overflows = false;
-    for (let attempt = 0; attempt < 2 && !overflows; attempt += 1) {
-      await app.execute(() => {
-        const zoomIn = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-          (button) => button.getAttribute("aria-label") === "Zoom in",
-        );
-        if (!zoomIn) throw new Error("Missing native zoom in button");
-        zoomIn.click();
-      });
-      overflows = await app
-        .waitUntil(
-          async () =>
-            app.execute(() => {
-              const viewer = document.querySelector<HTMLElement>(".pdfViewer");
-              return Boolean(viewer && viewer.scrollWidth > viewer.clientWidth);
-            }),
-          { timeout: 2_000 },
-        )
-        .then(() => true)
-        .catch(() => false);
-    }
-    if (!overflows) {
-      const dimensions = await app.execute(() => {
-        const viewer = document.querySelector<HTMLElement>(".pdfViewer");
-        return { clientWidth: viewer?.clientWidth ?? -1, scrollWidth: viewer?.scrollWidth ?? -1 };
-      });
-      throw new Error(
-        `native zoom-in did not produce horizontal page overflow ` +
-          `(pdfViewer clientWidth=${dimensions.clientWidth}, scrollWidth=${dimensions.scrollWidth})`,
-      );
-    }
+    await zoomUntilPagesOverflowHorizontally();
 
     await app.execute(() => {
       const container = document.querySelector<HTMLElement>(".pdf-container");
@@ -1551,10 +1589,10 @@ describe("native WKWebView PDF smoke", () => {
     ).toBe(true);
   });
 
-  // AI Chat Page Citation navigation in the real WKWebView (issue #25 / A3).
+  // Context extraction and AI Chat Page Citation navigation in WKWebView.
   // The browser suite pins the click and keyboard paths; this is the native
   // regression that the citation really moves the PDF here too. The scripted
-  // "Explain the current page" reply always cites page 2.
+  // The summary cites the first page source from the real Context Snapshot.
   it("navigates the PDF from an AI Chat Page Citation", async () => {
     await waitForPdfSpike();
     await app.setWindowSize(1280, 900);
@@ -1582,7 +1620,7 @@ describe("native WKWebView PDF smoke", () => {
     await app.execute(() => {
       const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message AI Chat"]');
       if (!textarea) throw new Error("Native AI Chat composer textarea not found");
-      textarea.value = "Explain the current page";
+      textarea.value = "Summarize this PDF";
       // Svelte's two-way binding listens for `input`, so the draft only
       // registers if we announce the change.
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1597,44 +1635,167 @@ describe("native WKWebView PDF smoke", () => {
     // The reply streams in; its citation button arrives with the finished turn.
     await app.waitUntil(
       async () =>
-        app.execute(() => Boolean(document.querySelector<HTMLButtonElement>('button[aria-label="Go to page 2"]'))),
-      { timeout: 30_000, timeoutMsg: "Native AI Chat Page Citation did not appear" },
+        app.execute(
+          () =>
+            Boolean(document.querySelector<HTMLButtonElement>('button[aria-label="Go to page 1"]')) ||
+            Boolean(document.querySelector('[role="alert"]')),
+        ),
+      { timeout: 30_000, timeoutMsg: "Native AI Chat request did not settle" },
     );
+    const chatState = await app.execute(() => ({
+      alert: document.querySelector('[role="alert"]')?.textContent?.trim() ?? null,
+      citation: Boolean(document.querySelector<HTMLButtonElement>('button[aria-label="Go to page 1"]')),
+      messages: [...document.querySelectorAll<HTMLElement>('article[aria-label="AI"]')].map((message) =>
+        message.textContent?.trim(),
+      ),
+    }));
+    if (chatState.alert || !chatState.citation) {
+      throw new Error(`Native AI Chat state: ${JSON.stringify(chatState)}`);
+    }
 
-    const pageTwoInView = () =>
+    const pageOneInView = () =>
       app.execute(() => {
         const container = document.querySelector<HTMLElement>(".pdf-container");
-        const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='2']");
+        const pageElement = document.querySelector<HTMLElement>(".page[data-page-number='1']");
         if (!container || !pageElement) return false;
         const containerRect = container.getBoundingClientRect();
         const pageRect = pageElement.getBoundingClientRect();
         return pageRect.bottom > containerRect.top && pageRect.top < containerRect.bottom;
       });
 
-    // Start from the top so arriving at page 2 proves the citation moved us.
+    // Start on page 2 so arriving at page 1 proves the citation moved us.
     await app.execute(() => {
       const container = document.querySelector<HTMLElement>(".pdf-container");
-      if (container) container.scrollTop = 0;
+      const pageTwo = document.querySelector<HTMLElement>(".page[data-page-number='2']");
+      if (container && pageTwo) container.scrollTop = pageTwo.offsetTop;
     });
-    expect(await pageTwoInView()).toBe(false);
+    expect(await pageOneInView()).toBe(false);
 
     // Prefer the keyboard path (the citation is a real button, so Enter must
     // work); fall back to a click if native focus proves unreliable — the
     // keyboard path itself is already pinned in the browser suite.
     await app.execute(() => {
-      document.querySelector<HTMLButtonElement>('button[aria-label="Go to page 2"]')?.focus();
+      document.querySelector<HTMLButtonElement>('button[aria-label="Go to page 1"]')?.focus();
     });
     await app.keys(Key.Enter);
-    const navigatedByKeyboard = await app.waitUntil(pageTwoInView, { timeout: 3_000 }).catch(() => false);
+    const navigatedByKeyboard = await app.waitUntil(pageOneInView, { timeout: 3_000 }).catch(() => false);
     if (!navigatedByKeyboard) {
       await app.execute(() => {
-        document.querySelector<HTMLButtonElement>('button[aria-label="Go to page 2"]')?.click();
+        document.querySelector<HTMLButtonElement>('button[aria-label="Go to page 1"]')?.click();
       });
     }
 
-    await app.waitUntil(pageTwoInView, {
+    await app.waitUntil(pageOneInView, {
       timeout: 10_000,
-      timeoutMsg: "Native AI Chat Page Citation did not navigate the PDF to page 2",
+      timeoutMsg: "Native AI Chat Page Citation did not navigate the PDF to page 1",
     });
+  });
+
+  it("reports an image-only page from real PDF text extraction", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+    await app.execute(async (filePath) => window.__pdfSpike!.loadPath(filePath), mixedTextImagePdfPath);
+    await app.waitUntil(
+      async () => app.execute(() => Number(window.__pdfSpike!.stats().pages ?? 0) === 2),
+      { timeout: 30_000, timeoutMsg: "Native mixed fixture did not render" },
+    );
+
+    await app.execute(() => {
+      [...document.querySelectorAll<HTMLButtonElement>(".sidebar-tab")]
+        .find((button) => button.getAttribute("aria-label") === "AI Chat")
+        ?.click();
+      const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message AI Chat"]');
+      if (!textarea) throw new Error("Native AI Chat composer textarea not found");
+      textarea.value = "Describe the context";
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const send = document.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
+          return Boolean(send && !send.disabled);
+        }),
+      { timeout: 10_000, timeoutMsg: "Native AI Chat Send button did not enable for the context report" },
+    );
+    await app.execute(() => document.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.click());
+
+    await app.waitUntil(
+      async () =>
+        app.execute(() =>
+          [...document.querySelectorAll<HTMLElement>('article[aria-label="AI"]')].some((message) =>
+            message.textContent?.includes("unavailable=2"),
+          ),
+        ),
+      { timeout: 30_000, timeoutMsg: "Native Context Snapshot did not report image-only page 2" },
+    );
+  });
+
+  it("closes a Document Tab while AI Chat is generating without touching the other tab", async () => {
+    await waitForPdfSpike();
+    await app.setWindowSize(1280, 900);
+    // Earlier native smoke cases may leave tabs open. Start with only the two
+    // documents this test owns so it can prove which tab survives.
+    await app.execute(async () => {
+      const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+      for (const tab of tabs) await window.__pdfSpike!.tabs.close(tab.id);
+    });
+    const opened = await app.execute(
+      async ({ firstPath, secondPath }) => {
+        const first = await window.__pdfSpike!.tabs.open(firstPath);
+        const second = await window.__pdfSpike!.tabs.open(secondPath);
+        return { first, second };
+      },
+      { firstPath: samplePdfPath, secondPath: mixedTextImagePdfPath },
+    );
+    await app.waitUntil(
+      async () => app.execute(() => Number(window.__pdfSpike!.stats().pages ?? 0) === 2),
+      { timeout: 30_000, timeoutMsg: "Native second tab did not render before close-during-generation" },
+    );
+
+    await app.execute(() => {
+      [...document.querySelectorAll<HTMLButtonElement>(".sidebar-tab")]
+        .find((button) => button.getAttribute("aria-label") === "AI Chat")
+        ?.click();
+      const textarea = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message AI Chat"]');
+      if (!textarea) throw new Error("Native AI Chat composer textarea not found");
+      textarea.value = "Respond slowly";
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await app.waitUntil(
+      async () =>
+        app.execute(() => {
+          const send = document.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
+          return Boolean(send && !send.disabled);
+        }),
+      { timeout: 10_000, timeoutMsg: "Native AI Chat Send button did not enable for slow generation" },
+    );
+    await app.execute(() => document.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.click());
+    await app.waitUntil(
+      async () => app.execute(() => Boolean(document.querySelector('button[aria-label="Stop generating"]'))),
+      { timeout: 10_000, timeoutMsg: "Native slow generation did not start" },
+    );
+
+    await app.execute(async (id) => window.__pdfSpike!.tabs.close(id), opened.second);
+    const closedCleanly = await app
+      .waitUntil(
+        async () =>
+          app.execute(
+            ({ first }) => {
+              const tabs = window.__pdfSpike!.tabs.list() as DocumentTabSummary[];
+              return tabs.length === 1 && tabs[0]?.id === first && tabs[0].active;
+            },
+            opened,
+          ),
+        { timeout: 10_000 },
+      )
+      .catch(() => false);
+    if (!closedCleanly) {
+      const state = await app.execute(() => ({
+        generating: Boolean(document.querySelector('button[aria-label="Stop generating"]')),
+        tabs: window.__pdfSpike!.tabs.list() as DocumentTabSummary[],
+      }));
+      throw new Error(`Native generating tab did not close cleanly: ${JSON.stringify(state)}`);
+    }
+    expect(await app.execute(() => Boolean(document.querySelector('button[aria-label="Stop generating"]')))).toBe(false);
   });
 });

@@ -36,14 +36,17 @@
 // and dispose abort it; any chunk or settlement from a superseded generation
 // (its controller is no longer the current one) is ignored.
 
-import type { AiChatCitation, AiChatMessage } from "./types";
+import type { AiChatCitation, AiChatMessage, AiChatSourceRef } from "./types";
 import type { AiChatRequest, AiChatService } from "./chat-service";
+import type { AiChatRequestContext } from "./pdf-context";
 
 export type AiChatStatus = "idle" | "generating" | "error";
 
 // Shown to the user when a generation fails. Deliberately generic: the
 // service's own Error text is a test/implementation detail, not product copy.
 const GENERATION_ERROR_MESSAGE = "The response could not be generated.";
+const CONTEXT_ERROR_MESSAGE = "The document context could not be prepared.";
+type ContextFactory = (signal: AbortSignal) => Promise<AiChatRequestContext>;
 
 export class AiChatSession {
   /** Finished turns, oldest first. Append-only; replaced only by dispose(). */
@@ -62,6 +65,8 @@ export class AiChatSession {
   savedScrollTop = 0;
   /** Unsent AI Chat Composer draft — per-document, like the messages. */
   draft = "";
+  /** Context chips removed from this document's composer. */
+  dismissedContextIds: string[] = [];
   /**
    * Called by the session after every observable change (a chunk, a state
    * transition, a committed turn). The shell sets this to re-mirror the active
@@ -82,6 +87,10 @@ export class AiChatSession {
    * dropped. Aborting it cancels the underlying service work.
    */
   private controller: AbortController | null = null;
+  /** Reused by Retry after a failed provider call or context extraction. */
+  private pendingContextFactory: ContextFactory | null = null;
+  /** Source ids that may become live AI Chat Page Citations for this run. */
+  private snapshotPages: Map<string, number> | null = null;
 
   /**
    * Submit one user turn and start generating a reply.
@@ -96,8 +105,10 @@ export class AiChatSession {
    * not a thrown error, because the caller (the shell) reacts to state, not to
    * exceptions.
    */
-  send(service: AiChatService, text: string): Promise<void> | null {
+  send(service: AiChatService, text: string, contextFactory?: ContextFactory): Promise<void> | null {
     if (this.disposed || this.status === "generating") return null;
+    this.pendingContextFactory = contextFactory ?? null;
+    this.dismissedContextIds = [];
     this.errorMessage = null;
     this.turnCount += 1;
     this.messages.push({
@@ -141,6 +152,8 @@ export class AiChatSession {
     const controller = this.controller;
     this.controller = null;
     controller?.abort();
+    this.pendingContextFactory = null;
+    this.snapshotPages = null;
     this.inFlightContent = "";
     this.status = "idle";
     if (partial.length > 0) this.commitAssistant(turn, partial);
@@ -156,10 +169,13 @@ export class AiChatSession {
     this.controller = null;
     this.messages = [];
     this.draft = "";
+    this.dismissedContextIds = [];
     this.savedScrollTop = 0;
     this.inFlightContent = "";
     this.status = "idle";
     this.errorMessage = null;
+    this.pendingContextFactory = null;
+    this.snapshotPages = null;
     this.onChange = null;
   }
 
@@ -169,6 +185,7 @@ export class AiChatSession {
     this.activeTurn = turn;
     this.status = "generating";
     this.inFlightContent = "";
+    this.snapshotPages = null;
     // The user turn (or the cleared error) plus the generating state are now
     // observable; let the shell mirror them before the first chunk arrives.
     this.notify();
@@ -185,7 +202,18 @@ export class AiChatSession {
     turn: number,
     controller: AbortController,
   ): Promise<void> {
+    let preparingContext = false;
     try {
+      if (this.pendingContextFactory) {
+        preparingContext = true;
+        request.context = await this.pendingContextFactory(controller.signal);
+        preparingContext = false;
+        if (this.controller !== controller || this.disposed) return;
+        this.snapshotPages = new Map(request.context.sources.map((source) => [source.id, source.page]));
+        if (request.context.selection) {
+          this.snapshotPages.set(request.context.selection.id, request.context.selection.page);
+        }
+      }
       const reply = await service.generate(
         request,
         (text) => {
@@ -200,10 +228,12 @@ export class AiChatSession {
       // The generation may have been superseded or the tab closed while the
       // final reply was in flight; if so, discard it.
       if (this.controller !== controller || this.disposed) return;
-      this.commitAssistant(turn, reply.content, reply.citations);
+      this.commitAssistant(turn, reply.content, this.resolveCitations(reply.sourceRefs));
       this.inFlightContent = "";
       this.status = "idle";
       this.controller = null;
+      this.pendingContextFactory = null;
+      this.snapshotPages = null;
       this.notify();
     } catch (error) {
       // A superseded/disposed generation owns none of the state anymore
@@ -213,8 +243,9 @@ export class AiChatSession {
       // and both null the controller so they are caught above) → error state.
       this.inFlightContent = "";
       this.status = "error";
-      this.errorMessage = GENERATION_ERROR_MESSAGE;
+      this.errorMessage = preparingContext ? CONTEXT_ERROR_MESSAGE : GENERATION_ERROR_MESSAGE;
       this.controller = null;
+      this.snapshotPages = null;
       this.notify();
     }
   }
@@ -232,6 +263,23 @@ export class AiChatSession {
       // committed. The session cannot vet arbitrary providers, so it copies.
       citations: citations?.map((citation) => ({ ...citation })),
     });
+  }
+
+  private resolveCitations(sourceRefs?: readonly AiChatSourceRef[]): AiChatCitation[] | undefined {
+    if (!sourceRefs?.length || !this.snapshotPages) return undefined;
+    const seen = new Set<string>();
+    const citations: AiChatCitation[] = [];
+    for (const sourceRef of sourceRefs) {
+      if (seen.has(sourceRef.id)) continue;
+      seen.add(sourceRef.id);
+      const page = this.snapshotPages.get(sourceRef.id);
+      if (page === undefined) {
+        console.debug(`Dropped AI Chat source ref that is not in the Context Snapshot: ${sourceRef.id}`);
+        continue;
+      }
+      citations.push({ id: sourceRef.id, page });
+    }
+    return citations.length ? citations : undefined;
   }
 
   private notify(): void {

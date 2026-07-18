@@ -253,6 +253,8 @@ test("Send is disabled until there is a document and text, and becomes Stop whil
 test("a page citation navigates the PDF to its page, by click and by keyboard", async ({ page }) => {
   await openApp(page);
   await loadFixture(page);
+  await page.locator('.pdf-container:visible .page[data-page-number="2"]').scrollIntoViewIfNeeded();
+  await expect(chatPanel(page).getByRole("button", { name: "Remove Page 2 context; use whole document" })).toBeVisible();
 
   await sendAndSettle(page, "Explain the current page", "Mock explanation:");
   const citation = chatPanel(page).getByRole("button", { name: "Go to page 2" });

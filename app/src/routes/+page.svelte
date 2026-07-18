@@ -46,8 +46,13 @@
   import OutlineSidebar from "$lib/pdf/OutlineSidebar.svelte";
   import AiChatSidebar from "$lib/ai-chat/AiChatSidebar.svelte";
   import { mockAiChatService } from "$lib/ai-chat/chat-service";
-  import type { AiChatMessage, AiChatState } from "$lib/ai-chat/types";
+  import type { AiChatContext, AiChatMessage, AiChatState } from "$lib/ai-chat/types";
   import type { AiChatStatus } from "$lib/ai-chat/chat-session";
+  import {
+    buildContextSnapshot,
+    CONTEXT_CHAR_BUDGET,
+    createPdfPageReader,
+  } from "$lib/ai-chat/pdf-context";
   import * as pdfjsLib from "pdfjs-dist";
   import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
   import inkCursorUrl from "pdfjs-dist/web/images/cursor-editorInk.svg?url";
@@ -401,6 +406,7 @@
     const rememberSelection = () => {
       const selection = document.getSelection();
       const selectionText = selection?.toString().trim() ?? "";
+      trackAiChatSelection(selection, selectionText);
       if (!selectionText || !selection || selection.rangeCount === 0) {
         return;
       }
@@ -967,6 +973,7 @@
       clearTimeout(annotationRefreshTimer);
       annotationRefreshTimer = null;
     }
+    viewerSelection = null;
     activeSessionId = id;
     pointActiveRefsTo(next);
     if (next.snapshot) applyActiveSnapshot(next.snapshot as ActiveSnapshot);
@@ -1202,6 +1209,7 @@
     resetActiveDocumentState();
     rememberedSelectionText = "";
     rememberedSelectionRanges = [];
+    viewerSelection = null;
 
     const session = new DocumentSession(crypto.randomUUID(), path, label);
     wireAiChatSession(session); // push this session's chat changes to the mirror while active
@@ -1254,6 +1262,7 @@
     } as ConstructorParameters<typeof PDFViewer>[0] & { enableHighlightFloatingButton: boolean });
     linkService.setViewer(pdfViewer);
     session.pdfViewer = pdfViewer;
+    aiChatCurrentPage = pdfViewer.currentPageNumber || 1;
     pdfViewer.setDocument(nextDocument);
     linkService.setDocument(nextDocument, null);
     pdfDocument = nextDocument;
@@ -1298,6 +1307,11 @@
     });
     eventBus.on("scalechanging", (event: { scale: number }) => {
       if (isActive()) zoomPercent = Math.round(event.scale * 100);
+    });
+    // EventBus listeners belong to the loaded Document Session. Attach once,
+    // then ignore events while another tab is active.
+    eventBus.on("pagechanging", (event: { pageNumber: number }) => {
+      if (isActive()) aiChatCurrentPage = event.pageNumber;
     });
   }
 
@@ -3810,6 +3824,37 @@
         : null;
   }
 
+  function setViewerSelection(next: { text: string; page: number } | null) {
+    // selectionchange can repeat without changing the selection. Keep the
+    // state object stable so Svelte does not redraw the AI Chat Context Chips.
+    if (viewerSelection?.text === next?.text && viewerSelection?.page === next?.page) return;
+    if (viewerSelection === null && next === null) return;
+    viewerSelection = next;
+  }
+
+  function trackAiChatSelection(selection: Selection | null, text: string) {
+    const session = activeSession;
+    if (!session || !selection || selection.isCollapsed || selection.rangeCount === 0 || !text) {
+      setViewerSelection(null);
+      return;
+    }
+    const anchor = getSelectionAnchorElement(selection);
+    const textLayer = anchor?.closest(".textLayer");
+    if (!textLayer || !session.viewerEl?.contains(textLayer)) {
+      setViewerSelection(null);
+      return;
+    }
+    const pageElement = anchor?.closest<HTMLElement>(".page[data-page-number]");
+    const page = Number(pageElement?.dataset.pageNumber);
+    if (!Number.isInteger(page) || page < 1) {
+      setViewerSelection(null);
+      return;
+    }
+    // A selection can cross pages. Its anchor page is stable and matches the
+    // browser selection the user started, so that is the page we cite.
+    setViewerSelection({ text, page });
+  }
+
   function countHighlightEditorsInManager() {
     if (!annotationEditorUIManager || !pdfDocument) {
       return 0;
@@ -4620,6 +4665,9 @@
   // Destroys that session's document and empties its viewer DOM; does not touch
   // the shell's scalar state or the documentSessions list.
   function teardownSessionViewer(session: DocumentSession) {
+    // Stop context extraction and reply generation while the pdf.js document
+    // is still usable. close() calls dispose() again as a safe no-op.
+    session.aiChatSession.dispose();
     if (freeTextMoveSession?.documentSession === session) endFreeTextMoveSession();
     unselectAllIgnoringPdfjsSignalBug(session.annotationEditorUIManager);
     session.pdfViewer?.setDocument(null as never);
@@ -4657,6 +4705,8 @@
     activeTool = "none";
     lastActivatedOutlineEntry = null;
     annotationFocusBox = null;
+    viewerSelection = null;
+    aiChatCurrentPage = null;
     if (annotationRefreshTimer) {
       clearTimeout(annotationRefreshTimer);
       annotationRefreshTimer = null;
@@ -4697,8 +4747,23 @@
   let aiChatStatus = $state<AiChatStatus>("idle");
   let aiChatErrorMessage = $state<string | null>(null);
   let aiChatInFlightContent = $state("");
+  let aiChatDismissedContextIds = $state<string[]>([]);
+  let aiChatCurrentPage = $state<number | null>(null);
+  let viewerSelection = $state<{ text: string; page: number } | null>(null);
   /** The sidebar's scrollable conversation element (bound), for per-document scroll capture/restore. */
   let aiChatConversationEl = $state<HTMLDivElement | null>(null);
+
+  const aiChatContexts = $derived.by(() => {
+    if (!activeSession) return [];
+    const contexts: AiChatContext[] = [];
+    if (aiChatCurrentPage !== null && !aiChatDismissedContextIds.includes("current-page")) {
+      contexts.push({ id: "current-page", label: `Page ${aiChatCurrentPage}` });
+    }
+    if (viewerSelection && !aiChatDismissedContextIds.includes("selected-text")) {
+      contexts.push({ id: "selected-text", label: "Selection" });
+    }
+    return contexts;
+  });
 
   // Presentation state the sidebar expects (empty | generating | completed |
   // error), derived from the session's own status plus whether there's any
@@ -4729,6 +4794,8 @@
     aiChatStatus = chat ? chat.status : "idle";
     aiChatErrorMessage = chat ? chat.errorMessage : null;
     aiChatInFlightContent = chat ? chat.inFlightContent : "";
+    aiChatDismissedContextIds = chat ? [...chat.dismissedContextIds] : [];
+    aiChatCurrentPage = activeSession?.pdfViewer?.currentPageNumber ?? null;
   }
 
   /**
@@ -4755,6 +4822,7 @@
   function captureAiChatIntoSession(session: DocumentSession) {
     if (aiChatConversationEl) session.aiChatSession.savedScrollTop = aiChatConversationEl.scrollTop;
     session.aiChatSession.draft = aiChatComposerValue;
+    session.aiChatSession.dismissedContextIds = [...aiChatDismissedContextIds];
   }
 
   /** Restore the active session's saved conversation scroll (0 when none). Call after tick() so the (possibly recreated) panel exists. */
@@ -4774,13 +4842,40 @@
   function sendAiChatMessage(text: string) {
     const session = activeSession;
     if (!session) return; // no Document Tab → the composer is inert
-    const completion = session.aiChatSession.send(mockAiChatService, text);
+    const pdfDocument = session.pdfDocument;
+    if (!pdfDocument) return;
+    const currentPage = aiChatDismissedContextIds.includes("current-page") ? null : aiChatCurrentPage;
+    const selection =
+      aiChatDismissedContextIds.includes("selected-text") || !viewerSelection
+        ? null
+        : { ...viewerSelection };
+    const reader = createPdfPageReader(pdfDocument);
+    // Capture this Document Session and these chip values now. Tab switches,
+    // scrolling, and later selections must not rewrite an in-flight request.
+    const contextFactory = (signal: AbortSignal) =>
+      buildContextSnapshot({
+        reader,
+        cache: session.pdfContextPageCache,
+        documentLabel: session.label,
+        currentPage,
+        selection,
+        charBudget: CONTEXT_CHAR_BUDGET,
+        signal,
+      });
+    const completion = session.aiChatSession.send(mockAiChatService, text, contextFactory);
     if (completion === null) return;
     // Accepted, so the prompt has left the composer. The user turn and the
     // generating state are already mirrored (send() notified onChange); this
     // only has to empty the draft on both sides.
     session.aiChatSession.draft = "";
     aiChatComposerValue = "";
+  }
+
+  function removeAiChatContext(id: string) {
+    const session = activeSession;
+    if (!session || aiChatDismissedContextIds.includes(id)) return;
+    aiChatDismissedContextIds = [...aiChatDismissedContextIds, id];
+    session.aiChatSession.dismissedContextIds = [...aiChatDismissedContextIds];
   }
 
   /** Stop the active document's in-flight generation (keeps partial content). */
@@ -5197,14 +5292,13 @@
                   {locateAnnotationEntry}
                 />
               {:else}
-                <!-- The Active Document Tab's AI Chat Session. Real context
-                     chips arrive post-M1, so none are passed. onSend is given
+                <!-- The Active Document Tab's AI Chat Session. onSend is given
                      only when a document is open, so the composer's Send button
                      is disabled at `/` even with typed text. -->
                 <AiChatSidebar
                   messages={aiChatMessages}
                   state={aiChatState}
-                  contexts={[]}
+                  contexts={aiChatContexts}
                   errorMessage={aiChatErrorMessage ?? undefined}
                   inFlightContent={aiChatInFlightContent}
                   sessionKey={activeSessionId ?? undefined}
@@ -5214,6 +5308,7 @@
                   onStop={stopAiChatGeneration}
                   onRetry={retryAiChatGeneration}
                   onNavigateToPage={navigateToCitationPage}
+                  onRemoveContext={removeAiChatContext}
                 />
               {/if}
             </div>

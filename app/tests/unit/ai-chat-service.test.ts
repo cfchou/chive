@@ -11,7 +11,7 @@
 //     never touch a real clock (the mock's default delay is a real setTimeout,
 //     replaced here by a hand-pumped fake).
 //   - The data-ownership rule carried over from A2: a reply carries only
-//     content and citations, never UI message id or role.
+//     content and source references, never UI message id or role.
 //
 // The fake delay below is the whole trick for testing time without waiting:
 // every delay the service asks for is parked in a queue, and the test releases
@@ -27,9 +27,22 @@ import {
   CHUNK_GAP_DELAY_MS,
 } from "../../src/lib/ai-chat/chat-service";
 import type { AiChatMessage } from "../../src/lib/ai-chat/types";
+import { buildContextSnapshot, type AiChatRequestContext } from "../../src/lib/ai-chat/pdf-context";
 
 function userTurn(id: string, content: string): AiChatMessage {
   return { id, role: "user", content };
+}
+
+function sampleContext(): AiChatRequestContext {
+  return {
+    normalizationVersion: 1,
+    documentLabel: "sample.pdf",
+    pageCount: 1,
+    sources: [{ id: "page-1", page: 1, text: "sample" }],
+    selection: null,
+    currentPage: 1,
+    omissions: { omittedPageRanges: [], partialSources: [], selectionTruncated: null },
+  };
 }
 
 // A stand-in for the service's real setTimeout-based delay. Each delay the
@@ -82,11 +95,11 @@ class ManualDelays {
 
 // Collects the streamed chunks and settles when generate() finishes, so a test
 // can await the whole run after pumping every delay.
-function runGenerate(service: MockAiChatService, messages: AiChatMessage[]) {
+function runGenerate(service: MockAiChatService, messages: AiChatMessage[], context?: AiChatRequestContext) {
   const controller = new AbortController();
   const chunks: string[] = [];
   const settled = service.generate(
-    { messages },
+    { messages, context },
     (text) => chunks.push(text),
     controller.signal,
   );
@@ -154,7 +167,11 @@ describe("MockAiChatService.generate", () => {
   });
 
   it("waits for the first delay, then streams every chunk, then resolves with the full reply", async () => {
-    const { chunks, settled } = runGenerate(service, [userTurn("user-turn-1", "Summarize this PDF")]);
+    const { chunks, settled } = runGenerate(
+      service,
+      [userTurn("user-turn-1", "Summarize this PDF")],
+      sampleContext(),
+    );
 
     // Nothing is emitted before the first delay is released.
     await Promise.resolve();
@@ -174,8 +191,7 @@ describe("MockAiChatService.generate", () => {
     // Chunks reconstruct exactly the reply content.
     assert.equal(chunks.join(""), reply.content);
     assert.ok(reply.content.length > 0);
-    assert.ok(reply.citations && reply.citations.length > 0);
-    assert.equal(reply.citations[0].page, 1);
+    assert.deepEqual(reply.sourceRefs, [{ id: "page-1" }]);
   });
 
   it("streams identical chunk sequences and replies for identical requests, across instances", async () => {
@@ -204,6 +220,77 @@ describe("MockAiChatService.generate", () => {
     assert.ok(reply.content.includes('"What is on page 9?"'));
   });
 
+  it("reports the supplied Context Snapshot with exact page, omission, and chip values", async () => {
+    const context: AiChatRequestContext = {
+      normalizationVersion: 1,
+      documentLabel: "mixed.pdf",
+      pageCount: 4,
+      sources: [
+        { id: "page-1", page: 1, text: "one" },
+        { id: "page-2", page: 2, unavailableReason: "no-extractable-text" },
+      ],
+      selection: { id: "selection-page-4", page: 4, text: "chosen" },
+      currentPage: 1,
+      omissions: {
+        omittedPageRanges: [[3, 4]],
+        partialSources: [],
+        selectionTruncated: null,
+      },
+    };
+    const { settled } = runGenerate(service, [userTurn("user-turn-1", "Describe the context")], context);
+    while (delays.pending > 0) await delays.releaseNext();
+
+    assert.deepEqual(await settled, {
+      content:
+        "Mock context report: pages=4 included=1 unavailable=2 omitted=3-4 selection=4 current=1",
+    });
+  });
+
+  it("reports omissions from an actual budget-limited Context Snapshot", async () => {
+    const context = await buildContextSnapshot({
+      reader: {
+        pageCount: 3,
+        async readPage(page) {
+          return [{ str: ["one", "oversized", "three"][page - 1], hasEOL: false }];
+        },
+      },
+      cache: new Map(),
+      documentLabel: "bounded.pdf",
+      currentPage: 1,
+      selection: null,
+      charBudget: 4,
+      signal: new AbortController().signal,
+    });
+    const { settled } = runGenerate(service, [userTurn("user-turn-1", "Describe the context")], context);
+    while (delays.pending > 0) await delays.releaseNext();
+
+    assert.equal(
+      (await settled).content,
+      "Mock context report: pages=3 included=1 unavailable=none omitted=2-3 selection=none current=1",
+    );
+  });
+
+  it("uses the selection source id only when selection context is present", async () => {
+    const withSelection = sampleContext();
+    withSelection.selection = { id: "selection-page-5", page: 5, text: "picked" };
+    const selected = runGenerate(
+      service,
+      [userTurn("user-turn-1", "Explain the selection")],
+      withSelection,
+    );
+    while (delays.pending > 0) await delays.releaseNext();
+    assert.deepEqual(await selected.settled, {
+      content: "Mock selection reply: the selection on page 5 is noted.",
+      sourceRefs: [{ id: "selection-page-5" }],
+    });
+
+    const withoutSelection = runGenerate(service, [userTurn("user-turn-1", "Explain the selection")]);
+    while (delays.pending > 0) await delays.releaseNext();
+    assert.deepEqual(await withoutSelection.settled, {
+      content: "Mock selection reply: no selection context.",
+    });
+  });
+
   it("folds the user-turn count into the fallback so distinct turns are distinguishable", async () => {
     const one = runGenerate(service, [userTurn("user-turn-1", "hello")]);
     while (delays.pending > 0) await delays.releaseNext();
@@ -220,29 +307,29 @@ describe("MockAiChatService.generate", () => {
     assert.notEqual(replyOne.content, replyTwo.content);
   });
 
-  it("survives a caller mutating a citation it was handed", async () => {
+  it("survives a caller mutating a source reference it was handed", async () => {
     const request = [userTurn("user-turn-1", "Summarize this PDF")];
 
-    const first = runGenerate(service, request);
+    const first = runGenerate(service, request, sampleContext());
     while (delays.pending > 0) await delays.releaseNext();
     const firstReply = await first.settled;
-    assert.equal(firstReply.citations?.[0].page, 1);
+    assert.equal(firstReply.sourceRefs?.[0].id, "page-1");
 
-    // A careless consumer scribbles on the citation it received. The scripted
+    // A careless consumer scribbles on the source reference it received. The scripted
     // replies live in a module-level map, so handing out the real objects would
     // let this rewrite the script for every later reply — in every instance,
     // for the rest of the process. Determinism is the entire point of the mock.
-    firstReply.citations![0].page = 999;
+    firstReply.sourceRefs![0].id = "page-999";
 
-    const second = runGenerate(service, request);
+    const second = runGenerate(service, request, sampleContext());
     while (delays.pending > 0) await delays.releaseNext();
-    assert.equal((await second.settled).citations?.[0].page, 1);
+    assert.equal((await second.settled).sourceRefs?.[0].id, "page-1");
 
     const otherDelays = new ManualDelays();
     const otherService = new MockAiChatService({ delay: otherDelays.delay });
-    const other = runGenerate(otherService, request);
+    const other = runGenerate(otherService, request, sampleContext());
     while (otherDelays.pending > 0) await otherDelays.releaseNext();
-    assert.equal((await other.settled).citations?.[0].page, 1);
+    assert.equal((await other.settled).sourceRefs?.[0].id, "page-1");
   });
 
   it("reports cancellation when the caller aborts from inside the FINAL fragment", async () => {
@@ -270,7 +357,7 @@ describe("MockAiChatService.generate", () => {
     assert.ok(chunks.join("").endsWith("evidence."));
   });
 
-  it("replies carry only content and citations — no UI message identity", async () => {
+  it("replies carry only content and source references — no UI message identity", async () => {
     const { settled } = runGenerate(service, [userTurn("user-turn-1", "Summarize this PDF")]);
     while (delays.pending > 0) await delays.releaseNext();
     const reply = await settled;

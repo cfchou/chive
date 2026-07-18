@@ -9,7 +9,7 @@ import { expect, test } from "./coverage";
 //   - AI Chat Context Chip behavior (chips add to the composer's initial
 //     height; removing one returns to whole-document mode) moved to
 //     composer-harness.spec.ts, because real mode passes no contexts until
-//     real PDF context arrives post-M1.
+//     context-chip behavior now has its own real-PDF coverage.
 //
 // What remains here is the composer geometry that has always been asserted at
 // `/`: the configuration row, the two-line starting height, growth, the

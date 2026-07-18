@@ -11,21 +11,22 @@
 // scripted prompt is meant to fail. This replaces A2's one-shot complete().
 //
 // Determinism rule: the *content* of a reply — its chunk sequence and its
-// citations — is a pure function of the request, identical across instances.
+// source references — is a pure function of the request, identical across instances.
 // Only *timing* varies, and only through the injected `delay`, so tests can
 // swap in a hand-pumped fake and never touch a real clock. The default delay
 // is a plain, abortable setTimeout.
 //
 // Data-ownership rule (unchanged from A2): a reply carries only content and
-// citations. UI message identity (id) and authorship (role) belong to the AI
+// source references. UI message identity (id) and authorship (role) belong to the AI
 // Chat Session — a provider must never construct Chive's UI model.
 
-import type { AiChatCitation, AiChatMessage } from "./types";
+import type { AiChatMessage, AiChatSourceRef } from "./types";
+import { formatOmittedPageRange, type AiChatRequestContext } from "./pdf-context";
 
 /** What a provider answers with. Deliberately NOT an AiChatMessage. */
 export type AiChatReply = {
   content: string;
-  citations?: readonly AiChatCitation[];
+  sourceRefs?: readonly AiChatSourceRef[];
 };
 
 export type AiChatRequest = {
@@ -36,6 +37,8 @@ export type AiChatRequest = {
    * are append-only value objects, never mutated after creation.
    */
   messages: readonly AiChatMessage[];
+  /** Frozen PDF data prepared for this request, when a document is available. */
+  context?: AiChatRequestContext;
 };
 
 /** Called once per streamed fragment, in order, before generate() settles. */
@@ -114,7 +117,7 @@ export function chunkReply(content: string, maxChunkChars: number = MAX_CHUNK_CH
 // One scripted behaviour: the reply content plus its timing, or a failure.
 type ScriptedBehavior = {
   content: string;
-  citations?: readonly AiChatCitation[];
+  sourceRefs?: readonly AiChatSourceRef[];
   firstDelayMs: number;
   gapDelayMs: number;
   /** When true, reject after the first delay instead of streaming. */
@@ -131,7 +134,6 @@ const scriptedReplies: ReadonlyMap<string, ScriptedBehavior> = new Map<string, S
     {
       content:
         "Mock summary: the document introduces its subject, develops one main argument, and closes with supporting evidence.",
-      citations: [{ id: "mock-summary-page-1", page: 1 }],
       firstDelayMs: FIRST_CHUNK_DELAY_MS,
       gapDelayMs: CHUNK_GAP_DELAY_MS,
     },
@@ -140,7 +142,6 @@ const scriptedReplies: ReadonlyMap<string, ScriptedBehavior> = new Map<string, S
     "Explain the current page",
     {
       content: "Mock explanation: the current page elaborates the main argument with a worked example.",
-      citations: [{ id: "mock-explain-page-2", page: 2 }],
       firstDelayMs: FIRST_CHUNK_DELAY_MS,
       gapDelayMs: CHUNK_GAP_DELAY_MS,
     },
@@ -257,15 +258,57 @@ export class MockAiChatService implements AiChatService {
     // is module-level: if a consumer mutated a citation it received, it would
     // silently rewrite the script for every future reply, in every instance —
     // destroying the determinism this whole mock exists to provide.
-    return {
-      content: behavior.content,
-      citations: behavior.citations?.map((citation) => ({ ...citation })),
-    };
+    return behavior.sourceRefs
+      ? { content: behavior.content, sourceRefs: behavior.sourceRefs.map((sourceRef) => ({ ...sourceRef })) }
+      : { content: behavior.content };
   }
 
   private resolveBehavior(request: AiChatRequest): ScriptedBehavior {
     const lastMessage = request.messages[request.messages.length - 1];
     const prompt = lastMessage?.content ?? "";
+    if (prompt === "Summarize this PDF") {
+      const scripted = scriptedReplies.get(prompt)!;
+      const firstSource = request.context?.sources[0];
+      return firstSource ? { ...scripted, sourceRefs: [{ id: firstSource.id }] } : scripted;
+    }
+    if (prompt === "Explain the current page") {
+      const scripted = scriptedReplies.get(prompt)!;
+      const source =
+        request.context?.sources.find((candidate) => candidate.page === request.context?.currentPage) ??
+        request.context?.sources[0];
+      return source ? { ...scripted, sourceRefs: [{ id: source.id }] } : scripted;
+    }
+    if (prompt === "Explain the selection") {
+      const selection = request.context?.selection;
+      return {
+        content: selection
+          ? `Mock selection reply: the selection on page ${selection.page} is noted.`
+          : "Mock selection reply: no selection context.",
+        sourceRefs: selection ? [{ id: selection.id }] : undefined,
+        firstDelayMs: FIRST_CHUNK_DELAY_MS,
+        gapDelayMs: CHUNK_GAP_DELAY_MS,
+      };
+    }
+    if (prompt === "Describe the context") {
+      const context = request.context;
+      const included = context?.sources.filter((source) => "text" in source).map((source) => source.page) ?? [];
+      const unavailable =
+        context?.sources.filter((source) => "unavailableReason" in source).map((source) => source.page) ?? [];
+      const omitted = context?.omissions.omittedPageRanges.map(formatOmittedPageRange) ?? [];
+      return {
+        content: `Mock context report: pages=${context?.pageCount ?? 0} included=${included.join(",") || "none"} unavailable=${unavailable.join(",") || "none"} omitted=${omitted.join(",") || "none"} selection=${context?.selection?.page ?? "none"} current=${context?.currentPage ?? "none"}`,
+        firstDelayMs: FIRST_CHUNK_DELAY_MS,
+        gapDelayMs: CHUNK_GAP_DELAY_MS,
+      };
+    }
+    if (prompt === "Cite a missing page") {
+      return {
+        content: "Mock missing citation reply.",
+        sourceRefs: [{ id: "page-9999" }],
+        firstDelayMs: FIRST_CHUNK_DELAY_MS,
+        gapDelayMs: CHUNK_GAP_DELAY_MS,
+      };
+    }
     const scripted = scriptedReplies.get(prompt);
     if (scripted) return scripted;
     // Fallback for unscripted prompts. Folding in the user-turn count keeps

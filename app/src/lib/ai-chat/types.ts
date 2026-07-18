@@ -5,6 +5,11 @@ export type AiChatCitation = {
   page: number;
 };
 
+/** A provider points at snapshot data by id; the session owns page lookup. */
+export type AiChatSourceRef = {
+  id: string;
+};
+
 export type AiChatContext = {
   id: string;
   label: string;

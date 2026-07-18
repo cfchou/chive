@@ -14,6 +14,7 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { EventBus, PDFLinkService, PDFViewer } from "pdfjs-dist/web/pdf_viewer.mjs";
 import type { AnnotationEditorUIManager } from "../pdf/pdfjs-quirks";
 import { AiChatSession } from "../ai-chat/chat-session";
+import type { PdfPageSource } from "../ai-chat/pdf-context";
 
 /**
  * Opaque bag of the shell's scalar/derived per-document `$state` (outline,
@@ -51,6 +52,8 @@ export class DocumentSession {
   readonly pendingDeletedPersistedAnnotationKeys = new Set<string>();
   readonly persistedAnnotationKeyByEditorId = new Map<string, string>();
   readonly persistedPositionByKey = new Map<string, { top: number; left: number }>();
+  /** Extracted page text is immutable until this Document Session closes. */
+  readonly pdfContextPageCache = new Map<number, PdfPageSource>();
 
   /** Scalar/derived UI state, held only while this tab is inactive. */
   snapshot: DocumentSnapshot | null = null;
@@ -84,6 +87,7 @@ export class DocumentSession {
     this.pendingDeletedPersistedAnnotationKeys.clear();
     this.persistedAnnotationKeyByEditorId.clear();
     this.persistedPositionByKey.clear();
+    this.pdfContextPageCache.clear();
     this.snapshot = null;
     // Dispose the AI Chat Session with its Document Session: drops the
     // conversation and makes the session discard any reply still in flight.
