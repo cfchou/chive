@@ -3835,7 +3835,17 @@
 
   function trackAiChatSelection(selection: Selection | null, text: string) {
     const session = activeSession;
-    if (!session || !selection || selection.isCollapsed || selection.rangeCount === 0 || !text) {
+    if (!session) {
+      setViewerSelection(null);
+      return;
+    }
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0 || !text) {
+      const focusedElement = document.activeElement;
+      const composerHasFocus =
+        focusedElement instanceof Element && focusedElement.closest('[aria-label="AI Chat composer"]');
+      // Focusing the composer clears the browser's visible PDF selection. Keep
+      // the captured text so it can still go with the message being typed.
+      if (viewerSelection && composerHasFocus) return;
       setViewerSelection(null);
       return;
     }

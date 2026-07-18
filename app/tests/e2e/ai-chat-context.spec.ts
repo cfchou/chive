@@ -83,7 +83,6 @@ test("selected PDF text becomes citable context and clears when the selection co
   await expect(panel.getByRole("button", { name: "Remove Page 2 context; use whole document" })).toBeVisible();
   await expect(pageTwo.locator(".textLayer")).toBeVisible();
 
-  await input.fill("Explain the selection");
   await pageTwo.locator(".textLayer").evaluate((textLayer) => {
     const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT);
     const textNode = walker.nextNode();
@@ -97,6 +96,8 @@ test("selected PDF text becomes citable context and clears when the selection co
   });
   await expect(panel.getByRole("button", { name: "Remove Selection context; use whole document" })).toBeVisible();
 
+  await input.fill("Explain the selection");
+  await expect(panel.getByRole("button", { name: "Remove Selection context; use whole document" })).toBeVisible();
   await panel.getByRole("button", { name: "Send message" }).click();
   await expect(panel.getByText("Mock selection reply: the selection on page 2 is noted.", { exact: true })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Go to page 2" })).toBeVisible();
