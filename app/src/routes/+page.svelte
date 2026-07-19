@@ -6,6 +6,15 @@
   import DocumentTabBar from "../lib/ui/DocumentTabBar.svelte";
   import UnsavedChangesModal from "../lib/ui/UnsavedChangesModal.svelte";
   import ApplicationSettingsModal from "$lib/settings/ApplicationSettingsModal.svelte";
+  import RuntimeSettingsSection from "$lib/settings/RuntimeSettingsSection.svelte";
+  import { createApplicationSettingsRepository } from "$lib/settings/application-settings";
+  import {
+    createInMemoryRuntimeDiscovery,
+    createTauriRuntimeDiscovery,
+    emptyRuntimeDiscoveryReport,
+    type RuntimeDiscoveryReport,
+  } from "$lib/settings/runtime-discovery";
+  import { createRuntimeSettingsSession } from "$lib/settings/runtime-settings-session.svelte";
   import Toolbar from "../lib/ui/Toolbar.svelte";
   import ColorPlate from "../lib/ui/ColorPlate.svelte";
   import ToolPopover from "../lib/ui/ToolPopover.svelte";
@@ -369,6 +378,33 @@
   let settingsCommittedValue = $state("Initial value");
   let settingsDraftValue = $state("Initial value");
   let settingsModal = $state<{ focusInitialControl: () => void } | null>(null);
+  const appPersistence = createLocalStoragePersistence();
+  const browserRuntimeDiscovery = createInMemoryRuntimeDiscovery();
+  const runtimeDiscovery = isTauriRuntime()
+    ? createTauriRuntimeDiscovery()
+    : browserRuntimeDiscovery;
+  type RuntimeSettingsSession = ReturnType<typeof createRuntimeSettingsSession>;
+  let createdRuntimeSettingsSession: RuntimeSettingsSession | null = null;
+
+  function getRuntimeSettingsSession(): RuntimeSettingsSession {
+    createdRuntimeSettingsSession ??= createRuntimeSettingsSession({
+      repository: createApplicationSettingsRepository(appPersistence),
+      discovery: runtimeDiscovery,
+    });
+    return createdRuntimeSettingsSession;
+  }
+
+  async function setRuntimeDiscoveryFixture(report: RuntimeDiscoveryReport) {
+    browserRuntimeDiscovery.setReport(report);
+    await getRuntimeSettingsSession().rescanCommitted();
+    if (settingsOpen && !settingsFixtureEnabled) getRuntimeSettingsSession().open();
+  }
+
+  async function clearRuntimeDiscoveryFixture() {
+    browserRuntimeDiscovery.setReport(emptyRuntimeDiscoveryReport());
+    await getRuntimeSettingsSession().rescanCommitted();
+    if (settingsOpen && !settingsFixtureEnabled) getRuntimeSettingsSession().open();
+  }
 
   function openSettings(options?: { fixture?: boolean }) {
     if (unsavedPrompt) return;
@@ -378,18 +414,24 @@
     }
     settingsFixtureEnabled = options?.fixture === true;
     settingsDraftValue = settingsCommittedValue;
+    if (!settingsFixtureEnabled) getRuntimeSettingsSession().open();
     settingsOpen = true;
   }
 
   function cancelSettings() {
     if (!settingsOpen) return;
     settingsDraftValue = settingsCommittedValue;
+    if (!settingsFixtureEnabled) getRuntimeSettingsSession().discard();
     settingsOpen = false;
   }
 
-  function saveSettings() {
+  async function saveSettings() {
     if (!settingsOpen) return;
-    if (settingsFixtureEnabled) settingsCommittedValue = settingsDraftValue;
+    if (settingsFixtureEnabled) {
+      settingsCommittedValue = settingsDraftValue;
+    } else if (!(await getRuntimeSettingsSession().save())) {
+      return;
+    }
     settingsOpen = false;
   }
 
@@ -479,7 +521,11 @@
       undo: () => (annotationEditorUIManager as { undo?: () => void } | null)?.undo?.(),
       redo: () => (annotationEditorUIManager as { redo?: () => void } | null)?.redo?.(),
       openDroppedFilesForTest: openDroppedPdfPaths,
-      settings: { open: openSettings },
+      settings: {
+        open: openSettings,
+        setRuntimeDiscoveryFixture,
+        clearRuntimeDiscoveryFixture,
+      },
       tabs: {
         list: () =>
           documentSessions.map((session) => ({
@@ -577,6 +623,9 @@
         .then((unlisten) => (unlistenSingleInstance = unlisten))
         .catch(() => {});
     }
+    // Set up the PDF surface first. Creating this rune-backed session during component setup
+    // can let native test calls reach PDF.js before its editor layers are ready.
+    void getRuntimeSettingsSession().initialize();
     return () => {
       endFreeTextMoveSession();
       unlistenResize?.();
@@ -4813,7 +4862,6 @@
   let menuControls: AppMenuControls | null = null;
 
   const SIDEBAR_WIDTHS_STORAGE_KEY = "chive.sidebarWidths";
-  const appPersistence = createLocalStoragePersistence();
   // Initial read is synchronous so the sidebar paints at its saved width without
   // a flash; the value is the same JSON that appPersistence writes.
   let sidebarWidths = $state<SidebarWidths>(
@@ -5063,6 +5111,24 @@
     <span>Example setting</span>
     <input type="text" bind:value={settingsDraftValue} />
   </label>
+{/snippet}
+
+{#snippet runtimeSettingsContent()}
+  <RuntimeSettingsSection
+    draft={getRuntimeSettingsSession().draftSettings}
+    report={getRuntimeSettingsSession().draftReport}
+    selection={getRuntimeSettingsSession().draftSelection}
+    scanning={getRuntimeSettingsSession().scanning}
+    scanError={getRuntimeSettingsSession().scanError}
+    saveError={getRuntimeSettingsSession().saveError}
+    loadError={getRuntimeSettingsSession().loadStatus === "unsupported-version"
+      ? "These settings were created by a newer version of Chive and cannot be changed here."
+      : null}
+    onDraftAction={(action) => {
+      getRuntimeSettingsSession().updateDraft(action);
+    }}
+    onRescan={() => getRuntimeSettingsSession().rescan()}
+  />
 {/snippet}
 
 <div
@@ -5344,8 +5410,18 @@
     bind:this={settingsModal}
     sections={settingsFixtureEnabled
       ? [{ id: "test-fixture", label: "Test fixture", content: settingsFixtureContent }]
-      : []}
-    dirty={settingsFixtureEnabled && settingsDraftValue !== settingsCommittedValue}
+      : [
+          {
+            id: "local-agent-runtime",
+            label: "Local agent runtime",
+            content: runtimeSettingsContent,
+          },
+        ]}
+    dirty={settingsFixtureEnabled
+      ? settingsDraftValue !== settingsCommittedValue
+      : getRuntimeSettingsSession().dirty}
+    saving={!settingsFixtureEnabled && getRuntimeSettingsSession().saving}
+    saveBlocked={!settingsFixtureEnabled && getRuntimeSettingsSession().saveBlocked}
     onSave={saveSettings}
     onCancel={cancelSettings}
   />

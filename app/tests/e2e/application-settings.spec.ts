@@ -5,7 +5,7 @@ const settingsDialog = (page: Parameters<typeof openApp>[0]) =>
   page.locator("dialog.application-settings-modal");
 
 test.describe("Application Settings", () => {
-  test("the production surface opens as an empty modal through the debug seam", async ({ page }) => {
+  test("the production surface opens runtime settings through the debug seam", async ({ page }) => {
     await openApp(page);
 
     await page.evaluate(() => window.__pdfSpike!.settings.open());
@@ -14,12 +14,174 @@ test.describe("Application Settings", () => {
     await expect(dialog).toBeVisible();
     await expect(dialog).toHaveAttribute("aria-labelledby", "application-settings-title");
     await expect(dialog.getByRole("heading", { name: "Settings" })).toBeVisible();
-    await expect(dialog.getByText("No settings available", { exact: true })).toBeVisible();
+    await expect(dialog.getByRole("heading", { name: "Local agent runtime" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
     await expect(dialog.getByRole("navigation")).toHaveCount(0);
     await expect(dialog.getByRole("toolbar")).toHaveCount(0);
     await expect(page.locator(".toolbar").getByRole("button", { name: /settings/i })).toHaveCount(0);
     expect(await dialog.evaluate((element) => element.matches(":modal"))).toBe(true);
+  });
+
+  test("runtime discovery fixture displays every runtime and derives Codex", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() =>
+      window.__pdfSpike!.settings.setRuntimeDiscoveryFixture({
+        runtimes: [
+          {
+            status: "ready",
+            runtime: "claude-code",
+            executablePath: "/fixture/claude",
+            displayPath: "/fixture/claude",
+            version: "claude fixture",
+            source: "known-location",
+          },
+          {
+            status: "ready",
+            runtime: "codex",
+            executablePath: "/fixture/codex",
+            displayPath: "/fixture/codex",
+            version: "codex fixture",
+            source: "known-location",
+          },
+          {
+            status: "ready",
+            runtime: "opencode",
+            executablePath: "/fixture/opencode",
+            displayPath: "/fixture/opencode",
+            version: "opencode fixture",
+            source: "known-location",
+          },
+        ],
+      }),
+    );
+    await page.evaluate(() => window.__pdfSpike!.settings.open());
+
+    const dialog = settingsDialog(page);
+    await expect(dialog.getByText("Selected runtime: Codex.", { exact: false })).toBeVisible();
+    await expect(dialog.getByText("codex fixture", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("opencode fixture", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("claude fixture", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("/fixture/codex", { exact: true })).toBeVisible();
+  });
+
+  test("a derived runtime can be pinned for later scans", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() =>
+      window.__pdfSpike!.settings.setRuntimeDiscoveryFixture({
+        runtimes: [
+          { status: "unavailable", runtime: "codex", reason: "not-found" },
+          {
+            status: "ready",
+            runtime: "opencode",
+            executablePath: "/fixture/opencode",
+            displayPath: "/fixture/opencode",
+            version: "opencode fixture",
+            source: "known-location",
+          },
+          { status: "unavailable", runtime: "claude-code", reason: "not-found" },
+        ],
+      }),
+    );
+    await page.evaluate(() => window.__pdfSpike!.settings.open());
+    const dialog = settingsDialog(page);
+
+    await dialog.getByRole("button", { name: "Always use OpenCode" }).click();
+    await expect(dialog.getByText("User override.", { exact: false })).toBeVisible();
+    await dialog.getByRole("button", { name: "Save" }).click();
+
+    await page.evaluate(() =>
+      window.__pdfSpike!.settings.setRuntimeDiscoveryFixture({
+        runtimes: [
+          {
+            status: "ready",
+            runtime: "codex",
+            executablePath: "/fixture/codex",
+            displayPath: "/fixture/codex",
+            version: "codex fixture",
+            source: "known-location",
+          },
+          {
+            status: "ready",
+            runtime: "opencode",
+            executablePath: "/fixture/opencode",
+            displayPath: "/fixture/opencode",
+            version: "opencode fixture",
+            source: "known-location",
+          },
+          { status: "unavailable", runtime: "claude-code", reason: "not-found" },
+        ],
+      }),
+    );
+    await page.evaluate(() => window.__pdfSpike!.settings.open());
+
+    await expect(settingsDialog(page).getByText("Selected runtime: OpenCode.", { exact: false })).toBeVisible();
+    await expect(settingsDialog(page).getByText("User override.", { exact: false })).toBeVisible();
+  });
+
+  test("changing the Runtime Override clears an override for the previous executable", async ({
+    page,
+  }) => {
+    await openApp(page);
+    await page.evaluate(() => window.__pdfSpike!.settings.open());
+    const dialog = settingsDialog(page);
+
+    await dialog.getByRole("button", { name: "Use Codex" }).click();
+    await dialog.getByRole("textbox", { name: "Executable path" }).fill("/fixture/codex");
+    await dialog.getByRole("button", { name: "Use OpenCode" }).click();
+
+    await expect(dialog.getByRole("textbox", { name: "Executable path" })).toHaveValue("");
+    await expect(dialog.getByRole("combobox", { name: "Runtime" })).toHaveValue("opencode");
+  });
+
+  test("Rescan preserves the runtime chosen in the Executable Override editor", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() =>
+      window.__pdfSpike!.settings.setRuntimeDiscoveryFixture({
+        runtimes: [
+          {
+            status: "ready",
+            runtime: "codex",
+            executablePath: "/fixture/codex",
+            displayPath: "/fixture/codex",
+            version: "codex fixture",
+            source: "known-location",
+          },
+          {
+            status: "ready",
+            runtime: "opencode",
+            executablePath: "/fixture/opencode",
+            displayPath: "/fixture/opencode",
+            version: "opencode fixture",
+            source: "known-location",
+          },
+          { status: "unavailable", runtime: "claude-code", reason: "not-found" },
+        ],
+      }),
+    );
+    await page.evaluate(() => window.__pdfSpike!.settings.open());
+    const runtime = settingsDialog(page).getByRole("combobox", { name: "Runtime" });
+    await runtime.selectOption("opencode");
+
+    await settingsDialog(page).getByRole("button", { name: "Rescan" }).click();
+
+    await expect(runtime).toHaveValue("opencode");
+  });
+
+  test("a failed production Save keeps Settings open and announces the error", async ({ page }) => {
+    await openApp(page);
+    await page.evaluate(() => {
+      Storage.prototype.setItem = () => {
+        throw new Error("fixture storage failure");
+      };
+      window.__pdfSpike!.settings.open();
+    });
+    const dialog = settingsDialog(page);
+    await dialog.getByRole("button", { name: "Use Codex" }).click();
+
+    await dialog.getByRole("button", { name: "Save" }).click();
+
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("alert")).toHaveText("Settings could not be saved.");
   });
 
   test("the test fixture opens with its first setting focused", async ({ page }) => {
@@ -123,7 +285,9 @@ test.describe("Application Settings", () => {
     await page.keyboard.press("Meta+,");
 
     await expect(settingsDialog(page)).toBeVisible();
-    await expect(settingsDialog(page).getByText("No settings available", { exact: true })).toBeVisible();
+    await expect(
+      settingsDialog(page).getByRole("heading", { name: "Local agent runtime" }),
+    ).toBeVisible();
   });
 
   test("an unsaved-changes prompt replaces an open Settings modal", async ({ page }) => {
@@ -178,7 +342,7 @@ test.describe("Application Settings", () => {
     await loadFixture(page);
     await createFreeText(page, "selected annotation");
     await page.evaluate(() => window.__pdfSpike!.settings.open());
-    await expect(settingsDialog(page).getByRole("button", { name: "Close Settings" })).toBeFocused();
+    await expect(settingsDialog(page).getByRole("button", { name: "Use Codex" })).toBeFocused();
 
     await page.keyboard.press("Escape");
 
@@ -196,7 +360,7 @@ test.describe("Application Settings", () => {
     expect(before.selectedAnnotationKind).toBe("freetext");
 
     await page.evaluate(() => window.__pdfSpike!.settings.open());
-    await expect(settingsDialog(page).getByRole("button", { name: "Close Settings" })).toBeFocused();
+    await expect(settingsDialog(page).getByRole("button", { name: "Use Codex" })).toBeFocused();
 
     for (const key of ["Delete", "Backspace"] as const) {
       await page.keyboard.press(key);

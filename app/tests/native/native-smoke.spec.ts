@@ -1,4 +1,5 @@
 import { browser, expect } from "@wdio/globals";
+import { chmod, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PNG } from "pngjs";
 import { Key } from "webdriverio";
@@ -852,7 +853,9 @@ describe("native WKWebView PDF smoke", () => {
       async () =>
         app.execute(() => {
           const dialog = document.querySelector<HTMLDialogElement>("dialog.application-settings-modal");
-          const close = dialog?.querySelector<HTMLButtonElement>('button[aria-label="Close Settings"]');
+          const firstSetting = dialog?.querySelector<HTMLButtonElement>(
+            '[data-settings-content] button:not([disabled])',
+          );
           const save = dialog?.querySelector<HTMLButtonElement>("button.primary");
           const titleId = dialog?.getAttribute("aria-labelledby");
           return Boolean(
@@ -860,9 +863,9 @@ describe("native WKWebView PDF smoke", () => {
               dialog.matches(":modal") &&
               titleId === "application-settings-title" &&
               document.getElementById(titleId)?.textContent?.trim() === "Settings" &&
-              dialog.textContent?.includes("No settings available") &&
+              dialog.textContent?.includes("Local agent runtime") &&
               save?.disabled &&
-              document.activeElement === close,
+              document.activeElement === firstSetting,
           );
         }),
       { timeout: 10_000, timeoutMsg: "Cmd+, did not open focused native Application Settings" },
@@ -880,6 +883,64 @@ describe("native WKWebView PDF smoke", () => {
       { timeout: 10_000, timeoutMsg: "Cmd+W did not close native Application Settings" },
     );
     expect(await app.execute(() => window.__pdfSpike!.tabs.list())).toEqual(before);
+  });
+
+  it("probes a native Codex Executable Override through Application Settings", async () => {
+    const executablePath = "/tmp/chive native codex fixture";
+    await writeFile(
+      executablePath,
+      "#!/bin/sh\n[ \"$1\" = \"--version\" ] || exit 9\nprintf 'codex native fixture\\n'\n",
+    );
+    await chmod(executablePath, 0o755);
+
+    try {
+      await waitForPdfSpike();
+      await app.execute(() => window.__pdfSpike!.settings.open());
+      await app.waitUntil(
+        async () =>
+          app.execute(() =>
+            Boolean(
+              document.querySelector<HTMLInputElement>(
+                'dialog.application-settings-modal input[type="text"]',
+              ),
+            ),
+          ),
+        { timeout: 10_000, timeoutMsg: "Native Executable path input was not rendered" },
+      );
+      await app.execute((pathValue) => {
+        const input = document.querySelector<HTMLInputElement>(
+          'dialog.application-settings-modal input[type="text"]',
+        );
+        if (!input) throw new Error("Native Executable path input was not rendered");
+        input.value = pathValue;
+        input.dispatchEvent(new InputEvent("input", { bubbles: true, data: pathValue }));
+        const rescan = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent?.trim() === "Rescan",
+        );
+        if (!rescan) throw new Error("Native Rescan button was not rendered");
+        rescan.click();
+      }, executablePath);
+
+      await app.waitUntil(
+        async () =>
+          app.execute(() => {
+            const dialog = document.querySelector("dialog.application-settings-modal");
+            return Boolean(
+              dialog?.textContent?.includes("codex native fixture") &&
+                dialog.textContent.includes("/tmp/chive native codex fixture"),
+            );
+          }),
+        { timeout: 15_000, timeoutMsg: "Native runtime discovery did not return the fixture version" },
+      );
+      await app.execute(() => {
+        const cancel = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent?.trim() === "Cancel",
+        );
+        cancel?.click();
+      });
+    } finally {
+      await rm(executablePath, { force: true });
+    }
   });
 
   it("hides the Document Tab Bar in fullscreen while keyboard tab switching still works", async () => {

@@ -4,11 +4,13 @@
   type Props = {
     sections: readonly SettingsSection[];
     dirty: boolean;
-    onSave: () => void;
+    saving?: boolean;
+    saveBlocked?: boolean;
+    onSave: () => void | Promise<void>;
     onCancel: () => void;
   };
 
-  let { sections, dirty, onSave, onCancel }: Props = $props();
+  let { sections, dirty, saving = false, saveBlocked = false, onSave, onCancel }: Props = $props();
   let dialog = $state<HTMLDialogElement | null>(null);
   let closeButton = $state<HTMLButtonElement | null>(null);
   let previouslyFocused: HTMLElement | null = null;
@@ -78,8 +80,13 @@
 
   <footer class="settings-actions">
     <button type="button" onclick={onCancel}>Cancel</button>
-    <button class="primary" type="button" disabled={!dirty || sections.length === 0} onclick={onSave}>
-      Save
+    <button
+      class="primary"
+      type="button"
+      disabled={!dirty || sections.length === 0 || saving || saveBlocked}
+      onclick={onSave}
+    >
+      {saving ? "Saving…" : "Save"}
     </button>
   </footer>
 </dialog>
