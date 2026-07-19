@@ -94,7 +94,7 @@ Good:
 Bad:
 - This is a manual discipline, not an automated lint rule — nothing in
   `npm run check` catches a new colliding class name today.
-- A `pdfjs-dist` version bump (load-bearing pin, see root `CLAUDE.md`) could
+- A `pdfjs-dist` version bump (load-bearing pin, see root `AGENTS.md`) could
   introduce new class names or change existing ones; a bump should include a
   pass over recently-added app class names against the new bundle.
 

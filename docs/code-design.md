@@ -109,8 +109,8 @@ PDFs — not written by this project):
 ```mermaid
 flowchart LR
     You(["You"]) -->|open a PDF| App["chive"]
-    App -->|reads bytes| Disk[("PDF file\non disk")]
-    App -->|renders pages,\nlets you highlight /\ntype / draw| Screen(["screen"])
+    App -->|reads bytes| Disk[("PDF file<br>on disk")]
+    App -->|renders pages,<br>lets you highlight /<br>type / draw| Screen(["screen"])
     You -->|highlight, type, draw| App
     You -->|Save| App
     App -->|writes bytes back| Disk
@@ -130,10 +130,11 @@ bytes to and from disk through Tauri.
 ```mermaid
 flowchart TB
     subgraph Native["src-tauri/ — Rust native shell"]
-        RustCmds["lib.rs\nread_pdf(path)\nwrite_pdf_atomic(path, bytes)"]
+        PdfCmds["lib.rs<br>read_pdf(path)<br>write_pdf_atomic(path, bytes)"]
+        RuntimeScan["runtime_discovery.rs<br>scan(request) → report"]
     end
 
-    Page["src/routes/+page.svelte\n— THE ORCHESTRATOR —\n~4.6k lines: state, event handlers,\nmarkup, and styles, all in one file"]
+    Page["src/routes/+page.svelte<br>— THE ORCHESTRATOR —<br>state, event handlers,<br>markup, and styles"]
 
     subgraph PdfDomain["src/lib/pdf/ — PDF & annotation domain"]
         AnnotSidebar["annotation-sidebar.ts"]
@@ -160,7 +161,14 @@ flowchart TB
         Toast["Toast.svelte"]
     end
 
-    Menu["src/lib/tauri/menu.ts\ninstallAppMenu()\nnative File menu"]
+    subgraph Settings["src/lib/settings/ — app-wide configuration"]
+        SettingsRepo["application-settings.ts<br>versioned load / save"]
+        RuntimeDiscovery["runtime-discovery.ts<br>validate report / resolve selection"]
+        RuntimeSession["runtime-settings-session.svelte.ts<br>committed and draft state"]
+        RuntimeSection["RuntimeSettingsSection.svelte<br>settings presentation"]
+    end
+
+    Menu["src/lib/tauri/menu.ts<br>installAppMenu()<br>native File menu"]
 
     subgraph DebugAPI["src/lib/debug/ — test-driving surface"]
         SpikeAPI["spike-api.ts"]
@@ -169,23 +177,34 @@ flowchart TB
 
     Page -->|imports & calls| PdfDomain
     Page -->|imports & calls| UiShell
-    Page -->|invoke read_pdf / write_pdf_atomic| RustCmds
-    RustCmds -->|bytes or Result| Page
-    Menu -->|"openPdf / savePdf / savePdfAs\ncallbacks, passed in at mount"| Page
+    Page -->|opens, saves, discards| RuntimeSession
+    Page -->|renders with session state| RuntimeSection
+    RuntimeSession -->|load / save| SettingsRepo
+    RuntimeSession -->|scan| RuntimeDiscovery
+    RuntimeDiscovery -->|invoke discover_runtimes| RuntimeScan
+    RuntimeScan -->|serialized readiness report| RuntimeDiscovery
+    Page -->|invoke read_pdf / write_pdf_atomic| PdfCmds
+    PdfCmds -->|bytes or Result| Page
+    Menu -->|"openPdf / savePdf / savePdfAs<br>callbacks, passed in at mount"| Page
     Page -->|installSpikeDebugApi| DebugAPI
-    DebugAPI -.->|"exposes window.__pdfSpike,\ndriven by e2e & native tests"| Page
+    DebugAPI -.->|"exposes window.__pdfSpike,<br>driven by e2e & native tests"| Page
 ```
 
-`+page.svelte` is the hub: every other module is either a **pure data/logic
-module** it calls into (most of `lib/pdf/` and `lib/ui/`), a **presentational
-Svelte component** it hands data and callbacks to (`OutlineSidebar`,
-`BookmarksSidebar`, `AnnotationsSidebar`, `TabStrip`, `Toolbar`,
-`ColorPlate`, `ToolPopover`, `Toast`), or a **bridge** to something outside
-the webview (`lib/tauri/menu.ts` to the native menu, `lib/debug/*` to the
-`window.__pdfSpike` API that both the Playwright and native WebdriverIO
-suites drive). The pure modules have no pdf.js or DOM dependency and are
-what the unit tests exercise directly; the Svelte components take plain
-data in and fire plain callbacks out.
+`+page.svelte` is the top-level orchestrator. It calls pure data/logic modules
+(most of `lib/pdf/` and `lib/ui/`), hands plain data and callbacks to Svelte
+presentation modules, coordinates the app-wide Settings session, and crosses
+the native seams for file IO, runtime discovery, and the macOS menu. The debug
+modules expose `window.__pdfSpike`, which both Playwright and native WebdriverIO
+use to drive the real UI.
+
+The runtime settings slice is deliberately deep at two seams. Rust accepts one
+discovery request and returns one report while keeping candidate paths,
+filesystem checks, process deadlines, output limits, and redaction private.
+TypeScript exposes one `RuntimeDiscovery.scan` operation with native and
+in-memory adapters, then keeps selection and Settings policy on the frontend
+side. The Runtime Settings session owns the committed/draft split and scan
+races; `RuntimeSettingsSection.svelte` only renders state and sends semantic
+draft actions. See [ADR 0018](adr/0018-keep-runtime-discovery-native-and-selection-policy-in-typescript.md).
 
 > **Design tension worth knowing about:** `installSpikeDebugApi` runs
 > unconditionally at mount — there's no dev/prod build gate around it, and
@@ -255,17 +274,39 @@ pdf.js editor or a raw PDF annotation dictionary directly.
 sequenceDiagram
     participant WebView as WebView (Svelte app)
     participant Page as +page.svelte
+    participant Session as Runtime Settings session
+    participant Repository as Application Settings Repository
+    participant Discovery as RuntimeDiscovery adapter
     participant Tauri as Tauri native shell
 
     WebView->>Page: onMount()
-    Page->>Page: attach pointerdown / keydown /\nscroll / click listeners
+    Page->>Page: attach pointerdown / keydown /<br>scroll / click listeners
     Page->>Page: installSpikeDebugApi(window, {...})
     Note right of Page: window.__pdfSpike now exists
     Page->>Tauri: installAppMenu({ openPdf, savePdf, savePdfAs })
     Tauri-->>Page: menuControls
     Page->>Page: new ResizeObserver(...).observe(containerEl)
-    Note over Page: idle — waiting for a PDF to open
+    Page->>Session: initialize()
+    Session->>Repository: load()
+    Repository-->>Session: committed Application Settings
+    Session->>Discovery: scan(Executable Override)
+    alt native Tauri app
+        Discovery->>Tauri: invoke discover_runtimes
+        Tauri->>Tauri: run bounded scan on blocking pool
+        Tauri-->>Discovery: readiness report
+    else browser test or fixture
+        Discovery->>Discovery: return in-memory report
+    end
+    Discovery-->>Session: validated, priority-ordered report
+    Session->>Session: store committed report<br>and derive selected runtime
+    Note over Page,Session: PDF workspace and runtime settings are ready independently
 ```
+
+Opening the Application Settings Modal copies the committed settings and report
+into a draft lane. Rescan changes only that draft report. Cancel discards the
+draft; Save persists it and either promotes a matching draft report, retains a
+matching committed report, or refreshes discovery in the background. Request
+IDs ensure an older scan cannot replace a newer result.
 
 ---
 
@@ -297,7 +338,7 @@ sequenceDiagram
     PdfJs->>Page: eventBus "pagesinit"
     Page->>Page: loadOutline(pdfDocument)
     Page->>Page: refreshBookmarkRailLayout()
-    Page->>Page: queueAnnotationSidebarRefresh()\n(called 3x, staggered — pdf.js's text/\nannotation layers render async, one\npass isn't reliably enough)
+    Page->>Page: queueAnnotationSidebarRefresh()<br>(called 3x, staggered — pdf.js's text/<br>annotation layers render async, one<br>pass isn't reliably enough)
     Page-->>You: page renders, sidebars populate
 ```
 
@@ -318,14 +359,14 @@ sequenceDiagram
     participant Sidebar as AnnotationsSidebar.svelte
 
     Trigger->>Page: refreshAnnotationSidebar()
-    Page->>Persisted: read raw PDF annotations\n(prefer /QuadPoints, fall back to /Rect)
-    Persisted-->>Page: persisted AnnotationEntry[]\n(deleted / modified ones hidden)
+    Page->>Persisted: read raw PDF annotations<br>(prefer /QuadPoints, fall back to /Rect)
+    Persisted-->>Page: persisted AnnotationEntry[]<br>(deleted / modified ones hidden)
     Page->>Live: read annotationEditorUIManager.getEditors()
-    Note right of Live: skip editors that are just an\nunmodified mirror of a persisted\nentry — avoids duplicate sidebar entries
+    Note right of Live: skip editors that are just an<br>unmodified mirror of a persisted<br>entry — avoids duplicate sidebar entries
     Live-->>Page: live AnnotationEntry[]
-    Page->>Page: merge both lists, sort by\n(page, sortTop, sortLeft, label)
+    Page->>Page: merge both lists, sort by<br>(page, sortTop, sortLeft, label)
     Page->>Sidebar: annotationEntries = merged list
-    Sidebar->>Sidebar: groupAnnotationEntriesByPage()\nrender one section per page
+    Sidebar->>Sidebar: groupAnnotationEntriesByPage()<br>render one section per page
 ```
 
 A subtlety worth knowing: when a Live Annotation Sidebar Entry stands in
@@ -354,7 +395,7 @@ sequenceDiagram
     Page->>PdfJs: setTool("text") sets annotationEditorMode to FREETEXT
     You->>Page: type text, click away (blur)
     Page->>Page: normalizeFreeTextEditorLines(editorDiv)
-    Note right of Page: repairs a Shift+Enter DOM quirk\nbefore pdf.js reads it — see §11
+    Note right of Page: repairs a Shift+Enter DOM quirk<br>before pdf.js reads it — see §11
     Page->>PdfJs: editor.commit()
     PdfJs->>Store: writes the serialized annotation
     Page->>Page: refreshAnnotationSidebar()
@@ -364,7 +405,7 @@ sequenceDiagram
     Page->>PdfJs: pdfDocument.saveDocument()
     PdfJs->>Store: reads annotationStorage
     PdfJs-->>Page: new PDF bytes, annotation embedded
-    Page->>Page: writePdfOutlineState(bytes, ...)\npatches in bookmark / outline colors
+    Page->>Page: writePdfOutlineState(bytes, ...)<br>patches in bookmark / outline colors
     Page->>Rust: invoke("write_pdf_atomic", { path, bytes })
     Rust->>Disk: write temp file (.tmp)
     Rust->>Disk: copy existing file to .bak
@@ -374,7 +415,7 @@ sequenceDiagram
 
     You->>Page: reopen the file later
     Page->>PdfJs: getDocument(bytes) again
-    PdfJs-->>Page: the annotation now comes back as a\npersisted PDF annotation, not a live editor
+    PdfJs-->>Page: the annotation now comes back as a<br>persisted PDF annotation, not a live editor
 ```
 
 ---
@@ -391,17 +432,17 @@ for the reasoning behind it).
 
 ```mermaid
 flowchart TD
-    Start(["pointerdown in the PDF viewer"]) --> Q0{"On an editToolbar?\n(color / delete buttons)"}
+    Start(["pointerdown in the PDF viewer"]) --> Q0{"On an editToolbar?<br>(color / delete buttons)"}
     Q0 -->|yes| P0["let pdf.js handle it"]
-    Q0 -->|no| Q1{"Does this point land on an\nexisting annotation? (geometry\nlookup — ADR 0005)"}
+    Q0 -->|no| Q1{"Does this point land on an<br>existing annotation? (geometry<br>lookup — ADR 0005)"}
 
-    Q1 -->|no| Q3{"Tool armed,\nnothing selected?"}
-    Q1 -->|yes| Q2{"Is the pointer's actual DOM target\nINSIDE that annotation's rendered\ncontent — text glyphs, an ink\nstroke, a non-highlight editor?\n(a 'visual' hit, not just geometry)"}
+    Q1 -->|no| Q3{"Tool armed,<br>nothing selected?"}
+    Q1 -->|yes| Q2{"Is the pointer's actual DOM target<br>INSIDE that annotation's rendered<br>content — text glyphs, an ink<br>stroke, a non-highlight editor?<br>(a 'visual' hit, not just geometry)"}
 
-    Q2 -->|yes| Select["reserve the click:\nselect / edit the existing annotation\n(2nd click within 600ms & 8px = edit)"]
-    Q2 -->|"no — geometry-only,\nor it's a highlight\n(ADR 0015: highlights count\nas geometry, not visual)"| Q3
+    Q2 -->|yes| Select["reserve the click:<br>select / edit the existing annotation<br>(2nd click within 600ms & 8px = edit)"]
+    Q2 -->|"no — geometry-only,<br>or it's a highlight<br>(ADR 0015: highlights count<br>as geometry, not visual)"| Q3
 
-    Q3 -->|yes| Create["let the click through:\npdf.js creates a NEW annotation here"]
+    Q3 -->|yes| Create["let the click through:<br>pdf.js creates a NEW annotation here"]
     Q3 -->|no| Clear["clear any current selection"]
 ```
 
@@ -422,15 +463,15 @@ switch to selection mode (no tool) or use the sidebar instead.
 stateDiagram-v2
     [*] --> NoTool: app idle, no tool armed
     NoTool --> Creating: pick a tool, interact with the page
-    Creating --> LiveUnsaved: pdf.js creates an editor;\nvalue lives only in\nannotationStorage (in memory)
+    Creating --> LiveUnsaved: pdf.js creates an editor;<br>value lives only in<br>annotationStorage (in memory)
     LiveUnsaved --> Selected: click selects it
     Selected --> Editing: double-click / enterInEditMode()
     Editing --> LiveUnsaved: editor.commit()
-    LiveUnsaved --> Persisted: File > Save\n(saveDocument() embeds it\ninto the PDF bytes)
-    Persisted --> Selected: click a persisted annotation\n(pdf.js mirrors it into a live editor)
+    LiveUnsaved --> Persisted: File > Save<br>(saveDocument() embeds it<br>into the PDF bytes)
+    Persisted --> Selected: click a persisted annotation<br>(pdf.js mirrors it into a live editor)
     LiveUnsaved --> Deleted: Delete key / Delete Selected
     Persisted --> Deleted: Delete key / Delete Selected
-    Deleted --> [*]: hidden immediately (a local\npending-delete set), removed from\nthe PDF on next save
+    Deleted --> [*]: hidden immediately (a local<br>pending-delete set), removed from<br>the PDF on next save
 ```
 
 "Selected" here is what `CONTEXT.md` calls giving the entry **Annotation
@@ -450,11 +491,11 @@ the canonical shape from `innerText` before every commit path.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Clean: one div per line —\npdf.js's canonical shape
-    Clean --> Corrupted: user presses Shift+Enter,\ntypes more
-    Corrupted --> Normalized: normalizeFreeTextEditorLines()\nruns before Enter / Escape / blur commit
-    Normalized --> Clean: rebuilt from innerText,\none div per line again
-    Clean --> [*]: editor.commit() —\n#extractText joins the divs with a\nnewline, safe now the shape is canonical
+    [*] --> Clean: one div per line —<br>pdf.js's canonical shape
+    Clean --> Corrupted: user presses Shift+Enter,<br>types more
+    Corrupted --> Normalized: normalizeFreeTextEditorLines()<br>runs before Enter / Escape / blur commit
+    Normalized --> Clean: rebuilt from innerText,<br>one div per line again
+    Clean --> [*]: editor.commit() —<br>#extractText joins the divs with a<br>newline, safe now the shape is canonical
 ```
 
 This is one instance of a broader pattern: **`pdfjs-quirks.ts` is the one
@@ -474,15 +515,15 @@ width and highlight-editor pointer-events in the past.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Default: createDefaultDockState() —\nleft starts with outline, bookmarks,\nannotations; right starts empty
+    [*] --> Default: createDefaultDockState() —<br>left starts with outline, bookmarks,<br>annotations; right starts empty
 
     state "Tab visible on a side" as Visible
     state "Side hidden (collapsed)" as Hidden
 
     Default --> Visible
-    Visible --> Visible: moveTabToSide(tab, side, beforeTab)\n— drag a tab, same or other side
-    Visible --> Hidden: hideSide(side)\n(side-collapse button)
-    Hidden --> Visible: showSide(side) — edge-reopen button,\nor activateTab() on that side
+    Visible --> Visible: moveTabToSide(tab, side, beforeTab)<br>— drag a tab, same or other side
+    Visible --> Hidden: hideSide(side)<br>(side-collapse button)
+    Hidden --> Visible: showSide(side) — edge-reopen button,<br>or activateTab() on that side
 ```
 
 `left` and `right` each have their own independent `{ order, active,
@@ -506,17 +547,19 @@ seeing.
 
 ```mermaid
 flowchart TD
-    Unit["npm run test:unit\npure logic only: dock-state, sidebar-resize,\noutline-tree, colors, pdfjs-quirks, ..."]
-    Check["npm run check\nsvelte-check — types + a11y,\n0 errors / 0 warnings required"]
+    Rust["cargo fmt / clippy / test<br>native commands, discovery,<br>process lifecycle"]
+    Unit["npm run test:unit<br>pure logic and state:<br>PDF, UI, settings, runtime selection"]
+    Check["npm run check<br>svelte-check — types + a11y,<br>0 errors / 0 warnings required"]
     Build["npm run build"]
-    E2E["npm run test:e2e\nPlaywright + Chromium, ~90 tests driving\nreal pointer events via window.__pdfSpike"]
-    Native["npm run test:native\nreal Tauri app in WKWebView (macOS) via\nWebdriverIO — catches WebKit-only bugs\nbrowser tests miss"]
+    E2E["npm run test:e2e<br>Playwright + Chromium driving<br>the real UI via window.__pdfSpike"]
+    Native["npm run test:native<br>real Tauri app in WKWebView via<br>WebdriverIO — catches native-only bugs"]
 
-    Unit --> Check --> Build --> E2E --> Native
+    Rust --> Unit --> Check --> Build --> E2E --> Native
 ```
 
-Every step is required before considering a change to interactive/PDF code
-done (see root `CLAUDE.md`). The native step exists because pdf.js text
+Run the Rust checks whenever `src-tauri/` changes. The unit → check → build →
+browser → native sequence is the full app gate (see root `AGENTS.md`). The
+native step exists because pdf.js text
 extraction and annotation editing genuinely differ between Chromium and
 WKWebView — several bugs in this codebase's history only reproduced there
 (see [ADR 0006](adr/0006-test-pdfjs-in-native-tauri-webview-not-only-browser.md)
@@ -535,9 +578,10 @@ WKWebView — several bugs in this codebase's history only reproduced there
 | Native Outline Color (Document Outline Entries or Chive Bookmarks) | [ADR 0011](adr/0011-use-native-pdf-outline-colors.md) |
 | Adding any new CSS class name | [ADR 0014](adr/0014-treat-pdfjs-bundled-css-as-unscoped-and-adversarial.md) |
 | Sidebar width / resize / `.workspace` grid | [ADR 0016](adr/0016-sidebar-width-is-js-state-not-pure-css.md) |
+| Runtime discovery, probing, selection, or Runtime Settings state | [ADR 0018](adr/0018-keep-runtime-discovery-native-and-selection-policy-in-typescript.md) |
 | Why native WKWebView tests exist at all | [ADR 0006](adr/0006-test-pdfjs-in-native-tauri-webview-not-only-browser.md), [0007](adr/0007-add-native-wkwebview-smoke-tests-with-wdio-tauri.md) |
 | Why `app/` exists separately from the spike | [ADR 0013](adr/0013-transplant-spike-into-official-app.md) |
 
 For command references (dev server, test suites, pinned dependency
-versions), see the root `CLAUDE.md`, not this document — it changes more
+versions), see the root `AGENTS.md`, not this document — it changes more
 often than the architecture does.
