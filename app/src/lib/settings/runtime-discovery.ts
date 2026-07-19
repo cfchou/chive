@@ -1,3 +1,8 @@
+// This is the browser-side boundary for runtime discovery. It checks reports from native code,
+// puts runtimes back into Chive's fixed priority order, and applies the selection policy without
+// doing filesystem or process work. The in-memory version uses the same boundary so tests can
+// change discovery results without adding a second set of rules.
+
 import { invoke } from "@tauri-apps/api/core";
 import type { ApplicationSettings, RuntimeId } from "./application-settings";
 

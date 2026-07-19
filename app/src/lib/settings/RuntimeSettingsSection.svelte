@@ -1,3 +1,8 @@
+<!--
+  This section renders the current settings draft and sends user actions back to the session.
+  It does not load, save, or scan on its own. Its local runtime choice belongs only to the
+  Executable Override editor; the choice becomes part of the draft when a path is entered.
+-->
 <script lang="ts">
   import type { ApplicationSettings, RuntimeId } from "./application-settings";
   import type {
@@ -144,7 +149,12 @@
         value={editorRuntime}
         disabled={draft.runtimeOverride !== null}
         onchange={(event) => {
-          editorRuntime = event.currentTarget.value as RuntimeId;
+          const nextRuntime = event.currentTarget.value as RuntimeId;
+          if (draft.executableOverride && draft.executableOverride.runtime !== nextRuntime) {
+            // A path belongs to one runtime. Do not show the old path under another runtime.
+            onDraftAction({ type: "clear-executable-override" });
+          }
+          editorRuntime = nextRuntime;
           editorRuntimeChosen = true;
         }}
       >

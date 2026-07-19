@@ -1,3 +1,8 @@
+// Runtime discovery owns the filesystem and process work needed to find the three supported
+// command-line tools. Automatic discovery checks a fixed candidate order and stops at the first
+// working executable. Each version check and each runtime scan has a time limit, and captured
+// output is bounded and cleaned before it crosses into the settings UI.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -737,14 +742,24 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, MutexGuard};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+    // These tests launch real child processes with short deadlines. Run their fixtures one at a
+    // time so a hanging-process case cannot starve an unrelated version check on a busy machine.
+    static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    struct TestDir(PathBuf);
+    struct TestDir {
+        path: PathBuf,
+        _process_lock: MutexGuard<'static, ()>,
+    }
 
     impl TestDir {
         fn new() -> Self {
+            let process_lock = PROCESS_TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let unique = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock should follow the Unix epoch")
@@ -755,17 +770,20 @@ mod tests {
                 std::process::id()
             ));
             fs::create_dir_all(&path).expect("test directory should be created");
-            Self(path)
+            Self {
+                path,
+                _process_lock: process_lock,
+            }
         }
 
         fn path(&self) -> &Path {
-            &self.0
+            &self.path
         }
     }
 
     impl Drop for TestDir {
         fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
+            let _ = fs::remove_dir_all(&self.path);
         }
     }
 
@@ -906,17 +924,20 @@ mod tests {
         write_executable(
             &executable,
             &format!(
-                "#!/bin/sh\nprintf '%s' $$ > '{}'\nwhile :; do :; done\n",
+                // `exec sleep` stays as the direct child and hangs without starving parallel tests.
+                "#!/bin/sh\nprintf '%s' $$ > '{}'\nexec sleep 30\n",
                 pid_file.to_string_lossy()
             ),
         );
 
         let started = Instant::now();
         assert_eq!(
-            probe_version(&executable, Duration::from_millis(500)),
+            // Parallel tests launch several short-lived executables. Leave enough time for this
+            // child to write its PID before checking that the timeout kills and reaps it.
+            probe_version(&executable, Duration::from_secs(1)),
             Err(UnavailableReason::ProbeTimeout)
         );
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() < Duration::from_secs(3));
 
         let pid: i32 = fs::read_to_string(&pid_file)
             .expect("the child should write its pid")
@@ -936,11 +957,8 @@ mod tests {
         fs::create_dir_all(&first_bin).expect("first bin should be created");
         fs::create_dir_all(&second_bin).expect("second bin should be created");
         fs::create_dir_all(&third_bin).expect("third bin should be created");
-        write_executable(&first_bin.join("codex"), "#!/bin/sh\nwhile :; do :; done\n");
-        write_executable(
-            &second_bin.join("codex"),
-            "#!/bin/sh\nwhile :; do :; done\n",
-        );
+        write_executable(&first_bin.join("codex"), "#!/bin/sh\nexec sleep 30\n");
+        write_executable(&second_bin.join("codex"), "#!/bin/sh\nexec sleep 30\n");
         let marker = directory.path().join("third-ran");
         write_executable(
             &third_bin.join("codex"),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
   ApplicationSettings,
+  ApplicationSettingsLoadResult,
   ApplicationSettingsRepository,
 } from "$lib/settings/application-settings";
 import { createInMemoryRuntimeDiscovery } from "$lib/settings/runtime-discovery";
@@ -44,6 +45,97 @@ function readyCodex(version: string): RuntimeDiscoveryReport {
 }
 
 describe("Runtime Settings session", () => {
+  it("keeps an open draft when startup loading finishes later", async () => {
+    const loaded = deferred<ApplicationSettingsLoadResult>();
+    const session = createRuntimeSettingsSession({
+      repository: {
+        load() {
+          return loaded.promise;
+        },
+        async save() {
+          return true;
+        },
+      },
+      discovery: createInMemoryRuntimeDiscovery(readyCodex("startup")),
+    });
+
+    const initializing = session.initialize();
+    session.open();
+    session.updateDraft({
+      type: "set-executable-override",
+      runtime: "codex",
+      path: "/draft/codex",
+    });
+    loaded.resolve({
+      status: "current",
+      settings: { runtimeOverride: "opencode", executableOverride: null },
+    });
+
+    await initializing;
+
+    expect(session.committedSettings.runtimeOverride).toBe("opencode");
+    expect(session.draftSettings).toEqual({
+      runtimeOverride: null,
+      executableOverride: { runtime: "codex", path: "/draft/codex" },
+    });
+  });
+
+  it("loads stored settings after an early Rescan changes only the draft report", async () => {
+    const loaded = deferred<ApplicationSettingsLoadResult>();
+    const session = createRuntimeSettingsSession({
+      repository: {
+        load() {
+          return loaded.promise;
+        },
+        async save() {
+          return true;
+        },
+      },
+      discovery: createInMemoryRuntimeDiscovery(readyCodex("early rescan")),
+    });
+
+    const initializing = session.initialize();
+    session.open();
+    await session.rescan();
+    loaded.resolve({
+      status: "current",
+      settings: { runtimeOverride: "opencode", executableOverride: null },
+    });
+    await initializing;
+
+    expect(session.committedSettings.runtimeOverride).toBe("opencode");
+    expect(session.draftSettings.runtimeOverride).toBe("opencode");
+    expect(session.dirty).toBe(false);
+  });
+
+  it("keeps a draft Rescan result when startup scanning finishes later", async () => {
+    const startupStarted = deferred<void>();
+    const startupReport = deferred<RuntimeDiscoveryReport>();
+    let scanCount = 0;
+    const session = createRuntimeSettingsSession({
+      repository: repositoryWith({ runtimeOverride: null, executableOverride: null }),
+      discovery: {
+        async scan() {
+          scanCount += 1;
+          if (scanCount === 1) {
+            startupStarted.resolve();
+            return startupReport.promise;
+          }
+          return readyCodex("draft rescan");
+        },
+      },
+    });
+
+    const initializing = session.initialize();
+    await startupStarted.promise;
+    session.open();
+    await session.rescan();
+    startupReport.resolve(readyCodex("startup"));
+    await initializing;
+
+    expect(session.draftReport.runtimes[0]).toMatchObject({ version: "draft rescan" });
+  });
+
   it("clears a differently-associated Executable Override when the runtime changes", async () => {
     const session = createRuntimeSettingsSession({
       repository: repositoryWith({
@@ -184,6 +276,30 @@ describe("Runtime Settings session", () => {
     );
   });
 
+  it("clears a failed draft Rescan after a successful Save", async () => {
+    let scanCount = 0;
+    const session = createRuntimeSettingsSession({
+      repository: repositoryWith({ runtimeOverride: null, executableOverride: null }),
+      discovery: {
+        async scan() {
+          scanCount += 1;
+          if (scanCount === 1) return readyCodex("initial");
+          throw new Error("draft scan failed");
+        },
+      },
+    });
+    await session.initialize();
+    session.open();
+    await session.rescan();
+    session.updateDraft({ type: "set-runtime-override", runtime: "codex" });
+
+    expect(session.scanError).toBe("Runtime scan failed. Try Rescan.");
+    expect(await session.save()).toBe(true);
+    session.open();
+
+    expect(session.scanError).toBeNull();
+  });
+
   it("ignores a stale Rescan result", async () => {
     const first = deferred<RuntimeDiscoveryReport>();
     const second = deferred<RuntimeDiscoveryReport>();
@@ -209,6 +325,40 @@ describe("Runtime Settings session", () => {
     await staleScan;
 
     expect(session.draftReport.runtimes[0]).toMatchObject({ version: "latest" });
+  });
+
+  it("ignores a Rescan result after the Executable Override changes", async () => {
+    const staleReport = deferred<RuntimeDiscoveryReport>();
+    let scanCount = 0;
+    const session = createRuntimeSettingsSession({
+      repository: repositoryWith({ runtimeOverride: null, executableOverride: null }),
+      discovery: {
+        async scan() {
+          scanCount += 1;
+          return scanCount === 1 ? readyCodex("initial") : staleReport.promise;
+        },
+      },
+    });
+    await session.initialize();
+    session.open();
+    session.updateDraft({
+      type: "set-executable-override",
+      runtime: "codex",
+      path: "/old/codex",
+    });
+
+    const staleScan = session.rescan();
+    session.updateDraft({
+      type: "set-executable-override",
+      runtime: "codex",
+      path: "/new/codex",
+    });
+    staleReport.resolve(readyCodex("old path"));
+    await staleScan;
+
+    expect(session.draftSettings.executableOverride?.path).toBe("/new/codex");
+    expect(session.draftReport.runtimes[0]).toMatchObject({ version: "initial" });
+    expect(session.scanning).toBe(false);
   });
 
   it("keeps the draft after a Save failure", async () => {

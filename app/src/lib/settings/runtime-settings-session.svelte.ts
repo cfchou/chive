@@ -1,3 +1,8 @@
+// This session keeps saved settings and the open modal's draft separate. Settings and
+// discovery reports also have separate change counters because a Rescan changes the report,
+// not what the user has entered. Scan IDs keep slower, older requests from winning, while the
+// saved report input records which Executable Override produced each report.
+
 import type {
   ApplicationSettings,
   ApplicationSettingsLoadResult,
@@ -72,12 +77,26 @@ export function createRuntimeSettingsSession({
   let draftReport = $state<RuntimeDiscoveryReport>(emptyRuntimeDiscoveryReport());
   let committedReportInput = $state<ApplicationSettings["executableOverride"]>(null);
   let draftReportInput = $state<ApplicationSettings["executableOverride"]>(null);
+  // Startup runs in the background. These counters let it fill untouched state without
+  // replacing newer settings or a newer report in the modal.
+  let draftSettingsRevision = 0;
+  let draftReportRevision = 0;
   let draftScanId = 0;
   let committedScanId = 0;
   let scanning = $state(false);
   let saving = $state(false);
   let scanError = $state<string | null>(null);
   let saveError = $state<string | null>(null);
+
+  function replaceDraftSettings(nextSettings: ApplicationSettings): void {
+    const reportInputChanged = !sameExecutableOverride(
+      draftSettings.executableOverride,
+      nextSettings.executableOverride,
+    );
+    draftSettings = nextSettings;
+    draftSettingsRevision += 1;
+    if (reportInputChanged) draftReportRevision += 1;
+  }
 
   async function scanCommitted(input: ApplicationSettings["executableOverride"]): Promise<void> {
     const scanId = ++committedScanId;
@@ -135,14 +154,20 @@ export function createRuntimeSettingsSession({
     async initialize() {
       if (initialized) return;
       initialized = true;
+      const untouchedDraftSettingsRevision = draftSettingsRevision;
+      const untouchedDraftReportRevision = draftReportRevision;
       const loaded = await repository.load();
       loadStatus = loaded.status;
       committedSettings = copySettings(loaded.settings);
-      draftSettings = copySettings(loaded.settings);
+      if (draftSettingsRevision === untouchedDraftSettingsRevision) {
+        draftSettings = copySettings(loaded.settings);
+      }
       // A failed probe must not stop the user from opening Settings and correcting the path.
       await scanCommitted(copyExecutableOverride(committedSettings.executableOverride));
-      draftReport = committedReport;
-      draftReportInput = copyExecutableOverride(committedReportInput);
+      if (draftReportRevision === untouchedDraftReportRevision) {
+        draftReport = committedReport;
+        draftReportInput = copyExecutableOverride(committedReportInput);
+      }
     },
     open() {
       draftSettings = copySettings(committedSettings);
@@ -153,7 +178,7 @@ export function createRuntimeSettingsSession({
     updateDraft(action: RuntimeSettingsDraftAction): boolean {
       if (action.type === "set-runtime-override") {
         const executableOverride = draftSettings.executableOverride;
-        draftSettings = {
+        replaceDraftSettings({
           runtimeOverride: action.runtime,
           executableOverride:
             action.runtime !== null &&
@@ -161,11 +186,11 @@ export function createRuntimeSettingsSession({
             executableOverride.runtime !== action.runtime
               ? null
               : executableOverride,
-        };
+        });
         return true;
       }
       if (action.type === "clear-executable-override" || action.path.trim().length === 0) {
-        draftSettings = { ...draftSettings, executableOverride: null };
+        replaceDraftSettings({ ...draftSettings, executableOverride: null });
         return true;
       }
       if (
@@ -174,24 +199,35 @@ export function createRuntimeSettingsSession({
       ) {
         return false;
       }
-      draftSettings = {
+      replaceDraftSettings({
         ...draftSettings,
         executableOverride: { runtime: action.runtime, path: action.path },
-      };
+      });
       return true;
     },
     async rescan() {
+      draftReportRevision += 1;
       const scanId = ++draftScanId;
       const input = copyExecutableOverride(draftSettings.executableOverride);
       scanning = true;
       scanError = null;
       try {
         const report = await discovery.scan(input);
-        if (scanId !== draftScanId) return;
+        if (
+          scanId !== draftScanId ||
+          !sameExecutableOverride(input, draftSettings.executableOverride)
+        ) {
+          return;
+        }
         draftReport = report;
         draftReportInput = input;
       } catch {
-        if (scanId === draftScanId) scanError = "Runtime scan failed. Try Rescan.";
+        if (
+          scanId === draftScanId &&
+          sameExecutableOverride(input, draftSettings.executableOverride)
+        ) {
+          scanError = "Runtime scan failed. Try Rescan.";
+        }
       } finally {
         if (scanId === draftScanId) scanning = false;
       }
@@ -228,6 +264,7 @@ export function createRuntimeSettingsSession({
           return false;
         }
         committedSettings = copySettings(nextSettings);
+        scanError = null;
         if (sameExecutableOverride(draftReportInput, nextSettings.executableOverride)) {
           committedReport = draftReport;
           committedReportInput = copyExecutableOverride(draftReportInput);

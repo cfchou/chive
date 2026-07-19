@@ -167,6 +167,20 @@ test.describe("Application Settings", () => {
     await expect(runtime).toHaveValue("opencode");
   });
 
+  test("changing the Executable Override runtime clears the previous runtime's path", async ({
+    page,
+  }) => {
+    await openApp(page);
+    await page.evaluate(() => window.__pdfSpike!.settings.open());
+    const dialog = settingsDialog(page);
+    const executablePath = dialog.getByRole("textbox", { name: "Executable path" });
+    await executablePath.fill("/fixture/codex");
+
+    await dialog.getByRole("combobox", { name: "Runtime" }).selectOption("opencode");
+
+    await expect(executablePath).toHaveValue("");
+  });
+
   test("a failed production Save keeps Settings open and announces the error", async ({ page }) => {
     await openApp(page);
     await page.evaluate(() => {
