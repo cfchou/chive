@@ -104,7 +104,7 @@ now does? No evidence yet that this is needed.
 - Existing double-click-to-edit specs for free-text and ink pass unmodified,
   confirming visual-hit routing is untouched for those kinds.
 - Native WKWebView smoke suite re-run green (annotation pointer behavior is
-  explicitly not trusted from browser tests alone; see root `CLAUDE.md` and
+  explicitly not trusted from browser tests alone; see root `AGENTS.md` and
   ADR 0006/0007).
 - Commit `e5dbc6e`.
 - Required checks: `npm run check`, `npm run build`, `npm run test:e2e`,

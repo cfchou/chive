@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod runtime_discovery;
+
 #[tauri::command]
 fn read_pdf(path: String) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|error| error.to_string())
@@ -29,6 +31,15 @@ fn write_pdf_atomic(path: String, bytes: Vec<u8>) -> Result<(), String> {
         let _ = fs::remove_file(&temp);
         error.to_string()
     })
+}
+
+#[tauri::command]
+async fn discover_runtimes(
+    request: runtime_discovery::RuntimeDiscoveryRequest,
+) -> Result<runtime_discovery::RuntimeDiscoveryReport, String> {
+    tauri::async_runtime::spawn_blocking(move || runtime_discovery::scan(request))
+        .await
+        .map_err(|_| "Runtime discovery task failed".to_string())
 }
 
 fn backup_path(target: &Path) -> PathBuf {
@@ -76,7 +87,11 @@ pub fn run() {
         .plugin(tauri_plugin_wdio_webdriver::init());
 
     builder
-        .invoke_handler(tauri::generate_handler![read_pdf, write_pdf_atomic])
+        .invoke_handler(tauri::generate_handler![
+            read_pdf,
+            write_pdf_atomic,
+            discover_runtimes
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -3,6 +3,7 @@ import type { BookmarkEntry } from "../pdf/bookmarks";
 import type { FreeTextColorName, HighlightColorName, InkColorName } from "../pdf/colors";
 import type { OutlineEntry } from "../pdf/outline-tree";
 import type { EditorTool } from "../pdf/pdfjs-quirks";
+import type { RuntimeDiscoveryReport } from "../settings/runtime-discovery";
 
 // The app's automated tests (Playwright in tests/e2e, native WKWebView in
 // tests/native) run against the real UI but cannot reach into Svelte component
@@ -50,6 +51,8 @@ export type SpikeDebugApi = {
   openDroppedFilesForTest: (paths: string[]) => Promise<void>;
   settings: {
     open: (options?: { fixture?: boolean }) => void;
+    setRuntimeDiscoveryFixture: (report: RuntimeDiscoveryReport) => Promise<void>;
+    clearRuntimeDiscoveryFixture: () => Promise<void>;
   };
   tabs: TabsDebugApi;
 };
