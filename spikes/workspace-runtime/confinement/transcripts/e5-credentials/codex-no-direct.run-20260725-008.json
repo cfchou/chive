@@ -1,0 +1,15 @@
+{
+  "$schema": "https://nono.sh/schemas/nono-profile.schema.json",
+  "extends": "nolabs-ai/codex",
+  "meta": {
+    "name": "e5-codex-no-direct-run-20260725-008",
+    "version": "0.1.0",
+    "description": "E5 test profile that keeps the selected Codex profile but denies its saved login file",
+    "author": "Chive"
+  },
+  "filesystem": {
+    "deny": [
+      "$HOME/.codex/auth.json"
+    ]
+  }
+}

@@ -1,0 +1,117 @@
+{
+  "run_id": "run-20260725-007",
+  "source": "sanitized summaries from `nono audit show <session-id> --json`",
+  "integrity": "all nine counted sessions passed record, event-count, ledger-chain, and session-digest verification",
+  "sessions": [
+    {
+      "runtime": "Codex 0.145.0",
+      "network_choice": "open",
+      "session_id": "236bd04908863559",
+      "exit_code": 0,
+      "agent_reply": "ALLOWED",
+      "network_events": [],
+      "note": "Open mode uses direct network access, so nono's proxy audit has no network events. The agent's curl returned HTTP 200."
+    },
+    {
+      "runtime": "Codex 0.145.0",
+      "network_choice": "agent-only",
+      "session_id": "55152af2b5f155dd",
+      "exit_code": 0,
+      "agent_reply": "BLOCKED",
+      "network_events": [
+        { "decision": "allow", "target": "chatgpt.com", "count": 22 },
+        { "decision": "deny", "target": "ab.chatgpt.com", "count": 1 },
+        { "decision": "deny", "target": "example.com", "count": 1 }
+      ]
+    },
+    {
+      "runtime": "Codex 0.145.0",
+      "network_choice": "restricted",
+      "session_id": "843e8f68bc53c1be",
+      "exit_code": 0,
+      "agent_reply": "example.com=ALLOWED\nwww.iana.org=BLOCKED",
+      "network_events": [
+        { "decision": "allow", "target": "chatgpt.com", "count": 25 },
+        { "decision": "allow", "target": "example.com", "count": 1 },
+        { "decision": "deny", "target": "ab.chatgpt.com", "count": 1 },
+        { "decision": "deny", "target": "www.iana.org", "count": 1 }
+      ]
+    },
+    {
+      "runtime": "Claude Code 2.1.218",
+      "network_choice": "open",
+      "session_id": "2abc18a9e68b6d06",
+      "exit_code": 0,
+      "agent_reply": "ALLOWED",
+      "network_events": [],
+      "note": "Open mode uses direct network access, so nono's proxy audit has no network events. The agent's curl returned HTTP 200."
+    },
+    {
+      "runtime": "Claude Code 2.1.218",
+      "network_choice": "agent-only",
+      "session_id": "4265bb276708d9a0",
+      "exit_code": 0,
+      "agent_reply": "BLOCKED",
+      "network_events": [
+        { "decision": "allow", "target": "api.anthropic.com", "count": 12 },
+        { "decision": "deny", "target": "example.com", "count": 1 },
+        { "decision": "deny", "target": "http-intake.logs.us5.datadoghq.com", "count": 1 }
+      ]
+    },
+    {
+      "runtime": "Claude Code 2.1.218",
+      "network_choice": "restricted",
+      "session_id": "fcd6f9fc053d2bcf",
+      "exit_code": 0,
+      "agent_reply": "example.com=ALLOWED\nwww.iana.org=BLOCKED",
+      "network_events": [
+        { "decision": "allow", "target": "api.anthropic.com", "count": 12 },
+        { "decision": "allow", "target": "example.com", "count": 1 },
+        { "decision": "deny", "target": "http-intake.logs.us5.datadoghq.com", "count": 1 },
+        { "decision": "deny", "target": "www.iana.org", "count": 1 }
+      ]
+    },
+    {
+      "runtime": "OpenCode 1.18.4",
+      "network_choice": "open",
+      "session_id": "4b975100c1277c65",
+      "exit_code": 0,
+      "agent_reply": "ALLOWED",
+      "network_events": [],
+      "note": "Open mode uses direct network access, so nono's proxy audit has no network events. The agent's curl returned HTTP 200."
+    },
+    {
+      "runtime": "OpenCode 1.18.4",
+      "network_choice": "agent-only",
+      "session_id": "d05242eaf105e5c4",
+      "exit_code": 0,
+      "agent_reply": "BLOCKED",
+      "network_events": [
+        { "decision": "allow", "target": "api.githubcopilot.com", "count": 2 },
+        { "decision": "deny", "target": "example.com", "count": 1 },
+        { "decision": "deny", "target": "mcp.exa.ai", "count": 2 }
+      ]
+    },
+    {
+      "runtime": "OpenCode 1.18.4",
+      "network_choice": "restricted",
+      "session_id": "0d56ca721b2b7a89",
+      "exit_code": 0,
+      "agent_reply": "example.com=ALLOWED\nwww.iana.org=BLOCKED",
+      "network_events": [
+        { "decision": "allow", "target": "api.githubcopilot.com", "count": 2 },
+        { "decision": "allow", "target": "example.com", "count": 1 },
+        { "decision": "deny", "target": "mcp.exa.ai", "count": 2 },
+        { "decision": "deny", "target": "www.iana.org", "count": 1 }
+      ]
+    }
+  ],
+  "superseded_attempts": [
+    {
+      "runtime": "Codex 0.145.0",
+      "network_choice": "agent-only",
+      "session_id": "caade216c7b77faf",
+      "reason": "The prompt put a separate period after the curl URL, so Codex also tried the meaningless host `.`. The corrected attempt is the counted result."
+    }
+  ]
+}

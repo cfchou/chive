@@ -1,0 +1,72 @@
+{
+  "run_id": "run-20260725-006",
+  "source": "sanitized summary of the loopback-only nono proxy log",
+  "proxy": {
+    "listen": "127.0.0.1",
+    "port": 54181,
+    "authentication": "disabled for this short-lived local observation helper"
+  },
+  "scenarios": [
+    {
+      "runtime": "Codex 0.145.0",
+      "scenario": "login status",
+      "exit_code": 0,
+      "hosts": []
+    },
+    {
+      "runtime": "Codex 0.145.0",
+      "scenario": "first model turn",
+      "exit_code": 0,
+      "hosts": ["chatgpt.com", "ab.chatgpt.com"]
+    },
+    {
+      "runtime": "Codex 0.145.0",
+      "scenario": "second immediate model turn",
+      "exit_code": 0,
+      "hosts": ["chatgpt.com", "ab.chatgpt.com"]
+    },
+    {
+      "runtime": "Claude Code 2.1.218",
+      "scenario": "auth status",
+      "exit_code": 0,
+      "hosts": []
+    },
+    {
+      "runtime": "Claude Code 2.1.218",
+      "scenario": "first model turn",
+      "exit_code": 0,
+      "hosts": [
+        "api.anthropic.com",
+        "platform.claude.com",
+        "http-intake.logs.us5.datadoghq.com"
+      ]
+    },
+    {
+      "runtime": "Claude Code 2.1.218",
+      "scenario": "second immediate model turn",
+      "exit_code": 0,
+      "hosts": [
+        "api.anthropic.com",
+        "http-intake.logs.us5.datadoghq.com"
+      ]
+    },
+    {
+      "runtime": "OpenCode 1.18.4",
+      "scenario": "auth list",
+      "exit_code": 0,
+      "hosts": []
+    },
+    {
+      "runtime": "OpenCode 1.18.4",
+      "scenario": "first model turn",
+      "exit_code": 0,
+      "hosts": ["api.githubcopilot.com", "mcp.exa.ai"]
+    },
+    {
+      "runtime": "OpenCode 1.18.4",
+      "scenario": "second immediate model turn",
+      "exit_code": 0,
+      "hosts": ["api.githubcopilot.com", "mcp.exa.ai"]
+    }
+  ]
+}

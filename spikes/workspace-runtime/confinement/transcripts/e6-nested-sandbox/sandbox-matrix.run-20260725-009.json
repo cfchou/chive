@@ -1,0 +1,75 @@
+{
+  "run_id": "run-20260725-009",
+  "result": "PASS",
+  "platform": "macOS 26.5.2",
+  "nono": {
+    "path": "/opt/homebrew/bin/nono",
+    "version": "0.69.0",
+    "preflight": "PASS"
+  },
+  "runtimes": {
+    "codex": {
+      "version": "0.145.0",
+      "profile": "nolabs-ai/codex",
+      "inner_sandbox_available": true,
+      "inner_requested": {
+        "result": "sandbox_apply failed; marker and pwd commands did not run",
+        "error": "sandbox-exec: sandbox_apply: Operation not permitted",
+        "audit_session": "6c3a9dc1ccd9286c",
+        "audit_event_count": 30,
+        "audit_verified": true
+      },
+      "outer_only": {
+        "setting": "--dangerously-bypass-approvals-and-sandbox",
+        "result": "shell command completed in the session workspace",
+        "audit_session": "10a63278c384341f",
+        "audit_event_count": 26,
+        "audit_verified": true
+      }
+    },
+    "claude": {
+      "version": "2.1.218",
+      "profile": "nolabs-ai/claude",
+      "inner_sandbox_available": true,
+      "inner_requested": {
+        "setting": "sandbox.enabled=true, failIfUnavailable=true, allowUnsandboxedCommands=false",
+        "result": "Bash sandbox failed to initialize; pwd did not run",
+        "error": "EPERM while binding the session srt-mux Unix socket",
+        "audit_session": "c1bad590faf86492",
+        "audit_event_count": 16,
+        "audit_verified": true
+      },
+      "outer_only": {
+        "setting": "sandbox.enabled=false in explicit one-run settings",
+        "result": "Bash command completed in the session workspace",
+        "audit_session": "ef791cfcad35b8bf",
+        "audit_event_count": 15,
+        "audit_verified": true
+      }
+    },
+    "opencode": {
+      "version": "1.18.4",
+      "profile": "opencode-0723a",
+      "inner_sandbox_available": false,
+      "source_commit": "62e4641235d7847dadc60da37cca8a023dd54fc1",
+      "source_result": "permission checks and normal child process spawn; no OS sandbox option",
+      "outer_only": {
+        "setting": "no inner OS-sandbox setting; --pure and --auto keep their separate meanings",
+        "result": "shell command completed in the session workspace",
+        "audit_session": "0be6a696403737da",
+        "audit_event_count": 7,
+        "audit_verified": true
+      }
+    }
+  },
+  "excluded_attempts": [
+    {
+      "audit_session": "661d36fb9c1539de",
+      "reason": "Codex returned the expected path but exposed no shell tool call or side effect proving that pwd ran"
+    },
+    {
+      "audit_session": "c7c738a2412a043e",
+      "reason": "relative Claude settings path was not found after nono changed the working directory"
+    }
+  ]
+}
