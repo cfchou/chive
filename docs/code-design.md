@@ -1,7 +1,7 @@
 # Code Design: `app/`
 
 Scope: this document covers **`app/` only** — the official Tauri +
-SvelteKit implementation. `pdf-annotation-spike/` is an earlier, intact
+SvelteKit implementation. `spikes/pdf-annotation-spike/` is an earlier, intact
 prototype kept as a reference and is not described here; see
 [ADR 0013](adr/0013-transplant-spike-into-official-app.md) for why the two
 are kept separate.

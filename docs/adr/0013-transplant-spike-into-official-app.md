@@ -6,7 +6,7 @@ Date: 2026-07-08
 
 ## Context
 
-`pdf-annotation-spike/` proved the product architecture (PDF.js 6 renders and
+`spikes/pdf-annotation-spike/` proved the product architecture (PDF.js 6 renders and
 serializes annotations into the PDF bytes; Tauri 2 does native file IO; native
 outline entries carry bookmarks and `/C` colors). Its regression suites — 46
 unit, 76 Playwright, 4 native WKWebView tests — encode dozens of hard-won

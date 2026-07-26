@@ -127,7 +127,7 @@ Sort position must be a property of the *annotation identity*, not of whichever 
 
 ## Implementation Notes
 
-The spike has helpers for these jobs in `pdf-annotation-spike/src/routes/+page.svelte`:
+The spike has helpers for these jobs in `spikes/pdf-annotation-spike/src/routes/+page.svelte`:
 
 - `annotationViewportRects()`: converts `/QuadPoints` or `/Rect` into viewport rectangles
 - `textForPdfAnnotation()`: extracts snippet text by intersecting annotation rectangles with page text
