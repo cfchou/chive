@@ -57,11 +57,14 @@ Chive will:
 
 - save and launch a canonical absolute path to nono instead of relying on the
   GUI app's `PATH`;
+- record the installation source and executable hash instead of treating an ad
+  hoc code signature as publisher identity;
 - check the nono version and run its sandbox preflight;
 - validate the selected profile and record whether it comes from a pack or the
   user's profile directory;
-- treat changes to the executable, pack lockfile, packed profile, or selected
-  user profile as invalidating earlier validation;
+- treat changes to the executable, pack lockfile, packed profile, selected user
+  profile, or mutable runtime path resolved from that profile as invalidating
+  earlier validation;
 - pass the workspace as both a read-write grant and the child process's current
   directory;
 - pass standard input, standard output, standard error, and the child exit code
@@ -73,7 +76,7 @@ Chive will:
 
 A child can leave the group with `setsid()` or `setpgid()`. The current adapter
 does not prevent this and cannot stop such a process by signalling the original
-group. Complete cleanup of detached processes is unresolved. #32 must choose
+group. Cleanup of detached processes remains unresolved. #32 must choose
 and test a stronger lifecycle boundary before Chive promises that cancellation
 stops every command an agent starts.
 

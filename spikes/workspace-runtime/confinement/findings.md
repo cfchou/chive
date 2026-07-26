@@ -1,7 +1,7 @@
 # SP1 Confinement Findings
 
-Status: **Complete. The installed-nono architecture decision is GO. Complete
-cleanup of processes that detach from Chive's process group is unresolved.**
+Status: **Complete. The installed-nono architecture decision is GO. Cleanup
+of processes that detach from Chive's process group remains unresolved.**
 
 Issue: [#47](https://github.com/cfchou/chive/issues/47)
 
@@ -61,6 +61,10 @@ every valid runtime installation.
 The tested nono version is 0.69.0. A different nono version, executable hash,
 pack lockfile, packed-profile hash, or selected user-profile hash makes this
 evidence stale and requires validation again.
+
+The tested executable came from the `homebrew/core` 0.69.0 bottle. E0 records
+the Homebrew bottle and upstream source checksums. Its ad hoc code signature is
+not treated as publisher proof.
 
 The repository does not keep Cargo build output. Rebuild the spike adapter from
 the Chive repository root with:
@@ -161,6 +165,10 @@ additional OS sandboxes.
 - Support exactly nono 0.69.0 until another version passes the checks.
 - Save readiness evidence keyed by executable, lockfile, packed-profile, and
   user-profile hashes.
+- Resolve and record mutable runtime paths referenced by a selected profile,
+  such as mise `latest` links; a changed target invalidates readiness.
+- Canonicalize the configured nono path and verify its saved hash before every
+  launch accepted as production-ready.
 - Show profile source and important access; do not hide short-name shadowing.
 - Set `NONO_NO_UPDATE_CHECK=1` and do not pull, update, wire, or repair packs
   during a normal runtime launch.
