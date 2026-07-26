@@ -1,6 +1,9 @@
 #!/bin/sh
 set -u
 
+# This checks children that stay in the adapter's process group. A separate
+# check covers programs that use setsid() to leave that group.
+
 if [ "$#" -ne 4 ]; then
   echo "usage: run-process-cleanup.sh <harness> <nono> <profile> <workspace>" >&2
   exit 2
@@ -53,7 +56,8 @@ cleanup_recorded_processes() {
   wait "$wrapper" 2>/dev/null || true
 }
 
-# Stops the wrapper with one signal and reports any descendants left behind.
+# Stops the wrapper group with one signal and checks the children recorded
+# before the signal.
 run_case() {
   signal=$1
 

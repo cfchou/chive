@@ -1,7 +1,7 @@
 # SP1 Confinement Findings
 
-Status: **Complete. E0, E3, E4, E5, E6, E7, and E8 passed. The final
-architecture decision is GO.**
+Status: **Complete. The installed-nono architecture decision is GO. Complete
+cleanup of processes that detach from Chive's process group is unresolved.**
 
 Issue: [#47](https://github.com/cfchou/chive/issues/47)
 
@@ -40,7 +40,8 @@ mean the production Tauri adapter is already implemented.
 | E5 credentials | **PASS** | All three agents worked with their existing saved login state. The tested nono API-key routes did not replace those logins. |
 | E6 one OS sandbox | **PASS** | Nono remained the outer macOS sandbox. Codex and Claude disabled their inner OS sandboxes; the tested OpenCode version has none around its shell process. |
 | E7 observed hosts | **PASS** | Each selected runtime setup has versioned host observations from an account check and two model turns. |
-| E8 installed dependency | **PASS** | Installed-stack checks, launch without registry access, input/output, exit status, cancellation, forced stop, and descendant cleanup passed. |
+| E8 installed dependency | **PASS** | Installed-stack checks, launch without registry access, input/output, exit status, and cancellation of processes that stayed in the adapter group passed. |
+| E8 detached-process follow-up | **FAIL** | A double-forked helper called `setsid()`, left the adapter group, and survived group-targeted cancellation. The test then killed the exact recorded PID. |
 
 ## Installed stack
 
@@ -83,10 +84,16 @@ Codex and Claude Code used that current directory. OpenCode 1.18.4 also needed
 its documented `--dir <workspace>` argument so its own project selection agreed
 with the process current directory.
 
-The adapter owns one Unix process group containing nono, the coding agent, and
-all commands started below it. Normal cancellation sends TERM to the group.
-Forced stop sends KILL to the same group. The E8 checks left no recorded
-descendants running in either case.
+The adapter owns one Unix process group. Nono, the coding agent, and ordinary
+child processes inherit it. Normal cancellation sends TERM to the group.
+Forced stop sends KILL to the same group. The first E8 check left no recorded
+processes from that group running in either case.
+
+This is not a complete process-tree boundary. A hostile helper called
+`setsid()`, double-forked, moved into another process group, and survived the
+signal sent to the adapter group. The follow-up test cleaned up the exact
+recorded daemon PID after proving the failure. The current spike therefore
+must not claim that cancellation stops every command an agent starts.
 
 ## Network choices
 
@@ -159,7 +166,10 @@ additional OS sandboxes.
   during a normal runtime launch.
 - Pass the workspace grant and current directory together.
 - Build the final runtime-specific Codex, Claude Code, and OpenCode commands.
-- Own one process group and target the whole group for TERM and KILL.
+- Own one process group and target that group for TERM and KILL.
+- Choose and test a stronger way to find and stop processes that call
+  `setsid()` or otherwise leave the adapter group. Until then, describe group
+  cancellation as best effort rather than complete cleanup.
 - Repeat the preflight and one model turn from the final signed and notarized
   Chive app.
 - Explain setup and recovery without silently changing the user's nono state.
@@ -180,3 +190,4 @@ additional OS sandboxes.
 - [E6 machine-readable result](transcripts/e6-nested-sandbox/sandbox-matrix.run-20260725-009.json)
 - [E8 installed dependency and process lifecycle](transcripts/e8-installed-dependency/run-20260725-010.md)
 - [E8 machine-readable result](transcripts/e8-installed-dependency/installed-adapter.run-20260725-010.json)
+- [E8 detached-process follow-up](transcripts/e8-installed-dependency/run-20260726-011.md)

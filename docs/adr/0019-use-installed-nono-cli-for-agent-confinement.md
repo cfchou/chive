@@ -8,8 +8,8 @@ Date: 2026-07-26
 
 Chive will give a coding agent a workspace containing files derived from a
 PDF. The agent can inspect those files, run programs, and use the network. The
-agent therefore needs an OS sandbox around the whole process tree, including
-every command it starts.
+agent therefore needs an OS sandbox around its commands. Chive must also know
+whether cancellation actually stops each command the agent starts.
 
 Nono exposes two different integration levels:
 
@@ -29,8 +29,10 @@ machine-specific paths.
 The SP1 confinement spike tested the complete CLI path with Codex, Claude Code,
 and OpenCode. It covered profile resolution, model turns, working-directory
 handling, network choices, saved-login access, one outer OS sandbox, standard
-input and output, exit codes, cancellation, forced stop, and descendant
-cleanup. The tested stack passed.
+input and output, exit codes, cancellation, and forced stop. The original
+cleanup check passed for processes that stayed in the adapter's process group.
+A later hostile check proved that a process can call `setsid()`, leave that
+group, and survive group-targeted cancellation.
 
 ## Decision
 
@@ -64,9 +66,16 @@ Chive will:
   directory;
 - pass standard input, standard output, standard error, and the child exit code
   without changing their meaning;
-- start the adapter, nono, the coding agent, and its descendants in one
-  adapter-owned process group; and
-- stop that whole process group on normal cancellation or forced termination.
+- start the adapter in its own process group, which nono, the coding agent, and
+  ordinary child processes inherit; and
+- stop processes that remain in that group on normal cancellation or forced
+  termination.
+
+A child can leave the group with `setsid()` or `setpgid()`. The current adapter
+does not prevent this and cannot stop such a process by signalling the original
+group. Complete cleanup of detached processes is unresolved. #32 must choose
+and test a stronger lifecycle boundary before Chive promises that cancellation
+stops every command an agent starts.
 
 The first production version will accept only versions that Chive has tested.
 SP1 tested nono 0.69.0. Supporting another version requires repeating the
@@ -161,7 +170,7 @@ Good:
 - Chive uses nono's complete CLI behavior instead of rebuilding it.
 - Users can adapt runtime paths through nono's supported user profiles.
 - Chive does not redistribute or update nono.
-- The process boundary has clear ownership and tested cleanup behavior.
+- Chive can stop ordinary processes that remain in its adapter-owned group.
 - Network choices can reuse nono's proxy while remaining simple in Chive.
 
 Trade-offs:
@@ -174,6 +183,8 @@ Trade-offs:
 - Provider endpoints can change and require a new observation run.
 - Chive must explain the selected profile's access before the user trusts it.
 - Exact-workspace profile shrinking remains unfinished hardening work.
+- Process-group signalling does not stop a child that creates a new session or
+  process group. Complete detached-process cleanup remains production work.
 
 ## Verification
 
@@ -184,3 +195,4 @@ Trade-offs:
 - [E5 saved-login and injection trials](../../spikes/workspace-runtime/confinement/transcripts/e5-credentials/run-20260725-008.md)
 - [E6 one-OS-sandbox trials](../../spikes/workspace-runtime/confinement/transcripts/e6-nested-sandbox/run-20260725-009.md)
 - [E8 installed dependency and process lifecycle](../../spikes/workspace-runtime/confinement/transcripts/e8-installed-dependency/run-20260725-010.md)
+- [E8 detached-process follow-up](../../spikes/workspace-runtime/confinement/transcripts/e8-installed-dependency/run-20260726-011.md)

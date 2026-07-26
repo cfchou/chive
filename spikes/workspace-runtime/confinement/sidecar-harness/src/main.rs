@@ -101,10 +101,11 @@ fn run() -> Result<u8, String> {
     Ok(status.code().unwrap_or(1).clamp(0, 255) as u8)
 }
 
-/// Gives this adapter one process group that its nono tree inherits.
+/// Gives this adapter one process group that ordinary child processes inherit.
 #[cfg(unix)]
 fn own_process_group() -> Result<(), String> {
     // A caller can stop this group without touching unrelated Chive processes.
+    // A child can still leave the group with setsid() or setpgid().
     let process_id = unsafe { libc::getpid() };
     let current_group = unsafe { libc::getpgrp() };
     if current_group == process_id {
