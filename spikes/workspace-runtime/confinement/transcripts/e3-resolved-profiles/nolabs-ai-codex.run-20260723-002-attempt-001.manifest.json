@@ -1,0 +1,505 @@
+{
+  "filesystem": {
+    "deny": [
+      {
+        "path": "/Library/Keychains"
+      },
+      {
+        "path": "/Users/chifeng/.1password"
+      },
+      {
+        "path": "/Users/chifeng/.aws"
+      },
+      {
+        "path": "/Users/chifeng/.azure"
+      },
+      {
+        "path": "/Users/chifeng/.bash_history"
+      },
+      {
+        "path": "/Users/chifeng/.bash_login"
+      },
+      {
+        "path": "/Users/chifeng/.bash_logout"
+      },
+      {
+        "path": "/Users/chifeng/.bash_profile"
+      },
+      {
+        "path": "/Users/chifeng/.bashrc"
+      },
+      {
+        "path": "/Users/chifeng/.bunfig.toml"
+      },
+      {
+        "path": "/Users/chifeng/.config/bun/bunfig.toml"
+      },
+      {
+        "path": "/Users/chifeng/.config/fish"
+      },
+      {
+        "path": "/Users/chifeng/.config/gcloud"
+      },
+      {
+        "path": "/Users/chifeng/.config/op"
+      },
+      {
+        "path": "/Users/chifeng/.credentials"
+      },
+      {
+        "path": "/Users/chifeng/.docker"
+      },
+      {
+        "path": "/Users/chifeng/.env"
+      },
+      {
+        "path": "/Users/chifeng/.envrc"
+      },
+      {
+        "path": "/Users/chifeng/.gcloud"
+      },
+      {
+        "path": "/Users/chifeng/.git-credentials"
+      },
+      {
+        "path": "/Users/chifeng/.gnupg"
+      },
+      {
+        "path": "/Users/chifeng/.history"
+      },
+      {
+        "path": "/Users/chifeng/.keys"
+      },
+      {
+        "path": "/Users/chifeng/.kube"
+      },
+      {
+        "path": "/Users/chifeng/.netrc"
+      },
+      {
+        "path": "/Users/chifeng/.npmrc"
+      },
+      {
+        "path": "/Users/chifeng/.password-store"
+      },
+      {
+        "path": "/Users/chifeng/.pki"
+      },
+      {
+        "path": "/Users/chifeng/.profile"
+      },
+      {
+        "path": "/Users/chifeng/.python_history"
+      },
+      {
+        "path": "/Users/chifeng/.secrets"
+      },
+      {
+        "path": "/Users/chifeng/.ssh"
+      },
+      {
+        "path": "/Users/chifeng/.terraform.d"
+      },
+      {
+        "path": "/Users/chifeng/.vault-token"
+      },
+      {
+        "path": "/Users/chifeng/.zlogin"
+      },
+      {
+        "path": "/Users/chifeng/.zlogout"
+      },
+      {
+        "path": "/Users/chifeng/.zprofile"
+      },
+      {
+        "path": "/Users/chifeng/.zsh_history"
+      },
+      {
+        "path": "/Users/chifeng/.zshenv"
+      },
+      {
+        "path": "/Users/chifeng/.zshrc"
+      },
+      {
+        "path": "/Users/chifeng/00_sync/config/bun/bunfig.toml"
+      },
+      {
+        "path": "/Users/chifeng/00_sync/config/fish"
+      },
+      {
+        "path": "/Users/chifeng/00_sync/config/gcloud"
+      },
+      {
+        "path": "/Users/chifeng/00_sync/config/op"
+      },
+      {
+        "path": "/Users/chifeng/00_sync/rc/aws"
+      },
+      {
+        "path": "/Users/chifeng/00_sync/rc/ssh"
+      },
+      {
+        "path": "/Users/chifeng/Library/Application Support/1Password"
+      },
+      {
+        "path": "/Users/chifeng/Library/Application Support/Arc"
+      },
+      {
+        "path": "/Users/chifeng/Library/Application Support/BraveSoftware"
+      },
+      {
+        "path": "/Users/chifeng/Library/Application Support/Chromium"
+      },
+      {
+        "path": "/Users/chifeng/Library/Application Support/Firefox"
+      },
+      {
+        "path": "/Users/chifeng/Library/Application Support/Google/Chrome"
+      },
+      {
+        "path": "/Users/chifeng/Library/Application Support/Microsoft Edge"
+      },
+      {
+        "path": "/Users/chifeng/Library/Application Support/MobileSync"
+      },
+      {
+        "path": "/Users/chifeng/Library/Application Support/Vivaldi"
+      },
+      {
+        "path": "/Users/chifeng/Library/Application Support/com.operasoftware.Opera"
+      },
+      {
+        "path": "/Users/chifeng/Library/Containers/com.1password.1password"
+      },
+      {
+        "path": "/Users/chifeng/Library/Containers/com.apple.Safari"
+      },
+      {
+        "path": "/Users/chifeng/Library/Cookies"
+      },
+      {
+        "path": "/Users/chifeng/Library/Group Containers/2BUA8C4S2C.com.1password"
+      },
+      {
+        "path": "/Users/chifeng/Library/Keychains"
+      },
+      {
+        "path": "/Users/chifeng/Library/Mail"
+      },
+      {
+        "path": "/Users/chifeng/Library/Messages"
+      },
+      {
+        "path": "/Users/chifeng/Library/Safari"
+      }
+    ],
+    "grants": [
+      {
+        "access": "read",
+        "path": "/Applications",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Library",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Library/Frameworks",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/System/Cryptexes",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/System/Library",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/System/Volumes",
+        "type": "directory"
+      },
+      {
+        "access": "readwrite",
+        "path": "/Users/chifeng/.agents",
+        "type": "directory"
+      },
+      {
+        "access": "readwrite",
+        "path": "/Users/chifeng/.cache",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Users/chifeng/.cargo",
+        "type": "directory"
+      },
+      {
+        "access": "readwrite",
+        "path": "/Users/chifeng/.codex",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Users/chifeng/.config/nono/packages",
+        "type": "directory"
+      },
+      {
+        "access": "readwrite",
+        "path": "/Users/chifeng/.config/nono/profile-drafts",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Users/chifeng/.config/nono/profiles",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Users/chifeng/.local/bin",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Users/chifeng/.local/share/uv",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Users/chifeng/.npm",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Users/chifeng/.rustup",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Users/chifeng/00_sync/rc/gitconfig",
+        "type": "file"
+      },
+      {
+        "access": "read",
+        "path": "/Users/chifeng/00_sync/rc/gitignore_global",
+        "type": "file"
+      },
+      {
+        "access": "readwrite",
+        "path": "/Users/chifeng/Library/Caches",
+        "type": "directory"
+      },
+      {
+        "access": "readwrite",
+        "path": "/Users/chifeng/Library/Keychains/login.keychain-db",
+        "type": "file"
+      },
+      {
+        "access": "readwrite",
+        "path": "/Users/chifeng/Library/Keychains/metadata.keychain-db",
+        "type": "file"
+      },
+      {
+        "access": "readwrite",
+        "path": "/Users/chifeng/Library/Logs",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Users/chifeng/Library/Preferences",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Users/chifeng/Library/pnpm",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/Volumes",
+        "type": "directory"
+      },
+      {
+        "access": "readwrite",
+        "path": "/Volumes/Crucial X9 Pro For Mac/Project/01_worktrees/1d6c/chive/tmp/confinement-runs/run-20260723-002/workspace",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/bin",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/cores",
+        "type": "directory"
+      },
+      {
+        "access": "readwrite",
+        "path": "/dev",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/opt",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/opt/homebrew",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/private",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/private/etc",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/private/etc/ssl",
+        "type": "directory"
+      },
+      {
+        "access": "readwrite",
+        "path": "/private/tmp",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/private/var",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/private/var/db",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/private/var/db/timezone",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/private/var/db/timezone/tz/2026b.1.0/zoneinfo",
+        "type": "directory"
+      },
+      {
+        "access": "write",
+        "path": "/private/var/folders",
+        "type": "directory"
+      },
+      {
+        "access": "write",
+        "path": "/private/var/folders/vq/9mxqq3ts5q38vmrxb4lk6cr00000gq/T",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/sbin",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/usr/bin",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/usr/lib",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/usr/local/bin",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/usr/sbin",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/usr/share",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/usr/share/locale",
+        "type": "directory"
+      },
+      {
+        "access": "read",
+        "path": "/usr/share/terminfo",
+        "type": "directory"
+      }
+    ]
+  },
+  "network": {
+    "dns": true,
+    "mode": "unrestricted"
+  },
+  "process": {
+    "blocked_commands": [
+      "brew",
+      "chgrp",
+      "chmod",
+      "chown",
+      "cp",
+      "dd",
+      "doas",
+      "ftp",
+      "halt",
+      "kill",
+      "killall",
+      "launchctl",
+      "mv",
+      "npm",
+      "pip",
+      "pkill",
+      "poweroff",
+      "reboot",
+      "rm",
+      "rmdir",
+      "rsync",
+      "scp",
+      "sftp",
+      "shutdown",
+      "srm",
+      "su",
+      "sudo",
+      "truncate",
+      "xargs"
+    ],
+    "exec_strategy": "supervised",
+    "ipc_mode": "shared_memory_only",
+    "process_info_mode": "isolated",
+    "signal_mode": "isolated"
+  },
+  "rollback": {
+    "enabled": false,
+    "exclude_globs": [
+      "*.tmp.[0-9]*.[0-9]*"
+    ],
+    "exclude_patterns": [
+      "node_modules",
+      ".next",
+      "__pycache__",
+      "target"
+    ]
+  },
+  "$schema": "https://nono.sh/schemas/capability-manifest.schema.json",
+  "version": "0.1.0"
+}

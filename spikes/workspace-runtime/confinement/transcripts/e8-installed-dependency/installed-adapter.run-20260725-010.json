@@ -1,0 +1,70 @@
+{
+  "run_id": "run-20260725-010",
+  "experiment": "E8",
+  "result": "PASS",
+  "architecture_recommendation": "GO",
+  "platform": "macOS 26.5.2 arm64",
+  "nono": {
+    "configured_path": "/opt/homebrew/bin/nono",
+    "canonical_path": "/opt/homebrew/Cellar/nono/0.69.0/bin/nono",
+    "version": "0.69.0",
+    "sha256": "c337d413c5e37868de97caba21712a18b87491670715509c19b84937c0c08695",
+    "preflight": "PASS",
+    "signature": "ad hoc linker signature"
+  },
+  "profiles": [
+    {
+      "reference": "nolabs-ai/codex",
+      "source": "pack",
+      "pack": "nolabs-ai/codex",
+      "sha256": "83c39f094d5077ab6ecb703d16f8641ece14e7d555df382d52fdaaa57494e52c",
+      "validation": "PASS"
+    },
+    {
+      "reference": "nolabs-ai/claude",
+      "source": "pack",
+      "pack": "nolabs-ai/claude",
+      "sha256": "ac4994af3b29a0ebe6fd23a642d656d1ce3c1ff2bdada5e720279a824666159d",
+      "validation": "PASS"
+    },
+    {
+      "reference": "opencode-0723a",
+      "source": "user",
+      "pack": null,
+      "sha256": "e7612fdbd928cef07aceec9d99efaa598fcadda61be7a9deaeef58c97050540c",
+      "parent_pack_profile_sha256": "9e273d3c4a7a3766520fa597b13ba04c7a56741146d5767c8c0a7e4f21790ac2",
+      "validation": "PASS"
+    }
+  ],
+  "checks": {
+    "absolute_path_required": "PASS",
+    "supported_version_rule": "PASS",
+    "missing_executable_error": "PASS",
+    "missing_profile_error": "PASS",
+    "invalid_profile_error": "PASS",
+    "shadowed_profile_error": "PASS",
+    "failed_preflight_error": "PASS",
+    "hash_invalidation": "PASS",
+    "installed_launch_without_registry": "PASS",
+    "stdin_stdout_stderr": "PASS",
+    "exit_code_propagation": "PASS",
+    "normal_cancellation": "PASS",
+    "forced_stop": "PASS",
+    "grandchild_cleanup": "PASS"
+  },
+  "lifecycle": {
+    "ownership": "Chive adapter process group",
+    "normal_stop": "TERM to the recorded process group",
+    "forced_stop": "KILL to the recorded process group",
+    "term_descendants_recorded": 4,
+    "term_survivors": 0,
+    "kill_descendants_recorded": 4,
+    "kill_survivors": 0
+  },
+  "scope_notes": {
+    "production_tauri_files_changed": false,
+    "user_nono_state_changed": false,
+    "nono_redistributed": false,
+    "final_signed_chive_app_test": "required in #32"
+  }
+}

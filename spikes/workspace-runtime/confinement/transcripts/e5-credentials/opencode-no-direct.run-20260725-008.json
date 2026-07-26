@@ -1,0 +1,17 @@
+{
+  "$schema": "https://nono.sh/schemas/nono-profile.schema.json",
+  "extends": "opencode-0723a",
+  "meta": {
+    "name": "e5-opencode-no-direct-run-20260725-008",
+    "version": "0.1.0",
+    "description": "E5 test profile that keeps the selected OpenCode profile but denies its saved login files and login Keychain file",
+    "author": "Chive"
+  },
+  "filesystem": {
+    "deny": [
+      "$HOME/.local/share/opencode/account.json",
+      "$HOME/.local/share/opencode/auth.json",
+      "$HOME/Library/Keychains/login.keychain-db"
+    ]
+  }
+}

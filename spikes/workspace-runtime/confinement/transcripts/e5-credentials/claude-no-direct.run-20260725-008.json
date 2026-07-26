@@ -1,0 +1,46 @@
+{
+  "$schema": "https://nono.sh/schemas/nono-profile.schema.json",
+  "extends": "default",
+  "meta": {
+    "name": "e5-claude-no-direct-run-20260725-008",
+    "version": "0.1.0",
+    "description": "E5 test profile that keeps Claude runtime support but leaves out the packed profile's Keychain grant and denies normal login state",
+    "author": "Chive"
+  },
+  "groups": {
+    "include": [
+      "user_caches_macos",
+      "node_runtime",
+      "rust_runtime",
+      "python_runtime",
+      "vscode_macos",
+      "nix_runtime",
+      "git_config",
+      "unlink_protection"
+    ]
+  },
+  "filesystem": {
+    "allow": [
+      "$HOME/.local/state/claude/locks",
+      "$HOME/.cache/claude",
+      "$NONO_CONFIG/profile-drafts",
+      "/tmp/claude-$UID"
+    ],
+    "read": [
+      "$NONO_PACKAGES",
+      "$NONO_CONFIG/profiles"
+    ],
+    "deny": [
+      "$HOME/.claude",
+      "$HOME/.claude.json",
+      "$HOME/Library/Keychains"
+    ]
+  },
+  "security": {
+    "signal_mode": "isolated",
+    "capability_elevation": false
+  },
+  "workdir": {
+    "access": "readwrite"
+  }
+}
