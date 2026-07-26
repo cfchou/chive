@@ -3,12 +3,8 @@
 The official implementation of the Chive PDF reader/annotator: a SvelteKit SPA
 (Svelte 5, `ssr = false`, adapter-static) running inside Tauri 2 on macOS.
 
-It was transplanted from the de-risking reference implementation in
-`../pdf-annotation-spike/` (kept intact); the UI follows `../tmp/index.html`
-and `../tmp/ui-spec.md` (Atelier Zero design). See
-`../docs/adr/0013-transplant-spike-into-official-app.md` for the transplant
-decisions, and the older ADRs in `../docs/adr/` for the behavior-sensitive
-areas they still govern.
+The UI follows `../tmp/index.html` and `../tmp/ui-spec.md` (Atelier Zero
+design). See the ADRs in `../docs/adr/` for behavior-sensitive decisions.
 
 ## What it does
 
@@ -27,8 +23,8 @@ areas they still govern.
 ## Commands (run from `app/`)
 
 - `npm install`
-- `npm run dev` — Vite at `http://127.0.0.1:1430/` (the spike uses 1420, so
-  both can run side by side); parallel worktrees override the port with
+- `npm run dev` — Vite at `http://127.0.0.1:1430/`; parallel worktrees override
+  the port with
   `CHIVE_E2E_PORT=1440 npm run dev` (see `tests/README.md`)
 - `npm run check` — svelte-check (keep at 0 errors / 0 warnings)
 - `npm run build`

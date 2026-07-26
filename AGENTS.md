@@ -3,9 +3,9 @@
 - When using `/teach` skill, put all generated artifacts under `./learning/{topic}`.
 
 - `app/` is the official app directory; run repo commands from there.
-  `pdf-annotation-spike/` is the de-risking reference implementation — keep it
-  intact; do not edit it unless explicitly asked. UI reference lives in
-  `tmp/index.html` + `tmp/ui-spec.md`.
+  UI reference lives in `tmp/index.html` + `tmp/ui-spec.md`.
+
+- `spikes/` is only for experiments, evaluations, and proofs of concept.
 
 - Frontend is a SPA SvelteKit app for Tauri (`ssr = false`, `adapter-static` with SPA fallback), so assume no SSR data-shape and keep route-level assumptions browser-side.
 
@@ -13,7 +13,7 @@
 
 - Install and core commands:
   - `cd app && npm install`
-  - `npm run dev` (Vite at `http://127.0.0.1:1430/`; the spike keeps 1420 so both can run side by side)
+  - `npm run dev` (Vite at `http://127.0.0.1:1430/`)
   - `npm run build`
   - `npm run tauri -- dev`
   - `npm run tauri -- build`
@@ -48,6 +48,5 @@
    - `docs/adr/0006-test-pdfjs-in-native-tauri-webview-not-only-browser.md`
    - `docs/adr/0007-add-native-wkwebview-smoke-tests-with-wdio-tauri.md`
    - `docs/adr/0008-llm-generated-speculative-coverage-drafting.md`
-   - `docs/adr/0013-transplant-spike-into-official-app.md`
 
 - Do not treat browser tests as final for PDF.js behavior: scanned/image PDFs and text extraction differ in WKWebView, so verify critical annotation/text-flow changes with `npm run test:native` after browser regression.

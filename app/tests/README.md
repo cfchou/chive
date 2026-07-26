@@ -7,16 +7,14 @@ Permanent regression layers:
   (port 1430 by default — see [Server ports](#server-ports-and-parallel-worktrees)).
 - `npm run test:native` builds a debug Tauri app and runs WDIO against the native WKWebView.
 
-`window.__pdfSpike` is a dev/test-only API exposed by `src/routes/+page.svelte`
-(the name is kept from the reference implementation so its specs transplant
-unchanged). Specs may use it to load fixtures, summarize annotations, and
-perform stable editor actions without depending on PDF.js private DOM details
-for every assertion.
+`window.__pdfSpike` is a dev/test-only API exposed by `src/routes/+page.svelte`.
+Specs may use it to load fixtures, summarize annotations, and perform stable
+editor actions without depending on PDF.js private DOM details for every
+assertion.
 
 Playwright owns browser regressions; WDIO owns native WKWebView smoke coverage.
-The suites were transplanted from `../pdf-annotation-spike/tests` with
-selector adaptations for the official UI (icon toolbar, dockable sidebar tabs,
-rail-only bookmark creation, shared row palette, status live region).
+The suites use selectors for the official UI (icon toolbar, dockable sidebar
+tabs, rail-only bookmark creation, shared row palette, status live region).
 
 ## Frontend coverage
 

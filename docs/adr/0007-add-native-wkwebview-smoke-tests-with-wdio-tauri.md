@@ -125,13 +125,13 @@ Exploration tool (`agent-browser`) is best for quick ad-hoc reproduction and int
 
 ## Implementation Plan (Small First)
 
-1. Add Playwright dependencies in `pdf-annotation-spike/` and add scripts:
+1. Add Playwright dependencies in `spikes/pdf-annotation-spike/` and add scripts:
    - `test:e2e`
    - optional: `test:e2e:headed`
 2. Port the current regression flows into modular Playwright specs/helpers.
 3. Add fixture-level helpers (`loadPdf`, `assertRender`, `createHighlight`, `createFreeText`, `createInk`, `saveAndReopen`).
-4. Add `@wdio/tauri-service` in `pdf-annotation-spike/` when native smoke suite starts.
-5. Add `tauri-plugin-wdio-webdriver` in `pdf-annotation-spike/src-tauri/Cargo.toml` and enable for debug/test only.
+4. Add `@wdio/tauri-service` in `spikes/pdf-annotation-spike/` when native smoke suite starts.
+5. Add `tauri-plugin-wdio-webdriver` in `spikes/pdf-annotation-spike/src-tauri/Cargo.toml` and enable for debug/test only.
 6. Add required permission: `wdio-webdriver:default`.
 7. Add minimal WDIO config and one native smoke test that checks:
    - app launch,
@@ -176,7 +176,7 @@ Bad:
 
 When implemented, success means:
 
-- `npm run check` passes in `pdf-annotation-spike/`,
-- `npm run build` passes in `pdf-annotation-spike/`,
+- `npm run check` passes in `spikes/pdf-annotation-spike/`,
+- `npm run build` passes in `spikes/pdf-annotation-spike/`,
 - Playwright browser e2e suite passes,
 - native WDIO Tauri smoke checks confirm PDF load + sidebar text/annotation state in WKWebView.
