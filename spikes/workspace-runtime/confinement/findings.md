@@ -177,7 +177,7 @@ additional OS sandboxes.
 ## Retained evidence
 
 - [E0 installed-stack inventory](transcripts/e0-installed/run-20260723-002.md)
-- [E3 selected-profile coding-agent turns](transcripts/e3-runtime-turns/run-20260723-002.md)
+- [E3 selected-profile coding-agent turns](transcripts/e3-runtime-turns/run-20260726-012.md)
 - [E3 OpenCode user-profile source](transcripts/e3-profile-inputs/opencode-0723a.run-20260723-002.source.json)
 - [E4 Phase 0 proxy behavior](transcripts/e4-e7-network/run-20260725-005.md)
 - [E4 Phase 1 and E7 host observations](transcripts/e4-e7-network/run-20260725-006.md)

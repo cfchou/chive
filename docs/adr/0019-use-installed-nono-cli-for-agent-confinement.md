@@ -190,7 +190,7 @@ Trade-offs:
 
 - [SP1 confinement findings](../../spikes/workspace-runtime/confinement/findings.md)
 - [E0 installed stack](../../spikes/workspace-runtime/confinement/transcripts/e0-installed/run-20260723-002.md)
-- [E3 coding-agent turns](../../spikes/workspace-runtime/confinement/transcripts/e3-runtime-turns/run-20260723-002.md)
+- [E3 coding-agent turns](../../spikes/workspace-runtime/confinement/transcripts/e3-runtime-turns/run-20260726-012.md)
 - [E4 and E7 final network trials](../../spikes/workspace-runtime/confinement/transcripts/e4-e7-network/run-20260725-007.md)
 - [E5 saved-login and injection trials](../../spikes/workspace-runtime/confinement/transcripts/e5-credentials/run-20260725-008.md)
 - [E6 one-OS-sandbox trials](../../spikes/workspace-runtime/confinement/transcripts/e6-nested-sandbox/run-20260725-009.md)
