@@ -1,0 +1,281 @@
+{
+  "generatedAt": "2026-07-28T04:18:48Z",
+  "probes": {
+    "codex-interrupt": {
+      "checks": {
+        "appServerExitedCleanly": true,
+        "connectionInitialized": true,
+        "fallbackLeftNoControlledProcess": true,
+        "interruptAcknowledged": true,
+        "laterTurnPassed": true,
+        "noRawResponsesRetained": true,
+        "noRawStderrRetained": true,
+        "sameThreadReused": true,
+        "toolChildIdentityMatched": true,
+        "toolChildOwnedByShell": true,
+        "toolChildRunning": true,
+        "toolChildStopped": false,
+        "toolProcessesShareGroup": true,
+        "toolShellIdentityMatched": true,
+        "toolShellRunning": true,
+        "toolShellStopped": false,
+        "turnStatusInterrupted": true
+      },
+      "experiment": "E6",
+      "inheritedUserConfiguration": true,
+      "interruptedTurn": {
+        "checks": {
+          "commandItemIdStable": true,
+          "commandStartedOnce": true,
+          "turnCompletedOnce": true,
+          "turnEventOrderValid": true,
+          "turnStartedOnce": true,
+          "turnStatusInterrupted": true
+        },
+        "summary": {
+          "command": {
+            "completedCount": 0,
+            "completedStatus": null,
+            "exitCode": null,
+            "outputDeltaCount": 0,
+            "outputLength": 0,
+            "rawOutputRetained": false,
+            "startedCount": 1
+          },
+          "eventCount": 21,
+          "status": "interrupted",
+          "timeline": [
+            {
+              "count": 1,
+              "itemType": null,
+              "method": "turn/started",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "userMessage",
+              "method": "item/started",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "userMessage",
+              "method": "item/completed",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "agentMessage",
+              "method": "item/started",
+              "status": null
+            },
+            {
+              "count": 13,
+              "itemType": null,
+              "method": "item/agentMessage/delta",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "agentMessage",
+              "method": "item/completed",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "commandExecution",
+              "method": "item/started",
+              "status": "inProgress"
+            },
+            {
+              "count": 1,
+              "itemType": null,
+              "method": "turn/completed",
+              "status": null
+            }
+          ]
+        }
+      },
+      "laterTurn": {
+        "checks": {
+          "agentDeltasMatchCompletedItems": true,
+          "agentItemIdsStable": true,
+          "agentMessageStreamed": true,
+          "finalReplyExact": true,
+          "noCommandCompleted": true,
+          "noCommandOutputDelta": true,
+          "noCommandStarted": true,
+          "turnCompleted": true,
+          "turnCompletedOnce": true,
+          "turnEventOrderValid": true,
+          "turnStartedOnce": true
+        },
+        "summary": {
+          "agent": {
+            "deltaCount": 4,
+            "deltaLength": 18,
+            "finalTextLength": 18,
+            "messageCount": 1,
+            "rawTextRetained": false
+          },
+          "command": {
+            "completedCount": 0,
+            "controlledOutputRetained": null,
+            "outputDeltaCount": 0,
+            "outputDeltaObserved": false,
+            "outputLength": 0,
+            "startedCount": 0
+          },
+          "eventCount": 15,
+          "status": "completed",
+          "timeline": [
+            {
+              "count": 1,
+              "itemType": null,
+              "method": "turn/started",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "userMessage",
+              "method": "item/started",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "userMessage",
+              "method": "item/completed",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "reasoning",
+              "method": "item/started",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "reasoning",
+              "method": "item/completed",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "agentMessage",
+              "method": "item/started",
+              "status": null
+            },
+            {
+              "count": 4,
+              "itemType": null,
+              "method": "item/agentMessage/delta",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "agentMessage",
+              "method": "item/completed",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": null,
+              "method": "turn/completed",
+              "status": null
+            }
+          ]
+        }
+      },
+      "phase": 4,
+      "processes": {
+        "afterFallbackCleanup": {
+          "child": {
+            "alive": false,
+            "pid": 31811,
+            "status": null
+          },
+          "shell": {
+            "alive": false,
+            "pid": 31809,
+            "status": null
+          }
+        },
+        "afterInterrupt": {
+          "child": {
+            "alive": true,
+            "pid": 31811,
+            "status": "S"
+          },
+          "shell": {
+            "alive": true,
+            "pid": 31809,
+            "status": "Ss"
+          }
+        },
+        "atStart": {
+          "child": {
+            "alive": true,
+            "pid": 31811,
+            "status": "S"
+          },
+          "rawCommandsRetained": false,
+          "relationships": {
+            "childOwnedByShell": true,
+            "sameProcessGroup": true
+          },
+          "shell": {
+            "alive": true,
+            "pid": 31809,
+            "status": "Ss"
+          }
+        },
+        "fallbackCleanupActionCount": 2
+      },
+      "runtime": "codex",
+      "transcript": {
+        "argv": [
+          "<CHIVE_ROOT>/spikes/workspace-runtime/confinement/sidecar-harness/target/debug/sidecar-harness",
+          "--nono",
+          "/opt/homebrew/bin/nono",
+          "--profile",
+          "nolabs-ai/codex",
+          "--workspace-rw",
+          "<WORKSPACE>",
+          "--net",
+          "open",
+          "--",
+          "<HOME>/.local/bin/codex",
+          "app-server",
+          "--stdio"
+        ],
+        "cwd": "<WORKSPACE>",
+        "elapsedMs": 23460,
+        "eventMethodCounts": {
+          "item/agentMessage/delta": 17,
+          "item/completed": 6,
+          "item/started": 6,
+          "turn/completed": 2,
+          "turn/started": 2
+        },
+        "exitCode": 0,
+        "mcpStartupEventCount": 24,
+        "otherServerMessageCount": 42,
+        "pid": 31692,
+        "rawResponsesRetained": false,
+        "rawStderrRetained": false,
+        "requestMethods": [
+          "initialize",
+          "thread/start",
+          "turn/start",
+          "turn/interrupt",
+          "turn/start"
+        ],
+        "stderrLineCount": 395,
+        "unparsedServerLineKindCounts": {
+          "knownNonoNoRollbackWarning": 1
+        }
+      }
+    }
+  },
+  "schemaVersion": 1
+}

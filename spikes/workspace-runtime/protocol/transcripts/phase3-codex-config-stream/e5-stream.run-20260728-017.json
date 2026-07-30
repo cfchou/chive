@@ -1,0 +1,260 @@
+{
+  "generatedAt": "2026-07-28T04:06:03Z",
+  "probes": {
+    "codex-stream": {
+      "checks": {
+        "appServerExitedCleanly": true,
+        "connectionInitialized": true,
+        "ephemeralThreadStarted": true,
+        "firstTurnPassed": true,
+        "noRawResponsesRetained": true,
+        "noRawStderrRetained": true,
+        "sameThreadReused": true,
+        "secondTurnPassed": true,
+        "twoTurnsStarted": true
+      },
+      "configPostureEvidence": "e5-config-posture.run-20260728-015.json",
+      "experiment": "E5",
+      "firstTurn": {
+        "checks": {
+          "agentDeltasMatchCompletedItems": true,
+          "agentItemIdsStable": true,
+          "agentMessageStreamed": true,
+          "commandCompleted": true,
+          "commandCwdMatchesWorkspace": true,
+          "commandExitCodeZero": true,
+          "commandItemIdStable": true,
+          "commandOutputDeltasMatchCompletedWhenPresent": true,
+          "commandOutputMatchesControlledFixture": true,
+          "commandOutputStreamedOrRepresentedWithoutLoss": true,
+          "commandStartBeforeCompletion": true,
+          "finalReplyContainsMarker": true,
+          "finalReplyContainsWorkspace": true,
+          "oneCommandCompleted": true,
+          "oneCommandStarted": true,
+          "turnCompleted": true,
+          "turnCompletedOnce": true,
+          "turnEventOrderValid": true,
+          "turnStartedOnce": true
+        },
+        "summary": {
+          "agent": {
+            "deltaCount": 69,
+            "deltaLength": 191,
+            "finalTextLength": 137,
+            "messageCount": 2,
+            "rawTextRetained": false
+          },
+          "command": {
+            "completedCount": 1,
+            "controlledOutputRetained": "<WORKSPACE>\nCHIVE_SP2_MARKER\n",
+            "outputDeltaCount": 0,
+            "outputDeltaObserved": false,
+            "outputLength": 106,
+            "startedCount": 1
+          },
+          "eventCount": 83,
+          "status": "completed",
+          "timeline": [
+            {
+              "count": 1,
+              "itemType": null,
+              "method": "turn/started",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "userMessage",
+              "method": "item/started",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "userMessage",
+              "method": "item/completed",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "agentMessage",
+              "method": "item/started",
+              "status": null
+            },
+            {
+              "count": 12,
+              "itemType": null,
+              "method": "item/agentMessage/delta",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "agentMessage",
+              "method": "item/completed",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "commandExecution",
+              "method": "item/started",
+              "status": "inProgress"
+            },
+            {
+              "count": 1,
+              "itemType": "commandExecution",
+              "method": "item/completed",
+              "status": "completed"
+            },
+            {
+              "count": 1,
+              "itemType": "agentMessage",
+              "method": "item/started",
+              "status": null
+            },
+            {
+              "count": 57,
+              "itemType": null,
+              "method": "item/agentMessage/delta",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "agentMessage",
+              "method": "item/completed",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": null,
+              "method": "turn/completed",
+              "status": null
+            }
+          ]
+        }
+      },
+      "inheritedUserConfiguration": true,
+      "phase": 3,
+      "runtime": "codex",
+      "secondTurn": {
+        "checks": {
+          "agentDeltasMatchCompletedItems": true,
+          "agentItemIdsStable": true,
+          "agentMessageStreamed": true,
+          "finalReplyExact": true,
+          "noCommandCompleted": true,
+          "noCommandOutputDelta": true,
+          "noCommandStarted": true,
+          "turnCompleted": true,
+          "turnCompletedOnce": true,
+          "turnEventOrderValid": true,
+          "turnStartedOnce": true
+        },
+        "summary": {
+          "agent": {
+            "deltaCount": 4,
+            "deltaLength": 14,
+            "finalTextLength": 14,
+            "messageCount": 1,
+            "rawTextRetained": false
+          },
+          "command": {
+            "completedCount": 0,
+            "controlledOutputRetained": null,
+            "outputDeltaCount": 0,
+            "outputDeltaObserved": false,
+            "outputLength": 0,
+            "startedCount": 0
+          },
+          "eventCount": 13,
+          "status": "completed",
+          "timeline": [
+            {
+              "count": 1,
+              "itemType": null,
+              "method": "turn/started",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "userMessage",
+              "method": "item/started",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "userMessage",
+              "method": "item/completed",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "agentMessage",
+              "method": "item/started",
+              "status": null
+            },
+            {
+              "count": 4,
+              "itemType": null,
+              "method": "item/agentMessage/delta",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": "agentMessage",
+              "method": "item/completed",
+              "status": null
+            },
+            {
+              "count": 1,
+              "itemType": null,
+              "method": "turn/completed",
+              "status": null
+            }
+          ]
+        }
+      },
+      "transcript": {
+        "argv": [
+          "<CHIVE_ROOT>/spikes/workspace-runtime/confinement/sidecar-harness/target/debug/sidecar-harness",
+          "--nono",
+          "/opt/homebrew/bin/nono",
+          "--profile",
+          "nolabs-ai/codex",
+          "--workspace-rw",
+          "<WORKSPACE>",
+          "--net",
+          "open",
+          "--",
+          "<HOME>/.local/bin/codex",
+          "app-server",
+          "--stdio"
+        ],
+        "cwd": "<WORKSPACE>",
+        "elapsedMs": 19417,
+        "eventMethodCounts": {
+          "item/agentMessage/delta": 73,
+          "item/completed": 6,
+          "item/started": 6,
+          "turn/completed": 2,
+          "turn/started": 2
+        },
+        "exitCode": 0,
+        "mcpStartupEventCount": 24,
+        "otherServerMessageCount": 45,
+        "pid": 28319,
+        "rawResponsesRetained": false,
+        "rawStderrRetained": false,
+        "requestMethods": [
+          "initialize",
+          "thread/start",
+          "turn/start",
+          "turn/start"
+        ],
+        "stderrLineCount": 394,
+        "unparsedServerLineKindCounts": {
+          "knownNonoNoRollbackWarning": 1
+        }
+      }
+    }
+  },
+  "schemaVersion": 1
+}

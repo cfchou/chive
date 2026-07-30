@@ -1,0 +1,107 @@
+{
+  "generatedAt": "2026-07-27T04:34:13Z",
+  "probes": {
+    "codex-config-isolation-final": {
+      "broaderConfigResearch": {
+        "readMethods": [
+          "app/list",
+          "config/read",
+          "configRequirements/read",
+          "hooks/list",
+          "mcpServerStatus/list",
+          "plugin/list",
+          "skills/list"
+        ],
+        "threadStartFields": [
+          "approvalPolicy",
+          "baseInstructions",
+          "config",
+          "cwd",
+          "developerInstructions",
+          "ephemeral",
+          "model",
+          "modelProvider",
+          "personality",
+          "sandbox",
+          "serviceTier"
+        ]
+      },
+      "checks": {
+        "documentedAppServerIgnoreFlags": false,
+        "emptyMapClearsConfiguredServers": false,
+        "isolatedHomeHasSupportedAuth": false,
+        "isolatedHomeKeepsSavedLogin": false,
+        "launchAndThreadOverrideBlocksStartup": false,
+        "perServerFeatureCandidateLeavesNoEnabledEntries": true,
+        "perServerFeatureCandidateRaceSafe": false,
+        "supportedIsolationSeamFound": false,
+        "threadOverrideBlocksStartup": false,
+        "unsafeCandidateWasNotStarted": true
+      },
+      "countedAt": "2026-07-27T04:03:55Z",
+      "continuationPolicy": "CONTINUE_WITH_INHERITED_CONFIG_RECORDED",
+      "countedAttempts": {
+        "launchAndThreadOverride": {
+          "checks": {
+            "appServerExitedCleanly": true,
+            "connectionInitialized": true,
+            "emptyMcpMapBlockedStartup": false
+          },
+          "exitCode": 0,
+          "mcpStartupEventCount": 24
+        },
+        "threadOverrideOnly": {
+          "checks": {
+            "appServerExitedCleanly": true,
+            "connectionInitialized": true,
+            "emptyMcpMapBlockedStartup": false
+          },
+          "exitCode": 0,
+          "mcpStartupEventCount": 24
+        }
+      },
+      "documentedFlags": {
+        "appServerIgnoreRules": false,
+        "appServerIgnoreUserConfig": false,
+        "execIgnoreRules": true,
+        "execIgnoreUserConfig": true
+      },
+      "experiment": "E4",
+      "featureCandidate": {
+        "candidateRaceSafe": false,
+        "disabledFeatureCount": 11,
+      "reason": "The current snapshot has no enabled entries, but config could change between listing and launch.",
+        "started": false
+      },
+      "isolatedHomeAuth": {
+        "codexAccessTokenAvailable": false,
+        "exitCode": 1,
+        "savedLoginAvailable": false
+      },
+      "mcpInventoryCounts": {
+        "disableOverrideSupport": {
+          "accepted": 12,
+          "listed": 14,
+          "rejected": 2,
+          "unsafeKeyShape": 0
+        },
+        "emptyMapOverride": {
+          "configured": 14,
+          "enabled": 13
+        },
+        "normal": {
+          "configured": 14,
+          "enabled": 13
+        },
+        "perServerDisableCandidate": {
+          "configured": 12,
+          "enabled": 0
+        }
+      },
+      "phase": 3,
+      "runtime": "codex",
+      "verdict": "PARTIAL"
+    }
+  },
+  "schemaVersion": 1
+}

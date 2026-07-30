@@ -1,0 +1,255 @@
+{
+  "generatedAt": "2026-07-30T04:14:22Z",
+  "probes": {
+    "claude": {
+      "auth": {
+        "argv": [
+          "<HOME>/.local/bin/claude",
+          "auth",
+          "status",
+          "--json"
+        ],
+        "cwd": null,
+        "elapsedMs": 295,
+        "exitCode": 0,
+        "rawOutputRetained": false,
+        "status": {
+          "apiProvider": "firstParty",
+          "authMethod": "claude.ai",
+          "loggedIn": true,
+          "subscriptionType": "pro"
+        },
+        "statusParsed": true,
+        "stderrLineCount": 0
+      },
+      "interruptedTurn": {
+        "checks": {
+          "fallbackLeftNoControlledProcess": true,
+          "noRawResponsesRetained": true,
+          "noRawStderrRetained": true,
+          "streamReachedBashToolUse": true,
+          "supervisedProcessExited": true,
+          "termSentToSupervisedGroup": true,
+          "toolChildIdentityMatched": true,
+          "toolChildOwnedByShell": true,
+          "toolChildRunning": true,
+          "toolChildStopped": true,
+          "toolProcessesShareGroup": true,
+          "toolShellIdentityMatched": true,
+          "toolShellRunning": true,
+          "toolShellStopped": true
+        },
+        "processes": {
+          "afterFallbackCleanup": {
+            "child": {
+              "alive": false,
+              "pid": 42548,
+              "status": null
+            },
+            "shell": {
+              "alive": false,
+              "pid": 42546,
+              "status": null
+            }
+          },
+          "afterSignal": {
+            "child": {
+              "alive": false,
+              "pid": 42548,
+              "status": null
+            },
+            "shell": {
+              "alive": false,
+              "pid": 42546,
+              "status": null
+            }
+          },
+          "atStart": {
+            "child": {
+              "alive": true,
+              "pid": 42548,
+              "status": "S"
+            },
+            "rawCommandsRetained": false,
+            "relationships": {
+              "childOwnedByShell": true,
+              "sameProcessGroup": true
+            },
+            "shell": {
+              "alive": true,
+              "pid": 42546,
+              "status": "S"
+            }
+          },
+          "fallbackCleanupActionCount": 0
+        },
+        "signals": {
+          "killSent": false,
+          "termSent": true
+        },
+        "stream": {
+          "checks": {
+            "assistantMessageObserved": true,
+            "bashToolUseObserved": true,
+            "initCwdMatchesWorkspace": true,
+            "initModelMatches": true,
+            "initObserved": true,
+            "initPermissionModeBypassesInnerChecks": true,
+            "partialStreamEventObserved": true
+          },
+          "summary": {
+            "bashToolUseCount": 1,
+            "controlledOutputRetained": null,
+            "messageTypeCounts": {
+              "assistant": 3,
+              "rate_limit_event": 1,
+              "result": 1,
+              "stream_event": 19,
+              "system": 5,
+              "user": 2
+            },
+            "rawTextRetained": false,
+            "resultCount": 1,
+            "streamEventTypeCounts": {
+              "content_block_delta": 10,
+              "content_block_start": 3,
+              "content_block_stop": 3,
+              "message_delta": 1,
+              "message_start": 1,
+              "message_stop": 1
+            },
+            "toolResultCount": 1
+          }
+        },
+        "transcript": {
+          "cwd": "<WORKSPACE>",
+          "elapsedMs": 4434,
+          "exitCode": -15,
+          "launch": {
+            "bareMode": false,
+            "configuredMcpServerCount": 0,
+            "controlledSettings": "<WORKSPACE>/claude-settings.json",
+            "includePartialMessages": true,
+            "model": "claude-sonnet-4-6",
+            "network": "open",
+            "nonoProfile": "nolabs-ai/claude",
+            "outputFormat": "stream-json",
+            "permissionMode": "bypassPermissions",
+            "safeMode": true,
+            "sessionPersistence": false,
+            "strictMcpConfig": true,
+            "tools": [
+              "Bash"
+            ]
+          },
+          "rawPromptsRetained": false,
+          "rawResponsesRetained": false,
+          "rawStderrRetained": false,
+          "runtime": "claude",
+          "stderrLineCount": 24,
+          "unparsedServerLineKindCounts": {
+            "knownNonoNoRollbackWarning": 1
+          }
+        }
+      },
+      "normalTurn": {
+        "checks": {
+          "allStdoutJsonOrKnownWarning": true,
+          "assistantMessageObserved": true,
+          "bashToolUseObserved": true,
+          "controlledCommandRequested": true,
+          "controlledOutputMatches": true,
+          "controlledSettingsDisableInnerSandbox": true,
+          "finalReplyContainsMarker": true,
+          "finalReplyContainsWorkspace": true,
+          "initCwdMatchesWorkspace": true,
+          "initModelMatches": true,
+          "initObserved": true,
+          "initPermissionModeBypassesInnerChecks": true,
+          "noRawResponsesRetained": true,
+          "noRawStderrRetained": true,
+          "partialStreamEventObserved": true,
+          "processExitedZero": true,
+          "resultObservedOnce": true,
+          "resultSucceeded": true,
+          "toolResultObserved": true
+        },
+        "summary": {
+          "bashToolUseCount": 1,
+          "controlledOutputRetained": "<WORKSPACE>\nCHIVE_SP2_MARKER\n",
+          "messageTypeCounts": {
+            "assistant": 3,
+            "rate_limit_event": 1,
+            "result": 1,
+            "stream_event": 22,
+            "system": 6,
+            "user": 1
+          },
+          "rawTextRetained": false,
+          "resultCount": 1,
+          "streamEventTypeCounts": {
+            "content_block_delta": 10,
+            "content_block_start": 3,
+            "content_block_stop": 3,
+            "message_delta": 2,
+            "message_start": 2,
+            "message_stop": 2
+          },
+          "toolResultCount": 1
+        },
+        "transcript": {
+          "cwd": "<WORKSPACE>",
+          "elapsedMs": 8129,
+          "exitCode": 0,
+          "launch": {
+            "bareMode": false,
+            "configuredMcpServerCount": 0,
+            "controlledSettings": "<WORKSPACE>/claude-settings.json",
+            "includePartialMessages": true,
+            "model": "claude-sonnet-4-6",
+            "network": "open",
+            "nonoProfile": "nolabs-ai/claude",
+            "outputFormat": "stream-json",
+            "permissionMode": "bypassPermissions",
+            "safeMode": true,
+            "sessionPersistence": false,
+            "strictMcpConfig": true,
+            "tools": [
+              "Bash"
+            ]
+          },
+          "rawPromptsRetained": false,
+          "rawResponsesRetained": false,
+          "rawStderrRetained": false,
+          "runtime": "claude",
+          "stderrLineCount": 878,
+          "unparsedServerLineKindCounts": {
+            "knownNonoNoRollbackWarning": 1
+          }
+        }
+      },
+      "phase": 5,
+      "readinessChecks": {
+        "authCommandSucceeded": true,
+        "authStatusParsed": true,
+        "savedLoginAvailable": true,
+        "versionCommandSucceeded": true,
+        "versionMatchesPhaseZero": true
+      },
+      "runtime": "claude",
+      "version": {
+        "argv": [
+          "<HOME>/.local/bin/claude",
+          "--version"
+        ],
+        "cwd": null,
+        "elapsedMs": 359,
+        "exitCode": 0,
+        "rawOutputRetained": false,
+        "stderrLineCount": 0,
+        "version": "2.1.218"
+      }
+    }
+  },
+  "schemaVersion": 1
+}

@@ -1,0 +1,217 @@
+{
+  "generatedAt": "2026-07-30T05:12:43Z",
+  "probes": {
+    "opencode": {
+      "auth": {
+        "argv": [
+          "<HOME>/.bun/install/cache/opencode-darwin-arm64@1.18.4@@@1/bin/opencode",
+          "auth",
+          "list",
+          "--pure"
+        ],
+        "cwd": null,
+        "elapsedMs": 361,
+        "exitCode": 0,
+        "rawOutputRetained": false,
+        "status": {
+          "credentialEntryCount": 8,
+          "hasSavedCredentials": true
+        },
+        "stderrLineCount": 1
+      },
+      "interruptedTurn": {
+        "checks": {
+          "abortRequestSucceeded": true,
+          "fallbackLeftNoControlledProcess": true,
+          "noRawEventsRetained": true,
+          "noRawHttpRetained": true,
+          "serverStopped": true,
+          "serverStreamObservedLiveBashStart": true,
+          "sessionNotBusyAfterAbort": true,
+          "testSessionDeleted": true,
+          "toolChildIdentityMatched": true,
+          "toolChildOwnedByShell": true,
+          "toolChildRunning": true,
+          "toolChildStopped": true,
+          "toolProcessesShareGroup": true,
+          "toolShellIdentityMatched": true,
+          "toolShellRunning": true,
+          "toolShellStopped": true
+        },
+        "interrupt": {
+          "interface": "POST /session/:sessionID/abort",
+          "statusAfterAbort": "absent"
+        },
+        "processes": {
+          "afterFallbackCleanup": {
+            "child": {
+              "alive": false,
+              "pid": 47669,
+              "status": null
+            },
+            "shell": {
+              "alive": false,
+              "pid": 47667,
+              "status": null
+            }
+          },
+          "afterSignal": {
+            "child": {
+              "alive": false,
+              "pid": 47669,
+              "status": null
+            },
+            "shell": {
+              "alive": false,
+              "pid": 47667,
+              "status": null
+            }
+          },
+          "atStart": {
+            "child": {
+              "alive": true,
+              "pid": 47669,
+              "status": "S"
+            },
+            "rawCommandsRetained": false,
+            "relationships": {
+              "childOwnedByShell": true,
+              "sameProcessGroup": true
+            },
+            "shell": {
+              "alive": true,
+              "pid": 47667,
+              "status": "Ss"
+            }
+          },
+          "fallbackCleanupActionCount": 0
+        },
+        "stream": {
+          "bashCompletedObserved": true,
+          "bashErrorObserved": false,
+          "bashRunningObserved": true,
+          "eventTypeCounts": {
+            "catalog.updated": 2,
+            "integration.updated": 1,
+            "message.part.updated": 6,
+            "message.updated": 4,
+            "plugin.added": 45,
+            "reference.updated": 1,
+            "server.connected": 1,
+            "session.created": 1,
+            "session.deleted": 1,
+            "session.diff": 1,
+            "session.error": 1,
+            "session.idle": 2,
+            "session.status": 4,
+            "session.updated": 3
+          },
+          "rawEventsRetained": false
+        },
+        "transcript": {
+          "cwd": "<WORKSPACE>",
+          "elapsedMs": 10883,
+          "exitCode": -15,
+          "interface": "serve",
+          "launch": {
+            "externalPlugins": false,
+            "hostname": "127.0.0.1",
+            "network": "open",
+            "nonoProfile": "opencode-0723a",
+            "sha256": "9449af91f517eacc2b0742fa93ae0da64fa6e5db7b714e30c62edea2a8de3f98",
+            "version": "1.18.4"
+          },
+          "rawConsoleRetained": false,
+          "rawEventsRetained": false,
+          "rawHttpRetained": false,
+          "rawPromptsRetained": false,
+          "runtime": "opencode",
+          "stderrLineCount": 213,
+          "stdoutLineCount": 3
+        }
+      },
+      "normalTurn": {
+        "checks": {
+          "allStdoutJsonOrKnownWarning": true,
+          "assistantTextObserved": true,
+          "bashToolCompletionObserved": true,
+          "controlledOutputMatches": true,
+          "controlledToolCompleted": true,
+          "controlledToolInputRepresented": true,
+          "controlledToolStartTimeRepresented": true,
+          "finalReplyContainsMarker": true,
+          "finalReplyContainsWorkspace": true,
+          "noErrorEvent": true,
+          "noRawResponsesRetained": true,
+          "noRawStderrRetained": true,
+          "oneSessionIdObserved": true,
+          "processExitedZero": true,
+          "stepFinishObserved": true,
+          "stepStartObserved": true,
+          "validJsonRecordsObserved": true
+        },
+        "summary": {
+          "bashToolCompletionCount": 1,
+          "controlledOutputRetained": "<WORKSPACE>\nCHIVE_SP2_MARKER\n",
+          "errorEventCount": 0,
+          "eventTypeCounts": {
+            "step_finish": 2,
+            "step_start": 2,
+            "text": 1,
+            "tool_use": 1
+          },
+          "rawTextRetained": false,
+          "separateLiveToolStartObserved": false,
+          "textEventCount": 1
+        },
+        "transcript": {
+          "cwd": "<WORKSPACE>",
+          "elapsedMs": 9883,
+          "exitCode": 0,
+          "launch": {
+            "autoApprove": true,
+            "directory": "<WORKSPACE>",
+            "externalPlugins": false,
+            "model": "github-copilot/gpt-5.6-terra",
+            "network": "open",
+            "nonoProfile": "opencode-0723a",
+            "outputFormat": "json",
+            "sha256": "9449af91f517eacc2b0742fa93ae0da64fa6e5db7b714e30c62edea2a8de3f98",
+            "version": "1.18.4"
+          },
+          "rawPromptsRetained": false,
+          "rawResponsesRetained": false,
+          "rawStderrRetained": false,
+          "runtime": "opencode",
+          "stderrLineCount": 212,
+          "unparsedServerLineKindCounts": {
+            "knownNonoNoRollbackWarning": 1
+          }
+        }
+      },
+      "phase": 6,
+      "readinessChecks": {
+        "authCommandSucceeded": true,
+        "executableHashMatchesPhaseZero": true,
+        "savedCredentialAvailable": true,
+        "versionCommandSucceeded": true,
+        "versionMatchesPhaseZero": true
+      },
+      "runtime": "opencode",
+      "version": {
+        "argv": [
+          "<HOME>/.bun/install/cache/opencode-darwin-arm64@1.18.4@@@1/bin/opencode",
+          "--version"
+        ],
+        "cwd": null,
+        "elapsedMs": 260,
+        "exitCode": 0,
+        "rawOutputRetained": false,
+        "sha256": "9449af91f517eacc2b0742fa93ae0da64fa6e5db7b714e30c62edea2a8de3f98",
+        "stderrLineCount": 0,
+        "version": "1.18.4"
+      }
+    }
+  },
+  "schemaVersion": 1
+}

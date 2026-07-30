@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "runId": "run-20260727-007",
+  "phase": 1,
+  "check": "prepare-workspace-copies-only-controlled-files",
+  "status": "PASS",
+  "operatorCommand": [
+    "python3",
+    "-B",
+    "spikes/workspace-runtime/protocol/test_probe.py",
+    "WorkspaceFixtureTests.test_prepare_workspace_copies_only_the_controlled_files"
+  ],
+  "expectedFiles": [
+    "probe-marker.txt",
+    "slow-command.sh",
+    "claude-settings.json"
+  ],
+  "observed": {
+    "testExitCode": 0,
+    "exactFileSetMatched": true,
+    "markerMatched": true,
+    "claudeSandboxDisabled": true,
+    "slowCommandReadable": true,
+    "unrelatedFilesCopied": false,
+    "workspaceRemoved": true,
+    "productionCodeChanged": false
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "runId": "run-20260727-001",
+  "phase": 0,
+  "status": "PASS",
+  "sidecarBuild": {
+    "exitCode": 0,
+    "manifest": "spikes/workspace-runtime/confinement/sidecar-harness/Cargo.toml"
+  },
+  "stack": {
+    "nono": {
+      "version": "0.69.0",
+      "commandPath": "/opt/homebrew/bin/nono",
+      "canonicalPath": "/opt/homebrew/Cellar/nono/0.69.0/bin/nono",
+      "sha256": "c337d413c5e37868de97caba21712a18b87491670715509c19b84937c0c08695",
+      "installationSource": "homebrew/core 0.69.0"
+    },
+    "codex": {
+      "version": "0.145.0",
+      "commandPath": "<HOME>/.local/bin/codex",
+      "canonicalPath": "<HOME>/.codex/packages/standalone/releases/0.145.0-aarch64-apple-darwin/bin/codex",
+      "sha256": "1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590",
+      "installationSource": "Codex standalone release"
+    },
+    "claude": {
+      "version": "2.1.218",
+      "commandPath": "<HOME>/.local/bin/claude",
+      "canonicalPath": "<HOME>/.local/share/claude/versions/2.1.218",
+      "sha256": "71abaff59312c9a9b6a1d818365048b42e4e95cc521a823660eded3e0880d9b7",
+      "installationSource": "Claude Code local version store"
+    },
+    "opencode": {
+      "version": "1.18.4",
+      "commandPath": "<HOME>/.bun/bin/opencode",
+      "canonicalPath": "<HOME>/.bun/install/global/node_modules/opencode-ai/bin/opencode.exe",
+      "sha256": "9449af91f517eacc2b0742fa93ae0da64fa6e5db7b714e30c62edea2a8de3f98",
+      "installationSource": "Bun global package"
+    }
+  },
+  "nonoEvidence": {
+    "matchesSp1": true,
+    "packageLockSha256": "4396d0e50f484ec3c1bdbbcb4255eeb98ba2b6badf363963105b8ba77a196f8d",
+    "profiles": {
+      "codex": {
+        "reference": "nolabs-ai/codex",
+        "source": "packed profile",
+        "sha256": "83c39f094d5077ab6ecb703d16f8641ece14e7d555df382d52fdaaa57494e52c",
+        "valid": true
+      },
+      "claude": {
+        "reference": "nolabs-ai/claude",
+        "source": "packed profile",
+        "sha256": "ac4994af3b29a0ebe6fd23a642d656d1ce3c1ff2bdada5e720279a824666159d",
+        "valid": true
+      },
+      "opencodePack": {
+        "reference": "nolabs-ai/opencode",
+        "source": "packed profile extended by the selected user profile",
+        "sha256": "9e273d3c4a7a3766520fa597b13ba04c7a56741146d5767c8c0a7e4f21790ac2",
+        "valid": true
+      },
+      "opencode": {
+        "reference": "opencode-0723a",
+        "source": "user profile",
+        "sha256": "e7612fdbd928cef07aceec9d99efaa598fcadda61be7a9deaeef58c97050540c",
+        "valid": true
+      }
+    }
+  },
+  "models": {
+    "codex": "gpt-5.6-sol",
+    "claude": "claude-sonnet-4-6",
+    "opencode": "github-copilot/gpt-5.6-terra"
+  },
+  "auth": {
+    "codex": {
+      "exitCode": 0,
+      "loggedIn": true,
+      "method": "ChatGPT"
+    },
+    "claude": {
+      "exitCode": 0,
+      "loggedIn": true,
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "pro"
+    },
+    "opencode": {
+      "exitCode": 0,
+      "credentialEntryCount": 8,
+      "hasSavedCredentials": true
+    }
+  }
+}

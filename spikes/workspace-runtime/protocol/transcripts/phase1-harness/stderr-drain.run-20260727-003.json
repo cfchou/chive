@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "runId": "run-20260727-003",
+  "phase": 1,
+  "check": "stderr-does-not-block-stdout",
+  "status": "PASS",
+  "operatorCommand": [
+    "python3",
+    "-B",
+    "spikes/workspace-runtime/protocol/test_probe.py",
+    "JsonLineProcessTests.test_full_stderr_pipe_does_not_block_stdout"
+  ],
+  "childArgv": [
+    "<PYTHON>",
+    "-u",
+    "-c",
+    "<write 1 MiB to stderr, then write known JSON to stdout>"
+  ],
+  "observed": {
+    "testExitCode": 0,
+    "childExitCode": 0,
+    "stderrBytesBeforeStdout": 1048576,
+    "stdoutMessage": {
+      "stdout": "still-readable"
+    }
+  },
+  "diagnostics": [
+    "The pipe-close warning was resolved by timeout-cleanup run-20260727-004."
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "runId": "run-20260727-008",
+  "phase": 1,
+  "check": "slow-command-process-and-signal-lifecycle",
+  "status": "PASS",
+  "operatorCommand": [
+    "python3",
+    "-B",
+    "spikes/workspace-runtime/protocol/test_probe.py",
+    "SlowCommandFixtureTests.test_term_stops_and_reaps_the_identified_shell_and_child"
+  ],
+  "controlledArgv": [
+    [
+      "/bin/sh",
+      "./slow-command.sh",
+      "run-20260727-008"
+    ],
+    [
+      "./.slow-child-run-20260727-008",
+      "300"
+    ]
+  ],
+  "red": {
+    "testExitCode": 1,
+    "parentCommandHadRunId": true,
+    "childCommandHadRunId": false,
+    "observedChildCommand": "/bin/sleep 300"
+  },
+  "green": {
+    "testExitCode": 0,
+    "pidFilesWritten": true,
+    "parentPidMatched": true,
+    "childSymlinkTarget": "/bin/sleep",
+    "bothAliveBeforeTerm": true,
+    "bothCommandsHadRunId": true,
+    "sameProcessGroup": true,
+    "sameSession": true,
+    "parentExitCode": 143,
+    "bothAbsentAfterTerm": true,
+    "zombieRemaining": false,
+    "temporarySymlinkRemoved": true,
+    "shellSyntaxPassed": true,
+    "fullPhase1TestsPassed": 7
+  }
+}

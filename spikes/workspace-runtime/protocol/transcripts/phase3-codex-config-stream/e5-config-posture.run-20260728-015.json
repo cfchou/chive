@@ -1,0 +1,143 @@
+{
+  "generatedAt": "2026-07-27T17:18:32Z",
+  "probes": {
+    "codex-config-posture": {
+      "checks": {
+        "allPostureReadsSucceeded": true,
+        "appServerExitedCleanly": true,
+        "connectionInitialized": true,
+        "ephemeralThreadStarted": true,
+        "noModelTurnStarted": true,
+        "noRawResponsesRetained": true
+      },
+      "experiment": "E5 pre-check",
+      "inheritedUserConfiguration": true,
+      "methodChecks": {
+        "app/installed": true,
+        "config/read": true,
+        "configRequirements/read": true,
+        "hooks/list": true,
+        "mcpServerStatus/list": true,
+        "plugin/installed": true,
+        "skills/list": true
+      },
+      "phase": 3,
+      "posture": {
+        "apps": {
+          "appCount": 7,
+          "callableCount": 7,
+          "enabledCount": 7
+        },
+        "effectiveConfig": {
+          "categoryPresence": {
+            "appsAndPlugins": true,
+            "authenticationAndProvider": true,
+            "features": true,
+            "hooks": true,
+            "instructionsAndContext": false,
+            "mcp": true,
+            "modelAndService": true,
+            "sandboxApprovalsAndPermissions": true,
+            "shellEnvironment": true,
+            "skillsAndAgents": true,
+            "stateAndDiagnostics": true,
+            "toolsAndSearch": false
+          },
+          "layerCount": 2,
+          "layerTypeCounts": {
+            "system": 1,
+            "user": 1
+          },
+          "originEntryCount": 253,
+          "originLayerTypeCounts": {
+            "user": 253
+          }
+        },
+        "hooks": {
+          "cwdEntryCount": 1,
+          "enabledCount": 2,
+          "errorCount": 0,
+          "hookCount": 2,
+          "managedCount": 0,
+          "warningCount": 0
+        },
+        "managedRequirements": {
+          "categoryPresence": {
+            "approvalSandboxAndPermissions": false,
+            "apps": false,
+            "computerUse": false,
+            "features": false,
+            "hooks": false,
+            "models": false,
+            "remoteControl": false,
+            "residency": false,
+            "webSearch": false
+          },
+          "configuredFieldCount": 0
+        },
+        "mcp": {
+          "nextPageAvailable": false,
+          "resourceCount": 0,
+          "resourceTemplateCount": 0,
+          "serverCount": 13,
+          "toolCount": 226
+        },
+        "plugins": {
+          "enabledCount": 17,
+          "installedCount": 17,
+          "loadErrorCount": 0,
+          "marketplaceCount": 5,
+          "pluginCount": 17
+        },
+        "skills": {
+          "cwdEntryCount": 1,
+          "enabledCount": 64,
+          "errorCount": 0,
+          "skillCount": 74
+        }
+      },
+      "runtime": "codex",
+      "transcript": {
+        "argv": [
+          "<CHIVE_ROOT>/spikes/workspace-runtime/confinement/sidecar-harness/target/debug/sidecar-harness",
+          "--nono",
+          "/opt/homebrew/bin/nono",
+          "--profile",
+          "nolabs-ai/codex",
+          "--workspace-rw",
+          "<WORKSPACE>",
+          "--net",
+          "open",
+          "--",
+          "<HOME>/.local/bin/codex",
+          "app-server",
+          "--stdio"
+        ],
+        "cwd": "<WORKSPACE>",
+        "elapsedMs": 5202,
+        "exitCode": 0,
+        "mcpStartupEventCount": 24,
+        "pid": 15539,
+        "rawResponsesRetained": false,
+        "requestMethods": [
+          "initialize",
+          "thread/start",
+          "config/read",
+          "configRequirements/read",
+          "hooks/list",
+          "skills/list",
+          "plugin/installed",
+          "app/installed",
+          "mcpServerStatus/list"
+        ],
+        "serverMessageCount": 36,
+        "stderrLineCount": 410,
+        "unparsedServerLineCount": 1,
+        "unparsedServerLineKindCounts": {
+          "knownNonoNoRollbackWarning": 1
+        }
+      }
+    }
+  },
+  "schemaVersion": 1
+}
