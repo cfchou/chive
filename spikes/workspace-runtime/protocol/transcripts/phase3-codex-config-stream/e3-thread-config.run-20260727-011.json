@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-27T03:52:38Z",
+  "probes": {
+    "codex-thread-config": {
+      "runtime": "codex",
+      "phase": 3,
+      "checks": {
+        "alternateApprovalPolicyReflected": true,
+        "alternateCwdReflected": true,
+        "alternateModelReflected": true,
+        "alternateSandboxReflected": true,
+        "appServerExitedCleanly": true,
+        "connectionInitialized": true,
+        "primaryApprovalPolicyReflected": true,
+        "primaryCwdReflected": true,
+        "primaryModelReflected": true,
+        "primarySandboxReflected": true,
+        "threadIdsSeparate": true
+      },
+      "transcript": {
+        "argv": ["<CHIVE_ROOT>/spikes/workspace-runtime/confinement/sidecar-harness/target/debug/sidecar-harness", "--nono", "/opt/homebrew/bin/nono", "--profile", "nolabs-ai/codex", "--workspace-rw", "<WORKSPACE>", "--net", "open", "--", "<HOME>/.local/bin/codex", "app-server", "--stdio", "-c", "mcp_servers={}"],
+        "cwd": "<WORKSPACE>",
+        "pid": 49328,
+        "exitCode": 0,
+        "elapsedMs": 2951,
+        "requestMethods": ["initialize", "thread/start", "thread/start"],
+        "notificationMethods": ["initialized"],
+        "serverResponseCount": 3,
+        "serverEventMethodCounts": {"mcpServer/startupStatus/updated": 27, "remoteControl/status/changed": 1, "thread/started": 2},
+        "unparsedServerLineKindCounts": {"knownNonoNoRollbackWarning": 1},
+        "stderrLineCount": 417,
+        "rawResponsesRetained": false,
+        "rawStderrRetained": false
+      }
+    }
+  }
+}

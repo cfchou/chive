@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-27T03:27:30Z",
+  "probes": {
+    "codex-handshake": {
+      "runtime": "codex",
+      "phase": 2,
+      "checks": {
+        "accountReadAuthenticated": true,
+        "accountTypeReturned": true,
+        "appServerExitedCleanly": true,
+        "connectionUsableAfterMalformedJson": true,
+        "initializeReturnedPlatform": true,
+        "malformedJsonRejected": false,
+        "preInitializeRejected": true,
+        "secondInitializeRejected": true,
+        "unknownMethodRejected": true
+      },
+      "transcript": {
+        "argv": ["<CHIVE_ROOT>/spikes/workspace-runtime/confinement/sidecar-harness/target/debug/sidecar-harness", "--nono", "/opt/homebrew/bin/nono", "--profile", "nolabs-ai/codex", "--workspace-rw", "<WORKSPACE>", "--net", "open", "--", "<HOME>/.local/bin/codex", "app-server", "--stdio", "-c", "mcp_servers={}"],
+        "cwd": "<WORKSPACE>",
+        "pid": 40269,
+        "exitCode": 0,
+        "elapsedMs": 8078,
+        "requestMethods": ["account/read", "initialize", "initialize", "chive/unknown", "account/read"],
+        "notificationMethods": ["initialized"],
+        "serverResponseCount": 5,
+        "serverEventMethodCounts": {"remoteControl/status/changed": 1},
+        "unparsedServerLineKindCounts": {"knownNonoNoRollbackWarning": 1},
+        "stderrLineCount": 349,
+        "rawResponsesRetained": false,
+        "rawStderrRetained": false
+      }
+    }
+  }
+}

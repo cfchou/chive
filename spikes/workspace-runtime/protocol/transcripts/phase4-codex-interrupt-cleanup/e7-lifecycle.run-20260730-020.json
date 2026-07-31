@@ -1,0 +1,664 @@
+{
+  "generatedAt": "2026-07-29T16:44:13Z",
+  "probes": {
+    "codex-lifecycle": {
+      "attempts": {
+        "app-server-group": {
+          "boundary": "app-server-group",
+          "checks": {
+            "appServerDescendsFromNono": true,
+            "boundaryStoppedBothToolProcesses": false,
+            "connectionInitialized": true,
+            "fallbackLeftNoControlledProcess": true,
+            "noRawResponsesRetained": true,
+            "noRawStderrRetained": true,
+            "nonoDescendsFromSidecar": true,
+            "requestedSignalSent": true,
+            "toolChildIdentityMatched": true,
+            "toolChildOwnedByShell": true,
+            "toolChildRunning": true,
+            "toolChildStoppedByBoundary": false,
+            "toolProcessesShareGroup": true,
+            "toolShellDescendsFromAppServer": true,
+            "toolShellIdentityMatched": true,
+            "toolShellRunning": true,
+            "toolShellStoppedByBoundary": false
+          },
+          "cleanup": {
+            "fallbackCleanupActionCount": 2,
+            "outerHarnessCleanupNeeded": false
+          },
+          "forcedOnly": false,
+          "signals": {
+            "killSent": false,
+            "termSent": true
+          },
+          "states": {
+            "afterBoundary": {
+              "appServer": {
+                "alive": false,
+                "pgid": null,
+                "pid": 10899,
+                "ppid": null,
+                "session": null,
+                "status": null
+              },
+              "nono": {
+                "alive": false,
+                "pgid": null,
+                "pid": 10854,
+                "ppid": null,
+                "session": null,
+                "status": null
+              },
+              "sidecar": {
+                "alive": false,
+                "pgid": 10853,
+                "pid": 10853,
+                "ppid": 10714,
+                "session": 0,
+                "status": "Z"
+              },
+              "toolChild": {
+                "alive": true,
+                "pgid": 10974,
+                "pid": 10976,
+                "ppid": 10974,
+                "session": 0,
+                "status": "S"
+              },
+              "toolShell": {
+                "alive": true,
+                "pgid": 10974,
+                "pid": 10974,
+                "ppid": 1,
+                "session": 0,
+                "status": "Ss"
+              }
+            },
+            "afterFallbackCleanup": {
+              "child": {
+                "alive": false,
+                "pid": 10976,
+                "status": null
+              },
+              "shell": {
+                "alive": false,
+                "pid": 10974,
+                "status": null
+              }
+            },
+            "afterTerm": {
+              "appServer": {
+                "alive": false,
+                "pgid": null,
+                "pid": 10899,
+                "ppid": null,
+                "session": null,
+                "status": null
+              },
+              "nono": {
+                "alive": false,
+                "pgid": null,
+                "pid": 10854,
+                "ppid": null,
+                "session": null,
+                "status": null
+              },
+              "sidecar": {
+                "alive": false,
+                "pgid": 10853,
+                "pid": 10853,
+                "ppid": 10714,
+                "session": 0,
+                "status": "Z"
+              },
+              "toolChild": {
+                "alive": true,
+                "pgid": 10974,
+                "pid": 10976,
+                "ppid": 10974,
+                "session": 0,
+                "status": "S"
+              },
+              "toolShell": {
+                "alive": true,
+                "pgid": 10974,
+                "pid": 10974,
+                "ppid": 1,
+                "session": 0,
+                "status": "Ss"
+              }
+            },
+            "before": {
+              "appServer": {
+                "alive": true,
+                "pgid": 10853,
+                "pid": 10899,
+                "ppid": 10854,
+                "session": 0,
+                "status": "S"
+              },
+              "nono": {
+                "alive": true,
+                "pgid": 10853,
+                "pid": 10854,
+                "ppid": 10853,
+                "session": 0,
+                "status": "S"
+              },
+              "sidecar": {
+                "alive": true,
+                "pgid": 10853,
+                "pid": 10853,
+                "ppid": 10714,
+                "session": 0,
+                "status": "Ss"
+              },
+              "toolChild": {
+                "alive": true,
+                "pgid": 10974,
+                "pid": 10976,
+                "ppid": 10974,
+                "session": 0,
+                "status": "S"
+              },
+              "toolShell": {
+                "alive": true,
+                "pgid": 10974,
+                "pid": 10974,
+                "ppid": 10899,
+                "session": 0,
+                "status": "Ss"
+              }
+            }
+          },
+          "target": {
+            "kind": "group",
+            "sameGroupAsOuterSidecar": true
+          },
+          "transcript": {
+            "argv": [
+              "<CHIVE_ROOT>/spikes/workspace-runtime/confinement/sidecar-harness/target/debug/sidecar-harness",
+              "--nono",
+              "/opt/homebrew/bin/nono",
+              "--profile",
+              "nolabs-ai/codex",
+              "--workspace-rw",
+              "<WORKSPACE>",
+              "--net",
+              "open",
+              "--",
+              "<HOME>/.local/bin/codex",
+              "app-server",
+              "--stdio"
+            ],
+            "cwd": "<WORKSPACE>",
+            "elapsedMs": 8397,
+            "eventMethodCounts": {
+              "item/agentMessage/delta": 15,
+              "item/completed": 2,
+              "item/started": 3,
+              "turn/started": 1
+            },
+            "exitCode": -15,
+            "mcpStartupEventCount": 24,
+            "otherServerMessageCount": 31,
+            "pid": 10853,
+            "rawResponsesRetained": false,
+            "rawStderrRetained": false,
+            "requestMethods": [
+              "initialize",
+              "thread/start",
+              "turn/start"
+            ],
+            "stderrLineCount": 374,
+            "unparsedServerLineKindCounts": {
+              "knownNonoNoRollbackWarning": 1
+            }
+          }
+        },
+        "app-server-root": {
+          "boundary": "app-server-root",
+          "checks": {
+            "appServerDescendsFromNono": true,
+            "boundaryStoppedBothToolProcesses": false,
+            "connectionInitialized": true,
+            "fallbackLeftNoControlledProcess": true,
+            "noRawResponsesRetained": true,
+            "noRawStderrRetained": true,
+            "nonoDescendsFromSidecar": true,
+            "requestedSignalSent": true,
+            "toolChildIdentityMatched": true,
+            "toolChildOwnedByShell": true,
+            "toolChildRunning": true,
+            "toolChildStoppedByBoundary": false,
+            "toolProcessesShareGroup": true,
+            "toolShellDescendsFromAppServer": true,
+            "toolShellIdentityMatched": true,
+            "toolShellRunning": true,
+            "toolShellStoppedByBoundary": false
+          },
+          "cleanup": {
+            "fallbackCleanupActionCount": 2,
+            "outerHarnessCleanupNeeded": false
+          },
+          "forcedOnly": false,
+          "signals": {
+            "killSent": false,
+            "termSent": true
+          },
+          "states": {
+            "afterBoundary": {
+              "appServer": {
+                "alive": false,
+                "pgid": null,
+                "pid": 10769,
+                "ppid": null,
+                "session": null,
+                "status": null
+              },
+              "nono": {
+                "alive": false,
+                "pgid": null,
+                "pid": 10722,
+                "ppid": null,
+                "session": null,
+                "status": null
+              },
+              "sidecar": {
+                "alive": false,
+                "pgid": 10721,
+                "pid": 10721,
+                "ppid": 10714,
+                "session": 0,
+                "status": "Z"
+              },
+              "toolChild": {
+                "alive": true,
+                "pgid": 10831,
+                "pid": 10833,
+                "ppid": 10831,
+                "session": 0,
+                "status": "S"
+              },
+              "toolShell": {
+                "alive": true,
+                "pgid": 10831,
+                "pid": 10831,
+                "ppid": 1,
+                "session": 0,
+                "status": "Ss"
+              }
+            },
+            "afterFallbackCleanup": {
+              "child": {
+                "alive": false,
+                "pid": 10833,
+                "status": null
+              },
+              "shell": {
+                "alive": false,
+                "pid": 10831,
+                "status": null
+              }
+            },
+            "afterTerm": {
+              "appServer": {
+                "alive": false,
+                "pgid": null,
+                "pid": 10769,
+                "ppid": null,
+                "session": null,
+                "status": null
+              },
+              "nono": {
+                "alive": false,
+                "pgid": null,
+                "pid": 10722,
+                "ppid": null,
+                "session": null,
+                "status": null
+              },
+              "sidecar": {
+                "alive": false,
+                "pgid": 10721,
+                "pid": 10721,
+                "ppid": 10714,
+                "session": 0,
+                "status": "Z"
+              },
+              "toolChild": {
+                "alive": true,
+                "pgid": 10831,
+                "pid": 10833,
+                "ppid": 10831,
+                "session": 0,
+                "status": "S"
+              },
+              "toolShell": {
+                "alive": true,
+                "pgid": 10831,
+                "pid": 10831,
+                "ppid": 1,
+                "session": 0,
+                "status": "Ss"
+              }
+            },
+            "before": {
+              "appServer": {
+                "alive": true,
+                "pgid": 10721,
+                "pid": 10769,
+                "ppid": 10722,
+                "session": 0,
+                "status": "S"
+              },
+              "nono": {
+                "alive": true,
+                "pgid": 10721,
+                "pid": 10722,
+                "ppid": 10721,
+                "session": 0,
+                "status": "S"
+              },
+              "sidecar": {
+                "alive": true,
+                "pgid": 10721,
+                "pid": 10721,
+                "ppid": 10714,
+                "session": 0,
+                "status": "Ss"
+              },
+              "toolChild": {
+                "alive": true,
+                "pgid": 10831,
+                "pid": 10833,
+                "ppid": 10831,
+                "session": 0,
+                "status": "S"
+              },
+              "toolShell": {
+                "alive": true,
+                "pgid": 10831,
+                "pid": 10831,
+                "ppid": 10769,
+                "session": 0,
+                "status": "Ss"
+              }
+            }
+          },
+          "target": {
+            "kind": "pid",
+            "sameGroupAsOuterSidecar": false
+          },
+          "transcript": {
+            "argv": [
+              "<CHIVE_ROOT>/spikes/workspace-runtime/confinement/sidecar-harness/target/debug/sidecar-harness",
+              "--nono",
+              "/opt/homebrew/bin/nono",
+              "--profile",
+              "nolabs-ai/codex",
+              "--workspace-rw",
+              "<WORKSPACE>",
+              "--net",
+              "open",
+              "--",
+              "<HOME>/.local/bin/codex",
+              "app-server",
+              "--stdio"
+            ],
+            "cwd": "<WORKSPACE>",
+            "elapsedMs": 11880,
+            "eventMethodCounts": {
+              "item/agentMessage/delta": 11,
+              "item/completed": 2,
+              "item/started": 3,
+              "turn/started": 1
+            },
+            "exitCode": 143,
+            "mcpStartupEventCount": 24,
+            "otherServerMessageCount": 31,
+            "pid": 10721,
+            "rawResponsesRetained": false,
+            "rawStderrRetained": false,
+            "requestMethods": [
+              "initialize",
+              "thread/start",
+              "turn/start"
+            ],
+            "stderrLineCount": 374,
+            "unparsedServerLineKindCounts": {
+              "knownNonoNoRollbackWarning": 1
+            }
+          }
+        },
+        "outer-sidecar-group": {
+          "boundary": "outer-sidecar-group",
+          "checks": {
+            "appServerDescendsFromNono": true,
+            "boundaryStoppedBothToolProcesses": false,
+            "connectionInitialized": true,
+            "fallbackLeftNoControlledProcess": true,
+            "noRawResponsesRetained": true,
+            "noRawStderrRetained": true,
+            "nonoDescendsFromSidecar": true,
+            "requestedSignalSent": true,
+            "toolChildIdentityMatched": true,
+            "toolChildOwnedByShell": true,
+            "toolChildRunning": true,
+            "toolChildStoppedByBoundary": false,
+            "toolProcessesShareGroup": true,
+            "toolShellDescendsFromAppServer": true,
+            "toolShellIdentityMatched": true,
+            "toolShellRunning": true,
+            "toolShellStoppedByBoundary": false
+          },
+          "cleanup": {
+            "fallbackCleanupActionCount": 2,
+            "outerHarnessCleanupNeeded": false
+          },
+          "forcedOnly": false,
+          "signals": {
+            "killSent": false,
+            "termSent": true
+          },
+          "states": {
+            "afterBoundary": {
+              "appServer": {
+                "alive": false,
+                "pgid": null,
+                "pid": 11046,
+                "ppid": null,
+                "session": null,
+                "status": null
+              },
+              "nono": {
+                "alive": false,
+                "pgid": null,
+                "pid": 11001,
+                "ppid": null,
+                "session": null,
+                "status": null
+              },
+              "sidecar": {
+                "alive": false,
+                "pgid": 11000,
+                "pid": 11000,
+                "ppid": 10714,
+                "session": 0,
+                "status": "Z"
+              },
+              "toolChild": {
+                "alive": true,
+                "pgid": 11118,
+                "pid": 11120,
+                "ppid": 11118,
+                "session": 0,
+                "status": "S"
+              },
+              "toolShell": {
+                "alive": true,
+                "pgid": 11118,
+                "pid": 11118,
+                "ppid": 1,
+                "session": 0,
+                "status": "Ss"
+              }
+            },
+            "afterFallbackCleanup": {
+              "child": {
+                "alive": false,
+                "pid": 11120,
+                "status": null
+              },
+              "shell": {
+                "alive": false,
+                "pid": 11118,
+                "status": null
+              }
+            },
+            "afterTerm": {
+              "appServer": {
+                "alive": false,
+                "pgid": null,
+                "pid": 11046,
+                "ppid": null,
+                "session": null,
+                "status": null
+              },
+              "nono": {
+                "alive": false,
+                "pgid": null,
+                "pid": 11001,
+                "ppid": null,
+                "session": null,
+                "status": null
+              },
+              "sidecar": {
+                "alive": false,
+                "pgid": 11000,
+                "pid": 11000,
+                "ppid": 10714,
+                "session": 0,
+                "status": "Z"
+              },
+              "toolChild": {
+                "alive": true,
+                "pgid": 11118,
+                "pid": 11120,
+                "ppid": 11118,
+                "session": 0,
+                "status": "S"
+              },
+              "toolShell": {
+                "alive": true,
+                "pgid": 11118,
+                "pid": 11118,
+                "ppid": 1,
+                "session": 0,
+                "status": "Ss"
+              }
+            },
+            "before": {
+              "appServer": {
+                "alive": true,
+                "pgid": 11000,
+                "pid": 11046,
+                "ppid": 11001,
+                "session": 0,
+                "status": "S"
+              },
+              "nono": {
+                "alive": true,
+                "pgid": 11000,
+                "pid": 11001,
+                "ppid": 11000,
+                "session": 0,
+                "status": "S"
+              },
+              "sidecar": {
+                "alive": true,
+                "pgid": 11000,
+                "pid": 11000,
+                "ppid": 10714,
+                "session": 0,
+                "status": "Ss"
+              },
+              "toolChild": {
+                "alive": true,
+                "pgid": 11118,
+                "pid": 11120,
+                "ppid": 11118,
+                "session": 0,
+                "status": "S"
+              },
+              "toolShell": {
+                "alive": true,
+                "pgid": 11118,
+                "pid": 11118,
+                "ppid": 11046,
+                "session": 0,
+                "status": "Ss"
+              }
+            }
+          },
+          "target": {
+            "kind": "group",
+            "sameGroupAsOuterSidecar": true
+          },
+          "transcript": {
+            "argv": [
+              "<CHIVE_ROOT>/spikes/workspace-runtime/confinement/sidecar-harness/target/debug/sidecar-harness",
+              "--nono",
+              "/opt/homebrew/bin/nono",
+              "--profile",
+              "nolabs-ai/codex",
+              "--workspace-rw",
+              "<WORKSPACE>",
+              "--net",
+              "open",
+              "--",
+              "<HOME>/.local/bin/codex",
+              "app-server",
+              "--stdio"
+            ],
+            "cwd": "<WORKSPACE>",
+            "elapsedMs": 14014,
+            "eventMethodCounts": {
+              "item/agentMessage/delta": 13,
+              "item/completed": 3,
+              "item/started": 4,
+              "turn/started": 1
+            },
+            "exitCode": -15,
+            "mcpStartupEventCount": 24,
+            "otherServerMessageCount": 31,
+            "pid": 11000,
+            "rawResponsesRetained": false,
+            "rawStderrRetained": false,
+            "requestMethods": [
+              "initialize",
+              "thread/start",
+              "turn/start"
+            ],
+            "stderrLineCount": 375,
+            "unparsedServerLineKindCounts": {
+              "knownNonoNoRollbackWarning": 1
+            }
+          }
+        }
+      },
+      "experiment": "E7",
+      "finalCandidate": {
+        "available": false,
+        "reason": "no existing tested boundary stopped both tool processes"
+      },
+      "inheritedUserConfiguration": true,
+      "phase": 4,
+      "productionVerdict": "VIABLE_PROTOCOL_PRODUCTION_BLOCKED",
+      "runtime": "codex"
+    }
+  },
+  "schemaVersion": 1
+}

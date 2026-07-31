@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "runId": "run-20260727-002",
+  "phase": 1,
+  "check": "malformed-json-retained",
+  "status": "PASS",
+  "operatorCommand": [
+    "python3",
+    "-B",
+    "spikes/workspace-runtime/protocol/test_probe.py",
+    "JsonLineProcessTests.test_malformed_json_is_kept_as_an_unparsed_message"
+  ],
+  "childArgv": [
+    "<PYTHON>",
+    "-u",
+    "-c",
+    "print(\"this is not json\", flush=True)"
+  ],
+  "observed": {
+    "testExitCode": 0,
+    "childExitCode": 0,
+    "message": {
+      "unparsed": "this is not json"
+    }
+  },
+  "diagnostics": [
+    "The pipe-close warning was resolved by timeout-cleanup run-20260727-004."
+  ]
+}

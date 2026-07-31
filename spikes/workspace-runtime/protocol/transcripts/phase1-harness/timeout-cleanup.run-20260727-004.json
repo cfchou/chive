@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "runId": "run-20260727-004",
+  "phase": 1,
+  "check": "timeout-stops-and-reaps-owned-process",
+  "status": "PASS",
+  "operatorCommand": [
+    "python3",
+    "-B",
+    "spikes/workspace-runtime/protocol/test_probe.py",
+    "JsonLineProcessTests.test_timeout_stops_and_reaps_the_owned_process"
+  ],
+  "childArgv": [
+    "/bin/sleep",
+    "300"
+  ],
+  "red": {
+    "testExitCode": 1,
+    "initialTimeoutRaised": true,
+    "secondZeroTimeWaitAlsoTimedOut": true,
+    "ownedProcessStillRunning": true
+  },
+  "green": {
+    "testExitCode": 0,
+    "timeoutRaisedAfterCleanup": true,
+    "secondZeroTimeWaitReturnedExitCode": true,
+    "recordedPidAbsent": true,
+    "fullHarnessTestsPassed": 3,
+    "resourceWarnings": false
+  }
+}

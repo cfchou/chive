@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "runId": "run-20260727-005",
+  "phase": 1,
+  "check": "synthetic-private-values-are-redacted",
+  "status": "PASS",
+  "operatorCommand": [
+    "python3",
+    "-B",
+    "spikes/workspace-runtime/protocol/test_probe.py",
+    "RedactionTests.test_private_values_are_replaced_with_stable_placeholders"
+  ],
+  "inputCategories": [
+    "email",
+    "token",
+    "home-path",
+    "mcp-server-name",
+    "private-hostname"
+  ],
+  "expectedPlaceholders": [
+    "<REDACTED_EMAIL>",
+    "<REDACTED_TOKEN>",
+    "<HOME>",
+    "<MCP_SERVER>",
+    "<REDACTED_HOST>"
+  ],
+  "observed": {
+    "testExitCode": 0,
+    "allPrivateValuesReplaced": true,
+    "harmlessFieldsUnchanged": true,
+    "productionCodeChanged": false
+  }
+}

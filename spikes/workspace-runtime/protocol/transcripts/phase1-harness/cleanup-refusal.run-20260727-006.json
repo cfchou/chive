@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "runId": "run-20260727-006",
+  "phase": 1,
+  "check": "cleanup-refuses-pid-without-exact-run-id",
+  "status": "PASS",
+  "operatorCommand": [
+    "python3",
+    "-B",
+    "spikes/workspace-runtime/protocol/test_probe.py",
+    "CleanupSafetyTests.test_cleanup_refuses_a_pid_without_the_exact_run_id"
+  ],
+  "childArgv": [
+    "/bin/sleep",
+    "300"
+  ],
+  "expectedRunId": "run-20260727-006",
+  "red": {
+    "testExitCode": 1,
+    "helperAcceptedRunId": false,
+    "error": "unexpected run_id argument"
+  },
+  "green": {
+    "testExitCode": 0,
+    "cleanupResult": "refused",
+    "unrelatedProcessAliveAfterHelper": true,
+    "testReapedOwnedProcess": true,
+    "fullPhase1TestsPassed": 5
+  }
+}
