@@ -3,9 +3,6 @@
 The official implementation of the Chive PDF reader/annotator: a SvelteKit SPA
 (Svelte 5, `ssr = false`, adapter-static) running inside Tauri 2 on macOS.
 
-The UI follows `../tmp/index.html` and `../tmp/ui-spec.md` (Atelier Zero
-design). See the ADRs in `../docs/adr/` for behavior-sensitive decisions.
-
 ## What it does
 
 - Renders PDFs with pdf.js 6 (`PDFViewer`, wasm decoders under
