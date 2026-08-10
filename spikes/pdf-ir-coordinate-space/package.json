@@ -1,0 +1,12 @@
+{
+  "name": "chive-pdf-ir-coordinate-space",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "cargo test --quiet && cargo run --quiet && node scripts/verify-browser.mjs"
+  },
+  "dependencies": {
+    "@playwright/test": "1.61.1",
+    "pdfjs-dist": "6.0.227"
+  }
+}
